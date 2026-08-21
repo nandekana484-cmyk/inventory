@@ -1,0 +1,8 @@
+pandas
+openpyxl
+python-dotenv
+fastapi
+uvicorn[standard]
+pyinstaller
+pytest
+sqlalchemy
