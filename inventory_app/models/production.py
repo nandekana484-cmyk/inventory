@@ -1,9 +1,11 @@
 ﻿import sqlite3
-from config import DB_PATH
+from datetime import datetime
+
+import config
 
 
 def get_connection():
-    con = sqlite3.connect(DB_PATH)
+    con = sqlite3.connect(config.DB_PATH)
     con.row_factory = sqlite3.Row
     return con
 
@@ -115,3 +117,51 @@ def list_daily_production_by_kitting_no(kitting_list_no: str):
             ORDER BY report_date
         """, (kitting_list_no,))
         return [dict(r) for r in cur.fetchall()]
+
+
+def list_daily_production_today():
+    """本日（report_date = 今日の日付）に登録された日次実績を取得する"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.execute("""
+            SELECT * FROM production_daily
+            WHERE report_date = ?
+            ORDER BY prod_log_id
+        """, (today,))
+        return [dict(r) for r in cur.fetchall()]
+
+
+def list_daily_production_range(from_date: str, to_date: str):
+    """report_date が from_date～to_date（両端含む、"YYYY-MM-DD"文字列）の日次実績を取得する"""
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.execute("""
+            SELECT * FROM production_daily
+            WHERE report_date >= ? AND report_date <= ?
+            ORDER BY report_date, prod_log_id
+        """, (from_date, to_date))
+        return [dict(r) for r in cur.fetchall()]
+
+
+def update_daily_production(prod_log_id: int, daily_qty: float):
+    """日次実績1件（prod_log_id指定）のdaily_qtyを修正する"""
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.execute("""
+            UPDATE production_daily
+            SET daily_qty = ?
+            WHERE prod_log_id = ?
+        """, (daily_qty, prod_log_id))
+        con.commit()
+
+
+def delete_daily_production(prod_log_id: int):
+    """日次実績1件（prod_log_id指定）を削除する"""
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.execute("""
+            DELETE FROM production_daily
+            WHERE prod_log_id = ?
+        """, (prod_log_id,))
+        con.commit()

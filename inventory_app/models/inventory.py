@@ -1,54 +1,63 @@
 ﻿import sqlite3
-from config import DB_PATH
+import config
 
 def get_connection():
-    con = sqlite3.connect(DB_PATH)
+    con = sqlite3.connect(config.DB_PATH)
     con.row_factory = sqlite3.Row
     return con
 
-def get_inventory_reconciliation():
-    """
-    スナップショット、生産消費量、実地カウント結果を結合し、
-    理論在庫および差分（理論差分、棚卸差分）を算出する。
-    """
-    query = """
-    WITH latest_snap AS (
-        -- 最新のスナップショットデータを部品コードごとに集計
-        SELECT code96, SUM(qty) AS snap_qty, MAX(imported_at) AS snap_date
-        FROM snapshot_inventory
-        GROUP BY code96
-    ),
-    used_qty AS (
-        -- スナップショット以降の生産実績による消費量を集計
-        SELECT cb.code96, SUM(pr.qty * cb.usage_qty) AS total_used
-        FROM production_records pr
-        JOIN component_bom cb ON pr.board_group_id = cb.group_id
-        GROUP BY cb.code96
-    ),
-    actual_count AS (
-        -- 最新の実地カウント結果を部品コードごとに集計
-        SELECT p.code96, SUM(pc.count_qty) AS counted_qty
-        FROM physical_counts pc
-        JOIN parts p ON pc.part_id = p.part_id
-        GROUP BY p.code96
-    )
-    SELECT 
-        p.code96,
-        p.part_type,
-        p.shelf_type,
-        COALESCE(s.snap_qty, 0) AS snap_qty,
-        COALESCE(u.total_used, 0) AS used_qty,
-        (COALESCE(s.snap_qty, 0) - COALESCE(u.total_used, 0)) AS theoretical_qty,
-        COALESCE(a.counted_qty, 0) AS counted_qty,
-        (COALESCE(a.counted_qty, 0) - (COALESCE(s.snap_qty, 0) - COALESCE(u.total_used, 0))) AS diff_qty
-    FROM parts p
-    LEFT JOIN latest_snap s ON p.code96 = s.code96
-    LEFT JOIN used_qty u ON p.code96 = u.code96
-    LEFT JOIN actual_count a ON p.code96 = a.code96
-    ORDER BY p.code96
-    """
+# =====================================================
+# 96部品ごとの在庫数量（inventory_stock）
+# ※ 最小構成。後日「仕掛」「仕損」「理論在庫」等の列・テーブルを追加可能。
+# =====================================================
+
+def init_inventory_stock_table():
+    """在庫数量テーブルの初期化（既存があれば何もしない）。"""
     with get_connection() as con:
-        cur = con.cursor()
-        cur.execute(query)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS inventory_stock (
+                part_no TEXT PRIMARY KEY,
+                stock_qty INTEGER
+            )
+        """)
+        con.commit()
+
+
+def list_inventory():
+    """在庫数量の一覧を part_no 順で取得する。"""
+    init_inventory_stock_table()
+    with get_connection() as con:
+        cur = con.execute("SELECT part_no, stock_qty FROM inventory_stock ORDER BY part_no")
         return [dict(row) for row in cur.fetchall()]
+
+
+def get_inventory(part_no: str):
+    """指定 part_no の在庫数量を取得する。存在しなければ None を返す。"""
+    init_inventory_stock_table()
+    with get_connection() as con:
+        cur = con.execute(
+            "SELECT part_no, stock_qty FROM inventory_stock WHERE part_no = ?", (part_no,)
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def upsert_inventory(part_no: str, qty: int):
+    """在庫数量を登録または更新する。"""
+    init_inventory_stock_table()
+    with get_connection() as con:
+        con.execute("""
+            INSERT INTO inventory_stock (part_no, stock_qty)
+            VALUES (?, ?)
+            ON CONFLICT(part_no) DO UPDATE SET stock_qty = excluded.stock_qty
+        """, (part_no, qty))
+        con.commit()
+
+
+def delete_inventory(part_no: str):
+    """在庫数量を削除する。"""
+    init_inventory_stock_table()
+    with get_connection() as con:
+        con.execute("DELETE FROM inventory_stock WHERE part_no = ?", (part_no,))
+        con.commit()
 

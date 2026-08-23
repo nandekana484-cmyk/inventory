@@ -214,9 +214,18 @@ class MasterManagementWindow(tk.Toplevel):
             messagebox.showwarning("エラー", "使用数量には数値を入力してください。")
             return
 
+        is_existing = any(
+            b["group_id"] == grp and b["code96"] == c96
+            for b in get_all_boms()
+        )
+
         insert_bom(grp, c96, qty)
         self.load_boms()
-        messagebox.showinfo("完了", "BOMを追加しました。")
+
+        if is_existing:
+            messagebox.showinfo("完了", "同じ部品（グループID・部品コード96）が既に登録されていたため、使用数量を上書きしました。")
+        else:
+            messagebox.showinfo("完了", "BOMを追加しました。")
 
     def remove_bom(self):
         sel = self.tree_bom.selection()

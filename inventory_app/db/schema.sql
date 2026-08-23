@@ -67,16 +67,7 @@ CREATE TABLE IF NOT EXISTS usage_daily (
     used_qty REAL NOT NULL
 );
 
--- 在庫スナップショット・入荷・調整
-CREATE TABLE IF NOT EXISTS stock_snapshot (
-    snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    part_id TEXT NOT NULL,
-    code96 TEXT NOT NULL,
-    qty REAL NOT NULL,
-    snapshot_date TEXT NOT NULL,
-    source TEXT
-);
-
+-- 入荷・調整
 CREATE TABLE IF NOT EXISTS incoming_goods_log (
     incoming_id INTEGER PRIMARY KEY AUTOINCREMENT,
     code96 TEXT NOT NULL,
@@ -92,16 +83,6 @@ CREATE TABLE IF NOT EXISTS stock_manual_adjustment (
     reason TEXT,
     adjusted_at TEXT NOT NULL,
     status TEXT DEFAULT 'pending'
-);
-
--- 実地カウント（棚卸）
-CREATE TABLE IF NOT EXISTS physical_count (
-    count_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    part_id TEXT NOT NULL,
-    code96 TEXT NOT NULL,
-    counted_qty REAL NOT NULL,
-    counted_at TEXT NOT NULL,
-    worker_id TEXT REFERENCES workers(worker_id)
 );
 
 -- 締め処理・仕掛調整結果
