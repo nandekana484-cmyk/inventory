@@ -11,3 +11,15 @@ EXPORT_DIR = os.path.join(BASE_DIR, 'exports')
 IMPORT_DIR = os.path.join(BASE_DIR, 'imports')
 
 DEBUG = True
+
+# ========== BOM設定（新規） ==========
+import os
+
+# 共有フォルダのBOMデータパス
+BOM_FOLDER_PATH = os.getenv(
+    'BOM_FOLDER_PATH',
+    r'\\192.168.5.151\みんなの広場\【基板実装課-実装技術】\◆標準関連\◆作業指導票\◆WPCSマスタ\◆機種ラインマスタ'
+)
+
+# BOM読み込み時のエンコーディング優先順位
+BOM_ENCODINGS = ['utf-8-sig', 'utf-8', 'cp932']
