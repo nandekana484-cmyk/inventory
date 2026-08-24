@@ -13,7 +13,6 @@ IMPORT_DIR = os.path.join(BASE_DIR, 'imports')
 DEBUG = True
 
 # ========== BOM設定（新規） ==========
-import os
 
 # 共有フォルダのBOMデータパス
 BOM_FOLDER_PATH = os.getenv(

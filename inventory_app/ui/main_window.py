@@ -12,6 +12,7 @@ from ui.inventory_input_window import InventoryInputWindow
 from ui.theoretical_inventory_import_window import TheoreticalInventoryImportWindow
 from ui.inventory_diff_window import InventoryDiffWindow
 from ui.master_import_window import MasterImportWindow
+from ui.ng_input_window import NgInputWindow
 
 
 class MainWindow(tk.Tk):
@@ -96,6 +97,11 @@ class MainWindow(tk.Tk):
         )
         btn_master_import.pack(fill=tk.X, pady=5)
 
+        btn_ng_input = ttk.Button(
+            body_frame, text="12. NG（仕損）入力", command=self.open_ng_input
+        )
+        btn_ng_input.pack(fill=tk.X, pady=5)
+
     def open_master_management(self):
         MasterManagementWindow(self, self.current_worker)
 
@@ -122,6 +128,9 @@ class MainWindow(tk.Tk):
 
     def open_master_import(self):
         MasterImportWindow(self)
+
+    def open_ng_input(self):
+        NgInputWindow(self, self.current_worker)
 
     def _load_db_folders(self):
         db_root = os.path.join(config.BASE_DIR, "db")

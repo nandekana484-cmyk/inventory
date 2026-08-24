@@ -132,8 +132,10 @@ def _build_report_rows(records):
 
         report_rows.append({
             "seq": i,
+            "kitting_list_no": kitting_list_no,
             "file_no": plan["setup_file_no"] if plan else "",
             "board_name": plan["board_name"] if plan else "",
+            "production_side": plan["production_side"] if plan else None,
             "lot_no": lot_no,
             "daily_qty": daily_qty,
             "app_cumulative_qty": get_app_cumulative_qty(kitting_list_no),

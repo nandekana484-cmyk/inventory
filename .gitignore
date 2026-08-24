@@ -1,6 +1,26 @@
-.venv/
-*
-*.db
+# Python キャッシュ
 __pycache__/
 *.pyc
+
+# ログ
 *.log
+
+# SQLite DB（本番DBをGit管理しない場合）
+*.db
+
+# 環境ファイル
+.env
+.env.*
+
+# OS依存
+.DS_Store
+
+# Venv
+venv/
+.venv/
+
+# Node（もし存在する場合）
+node_modules/
+
+# Python ソースコードはすべて追跡対象
+!*.py
