@@ -110,7 +110,7 @@ class TheoreticalInventoryImportWindow(tk.Toplevel):
             self.tree.insert("", tk.END, values=(row["part_no"], row["qty"]))
 
     def on_select_csv(self):
-        file_path = filedialog.askopenfilename(filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
+        file_path = filedialog.askopenfilename(filetypes=[("CSV files", "*.csv"), ("All files", "*.*")], parent=self.winfo_toplevel())
         if not file_path:
             return
         self.selected_csv_path = file_path
@@ -118,13 +118,13 @@ class TheoreticalInventoryImportWindow(tk.Toplevel):
 
     def on_import_execute(self):
         if not self.selected_csv_path:
-            messagebox.showwarning("警告", "CSVファイルを選択してください。")
+            messagebox.showwarning("警告", "CSVファイルを選択してください。", parent=self.winfo_toplevel())
             return
 
         try:
             result = parse_theoretical_inventory_csv(self.selected_csv_path)
         except ValueError as e:
-            messagebox.showerror("エラー", f"理論在庫CSV取込中にエラーが発生しました：\n{e}")
+            messagebox.showerror("エラー", f"理論在庫CSV取込中にエラーが発生しました：\n{e}", parent=self.winfo_toplevel())
             return
 
         self.load_theoretical_inventory()
@@ -136,4 +136,4 @@ class TheoreticalInventoryImportWindow(tk.Toplevel):
             more = f"\n...ほか{len(warnings) - 10}件" if len(warnings) > 10 else ""
             msg += f"\n\n{shown}{more}"
 
-        messagebox.showinfo("理論在庫CSV取込結果", msg)
+        messagebox.showinfo("理論在庫CSV取込結果", msg, parent=self.winfo_toplevel())

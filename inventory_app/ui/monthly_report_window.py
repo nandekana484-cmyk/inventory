@@ -76,7 +76,7 @@ class MonthlyReportWindow(tk.Toplevel):
         try:
             self.report_rows = build_monthly_report(from_date, to_date)
         except Exception as e:
-            messagebox.showerror("エラー", f"集計に失敗しました：{e}")
+            messagebox.showerror("エラー", f"集計に失敗しました：{e}", parent=self.winfo_toplevel())
             return
 
         self.from_date = from_date
@@ -96,41 +96,41 @@ class MonthlyReportWindow(tk.Toplevel):
 
     def on_preview(self):
         if not self.report_rows:
-            messagebox.showwarning("警告", "先に集計を実行してください。")
+            messagebox.showwarning("警告", "先に集計を実行してください。", parent=self.winfo_toplevel())
             return
         ReportPreviewWindow(self, self.report_rows, self._period_label(), title_prefix="月報")
 
     def on_export_pdf(self):
         if not self.report_rows:
-            messagebox.showwarning("警告", "先に集計を実行してください。")
+            messagebox.showwarning("警告", "先に集計を実行してください。", parent=self.winfo_toplevel())
             return
 
         default_name = f"monthly_report_{self._file_stub()}.pdf"
         save_path = filedialog.asksaveasfilename(
             defaultextension=".pdf", initialfile=default_name,
             filetypes=[("PDF files", "*.pdf")],
-        )
+        parent=self.winfo_toplevel())
         if not save_path:
             return
 
         try:
             build_daily_report_pdf(self.report_rows, self._period_label(), save_path, title_prefix="月報")
         except Exception as e:
-            messagebox.showerror("エラー", f"PDF出力に失敗しました：{e}")
+            messagebox.showerror("エラー", f"PDF出力に失敗しました：{e}", parent=self.winfo_toplevel())
             return
 
-        messagebox.showinfo("完了", f"PDFを保存しました：\n{save_path}")
+        messagebox.showinfo("完了", f"PDFを保存しました：\n{save_path}", parent=self.winfo_toplevel())
 
     def on_export_csv(self):
         if not self.report_rows:
-            messagebox.showwarning("警告", "先に集計を実行してください。")
+            messagebox.showwarning("警告", "先に集計を実行してください。", parent=self.winfo_toplevel())
             return
 
         default_name = f"monthly_report_{self._file_stub()}.csv"
         save_path = filedialog.asksaveasfilename(
             defaultextension=".csv", initialfile=default_name,
             filetypes=[("CSV files", "*.csv")],
-        )
+        parent=self.winfo_toplevel())
         if not save_path:
             return
 
@@ -141,7 +141,7 @@ class MonthlyReportWindow(tk.Toplevel):
                 for row in self.report_rows:
                     writer.writerow(_row_to_values(row))
         except Exception as e:
-            messagebox.showerror("エラー", f"CSV出力に失敗しました：{e}")
+            messagebox.showerror("エラー", f"CSV出力に失敗しました：{e}", parent=self.winfo_toplevel())
             return
 
-        messagebox.showinfo("完了", f"CSVを保存しました：\n{save_path}")
+        messagebox.showinfo("完了", f"CSVを保存しました：\n{save_path}", parent=self.winfo_toplevel())

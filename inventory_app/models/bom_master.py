@@ -1,9 +1,8 @@
 # models/bom_master.py
 """
-新BOM基盤（フェーズ1）用のDBアクセス層。
+BOM基盤用のDBアクセス層。
 
-旧 component_bom / board_definitions / component_groups とは独立した
-bom_master テーブルを新規に持つ。共有フォルダのTSVから計算したBOMを
+共有フォルダのTSVから計算したBOM（file_no・面・96コード単位の構成数）を
 月（data_ym）単位でキャッシュ保存し、以降は再計算せずDBから取得できるようにする。
 """
 import sqlite3

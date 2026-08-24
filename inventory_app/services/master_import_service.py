@@ -1,26 +1,23 @@
 # services/master_import_service.py
 """
-部品マスタ（parts）・BOMマスタ（component_bom）のCSVインポートサービス。
+部品マスタ（parts）のCSVインポートサービス。
 
 CSVフォーマットが未確定のため、列名ゆらぎ・追加列・欠損列に耐えられる
 汎用パーサ（parse_csv_generic）と、列名候補を定義する列名マッピング辞書
-（COLUMN_MAP_PARTS / COLUMN_MAP_BOM）を拡張ポイントとして用意する。
+（COLUMN_MAP_PARTS）を拡張ポイントとして用意する。
+
+BOM（新BOM基盤）のインポートは services.bom_service / ui.parts_attributes_import_window
+側に完全移行しており、本ファイルは対象外。
 """
 import csv
 
-from models.master import upsert_part_master, upsert_bom
+from models.master import upsert_part_master
 
 # 列名マッピング辞書（拡張ポイント）：canonical key -> 候補列名リスト
 COLUMN_MAP_PARTS = {
     "part_no": ["part_no", "code96", "部品番号", "部品ID"],
     "name": ["name", "部品名"],
     "shelf": ["shelf", "棚番"],
-}
-
-COLUMN_MAP_BOM = {
-    "file_no": ["file_no", "基板番号", "setup_file_no"],
-    "part_no": ["part_no", "code96", "部品番号"],
-    "qty": ["qty", "usage_qty", "使用数量"],
 }
 
 # エンコーディング自動判定の候補（この順で試す）
@@ -68,7 +65,7 @@ def parse_csv_generic(file_path, column_map):
         }
 
     列名解決のみを行い、必須列チェック・重複検知・型変換などの
-    ドメイン固有ロジックは呼び出し側（import_parts_csv / import_bom_csv）が担う。
+    ドメイン固有ロジックは呼び出し側（import_parts_csv）が担う。
     追加列（column_map に定義のない列）は "_extra" にそのまま保持する
     （将来の拡張のため）。
     """
@@ -129,65 +126,5 @@ def import_parts_csv(file_path):
 
         upsert_part_master(part_no, name, shelf)
         imported += 1
-
-    return {"rows": rows, "imported": imported, "warnings": warnings}
-
-
-def import_bom_csv(file_path):
-    """
-    BOMマスタCSVを解析する。
-
-    - 必須列：file_no, part_no（欠けている・空の行は警告してスキップ）
-    - qty は int に変換（変換不可・空は警告してスキップ）
-    - 同一 (file_no, part_no) の重複行は警告してスキップ
-    - file_no → component_groups → component_bom の結合ロジックは後日実装のため、
-      実際の保存（models.master.upsert_bom）は NotImplementedError を送出する。
-      解析・検証・プレビューは今回のCSVインポート機能として完全に動作するが、
-      保存のみ結合ロジック確定後まで保留される。
-
-    戻り値：{"rows": 解析した全行, "imported": 取込件数, "warnings": 警告メッセージのリスト}
-    """
-    rows = parse_csv_generic(file_path, COLUMN_MAP_BOM)
-
-    imported = 0
-    warnings = []
-    seen_keys = set()
-
-    for i, row in enumerate(rows, start=2):
-        file_no = row.get("file_no")
-        part_no = row.get("part_no")
-        qty_raw = row.get("qty")
-
-        if not file_no or not part_no:
-            warnings.append(f"{i}行目: file_no または part_no が空のためスキップしました。")
-            continue
-
-        key = (file_no, part_no)
-        if key in seen_keys:
-            warnings.append(
-                f"{i}行目: file_no「{file_no}」・part_no「{part_no}」の組み合わせが"
-                "重複しているためスキップしました。"
-            )
-            continue
-        seen_keys.add(key)
-
-        if qty_raw in (None, ""):
-            warnings.append(f"{i}行目: qty が空のためスキップしました。")
-            continue
-
-        try:
-            qty = int(float(qty_raw))
-        except (TypeError, ValueError):
-            warnings.append(f"{i}行目: qty「{qty_raw}」を数値に変換できないためスキップしました。")
-            continue
-
-        try:
-            upsert_bom(file_no, part_no, qty)
-            imported += 1
-        except NotImplementedError:
-            warnings.append(
-                f"{i}行目: file_no「{file_no}」のBOM保存は、"
-                "file_no→component_groups の結合ロジック確定後まで保留されます。"
-            )
 
     return {"rows": rows, "imported": imported, "warnings": warnings}

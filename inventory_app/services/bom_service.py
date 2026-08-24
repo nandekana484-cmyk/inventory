@@ -1,25 +1,20 @@
 # services/bom_service.py
 """
-新BOM基盤（フェーズ1）。
+BOM基盤。
 
 共有フォルダのBOM TSV（services.bom_file_service.BOMFileIndex）と
 bom_master テーブル（models.bom_master）を組み合わせ、file_no・面（production_side）
 単位の96部品構成（qty_per_product）を計算し、DBへキャッシュ保存する。
 
-旧BOMロジック（component_bom / board_definitions / component_groups、
-旧 services.bom_service の get_parts_for_file_no / expand_wip_to_parts /
-expand_scrap_to_parts）とは完全に独立した新規実装であり、それらのテーブル・
-関数には一切依存しない。
-
-フェーズ2で services.inventory_diff_service / ui.ng_input_window から
-本クラス（BOMService）が直接利用されるようになったため、旧APIとの
-互換シム（モジュールレベル関数）は撤去済み。
+係数が0かつRフラグがある行の qty 計算には、models.parts_attributes
+（丁取り数マスタ）を使う。
 """
 import logging
 
 import config
 from services.bom_file_service import BOMFileIndex
 from models.bom_master import query_bom_master, save_bom_master, get_current_ym
+from models.parts_attributes import get_parts_attributes
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +107,9 @@ class BOMService:
         - 部品員数（COL_QTY_PER_PRODUCT）が None の行はスキップ
         - 係数（COL_COEFFICIENT）> 0 → qty = 部品員数 × 係数
         - 係数が 0（またはNone）かつ Rフラグ（COL_R_FLAG）あり
-          → qty = 部品員数（丁取り数を用いた計算は後日実装）
+          → models.parts_attributes.get_parts_attributes(part_no) から丁取り数を取得し、
+            丁取り数が1以上 → qty = 部品員数 ÷ 丁取り数
+            丁取り数が未設定（None）または0以下 → 警告ログを出し、暫定で qty = 部品員数
         - 係数が 0（またはNone）かつ Rフラグなし → 警告ログを出してスキップ
         - 同一 part_no は qty を合算する
         """
@@ -136,8 +133,18 @@ class BOMService:
             if coefficient and coefficient > 0:
                 qty = qty_per_product * coefficient
             elif r_flag:
-                # 丁取り数を用いた計算は後日実装。現時点では部品員数をそのまま採用する。
-                qty = qty_per_product
+                attrs = get_parts_attributes(part_no)
+                teitori = attrs.get("teitori") if attrs else None
+
+                if teitori is not None and teitori >= 1:
+                    qty = qty_per_product / teitori
+                else:
+                    logger.warning(
+                        "丁取り数が未設定または0以下です: file_no=%s side=%s part_no=%s "
+                        "（teitori=%r）。暫定的に部品員数をそのまま採用します。",
+                        file_no, side, part_no, teitori,
+                    )
+                    qty = qty_per_product
             else:
                 logger.warning(
                     "BOM計算スキップ: file_no=%s side=%s part_no=%s "

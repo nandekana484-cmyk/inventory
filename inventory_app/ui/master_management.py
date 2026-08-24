@@ -7,7 +7,6 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from models.master import (
     get_all_parts, upsert_part, delete_part,
     get_all_products, upsert_product, delete_product,
-    get_all_boms, insert_bom, delete_bom
 )
 
 class MasterManagementWindow(tk.Toplevel):
@@ -29,11 +28,6 @@ class MasterManagementWindow(tk.Toplevel):
         self.tab_products = ttk.Frame(notebook)
         notebook.add(self.tab_products, text=" 完成品マスタ ")
         self.setup_products_tab()
-
-        # タブ3: BOM定義
-        self.tab_bom = ttk.Frame(notebook)
-        notebook.add(self.tab_bom, text=" BOM（構成）管理 ")
-        self.setup_bom_tab()
 
     # --- タブ1: 部品マスタ ---
     def setup_parts_tab(self):
@@ -88,18 +82,18 @@ class MasterManagementWindow(tk.Toplevel):
         ptype = self.entry_p_type.get().strip()
         shelf = self.entry_p_shelf.get().strip()
         if not pid:
-            messagebox.showwarning("エラー", "部品/リールIDを入力してください。")
+            messagebox.showwarning("エラー", "部品/リールIDを入力してください。", parent=self.winfo_toplevel())
             return
         upsert_part(pid, c96, ptype, shelf, "リール")
         self.load_parts()
-        messagebox.showinfo("完了", "部品情報を保存しました。")
+        messagebox.showinfo("完了", "部品情報を保存しました。", parent=self.winfo_toplevel())
 
     def remove_part(self):
         sel = self.tree_parts.selection()
         if not sel:
             return
         pid = self.tree_parts.item(sel[0], "values")[0]
-        if messagebox.askyesno("確認", f"部品 {pid} を削除しますか？"):
+        if messagebox.askyesno("確認", f"部品 {pid} を削除しますか？", parent=self.winfo_toplevel()):
             delete_part(pid)
             self.load_parts()
 
@@ -143,95 +137,17 @@ class MasterManagementWindow(tk.Toplevel):
         pid = self.entry_prod_id.get().strip()
         pname = self.entry_prod_name.get().strip()
         if not pid:
-            messagebox.showwarning("エラー", "製品IDを入力してください。")
+            messagebox.showwarning("エラー", "製品IDを入力してください。", parent=self.winfo_toplevel())
             return
         upsert_product(pid, pname)
         self.load_products()
-        messagebox.showinfo("完了", "製品情報を保存しました。")
+        messagebox.showinfo("完了", "製品情報を保存しました。", parent=self.winfo_toplevel())
 
     def remove_product(self):
         sel = self.tree_products.selection()
         if not sel:
             return
         pid = self.tree_products.item(sel[0], "values")[0]
-        if messagebox.askyesno("確認", f"製品 {pid} を削除しますか？"):
+        if messagebox.askyesno("確認", f"製品 {pid} を削除しますか？", parent=self.winfo_toplevel()):
             delete_product(pid)
             self.load_products()
-
-    # --- タブ3: BOM管理 ---
-    def setup_bom_tab(self):
-        frame_input = ttk.LabelFrame(self.tab_bom, text="BOM（基板グループ使用部品）追加", padding=10)
-        frame_input.pack(fill=tk.X, padx=10, pady=5)
-
-        ttk.Label(frame_input, text="グループID:").grid(row=0, column=0, sticky=tk.W)
-        self.entry_bom_grp = ttk.Entry(frame_input, width=15)
-        self.entry_bom_grp.grid(row=0, column=1, padx=5)
-
-        ttk.Label(frame_input, text="部品コード96:").grid(row=0, column=2, sticky=tk.W)
-        self.entry_bom_c96 = ttk.Entry(frame_input, width=15)
-        self.entry_bom_c96.grid(row=0, column=3, padx=5)
-
-        ttk.Label(frame_input, text="使用数量:").grid(row=0, column=4, sticky=tk.W)
-        self.entry_bom_qty = ttk.Entry(frame_input, width=10)
-        self.entry_bom_qty.grid(row=0, column=5, padx=5)
-
-        btn_save = ttk.Button(frame_input, text="追加", command=self.save_bom)
-        btn_save.grid(row=0, column=6, padx=10)
-
-        frame_list = ttk.Frame(self.tab_bom, padding=5)
-        frame_list.pack(expand=True, fill=tk.BOTH)
-
-        cols = ("bom_id", "group_id", "code96", "usage_qty")
-        self.tree_bom = ttk.Treeview(frame_list, columns=cols, show="headings")
-        self.tree_bom.heading("bom_id", text="BOM ID")
-        self.tree_bom.heading("group_id", text="基板グループID")
-        self.tree_bom.heading("code96", text="部品コード96")
-        self.tree_bom.heading("usage_qty", text="使用数量")
-        self.tree_bom.pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
-
-        btn_del = ttk.Button(self.tab_bom, text="選択行を削除", command=self.remove_bom)
-        btn_del.pack(anchor=tk.E, padx=10, pady=5)
-
-        self.load_boms()
-
-    def load_boms(self):
-        for item in self.tree_bom.get_children():
-            self.tree_bom.delete(item)
-        for b in get_all_boms():
-            self.tree_bom.insert("", tk.END, values=(b['bom_id'], b['group_id'], b['code96'], b['usage_qty']))
-
-    def save_bom(self):
-        grp = self.entry_bom_grp.get().strip()
-        c96 = self.entry_bom_c96.get().strip()
-        qty_str = self.entry_bom_qty.get().strip()
-
-        if not grp or not c96 or not qty_str:
-            messagebox.showwarning("エラー", "全ての項目を入力してください。")
-            return
-        try:
-            qty = float(qty_str)
-        except ValueError:
-            messagebox.showwarning("エラー", "使用数量には数値を入力してください。")
-            return
-
-        is_existing = any(
-            b["group_id"] == grp and b["code96"] == c96
-            for b in get_all_boms()
-        )
-
-        insert_bom(grp, c96, qty)
-        self.load_boms()
-
-        if is_existing:
-            messagebox.showinfo("完了", "同じ部品（グループID・部品コード96）が既に登録されていたため、使用数量を上書きしました。")
-        else:
-            messagebox.showinfo("完了", "BOMを追加しました。")
-
-    def remove_bom(self):
-        sel = self.tree_bom.selection()
-        if not sel:
-            return
-        bom_id = self.tree_bom.item(sel[0], "values")[0]
-        if messagebox.askyesno("確認", f"BOM ID: {bom_id} を削除しますか？"):
-            delete_bom(int(bom_id))
-            self.load_boms()

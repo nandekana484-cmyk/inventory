@@ -65,7 +65,7 @@ class InventoryDiffWindow(tk.Toplevel):
 
     def on_preview(self):
         if not self.report_rows:
-            messagebox.showwarning("警告", "表示するデータがありません。")
+            messagebox.showwarning("警告", "表示するデータがありません。", parent=self.winfo_toplevel())
             return
         ReportPreviewWindow(
             self, self.report_rows, self.report_date,
@@ -77,14 +77,14 @@ class InventoryDiffWindow(tk.Toplevel):
 
     def on_export_pdf(self):
         if not self.report_rows:
-            messagebox.showwarning("警告", "表示するデータがありません。")
+            messagebox.showwarning("警告", "表示するデータがありません。", parent=self.winfo_toplevel())
             return
 
         default_name = f"inventory_diff_report_{self.report_date.replace('-', '')}.pdf"
         save_path = filedialog.asksaveasfilename(
             defaultextension=".pdf", initialfile=default_name,
             filetypes=[("PDF files", "*.pdf")],
-        )
+        parent=self.winfo_toplevel())
         if not save_path:
             return
 
@@ -96,21 +96,21 @@ class InventoryDiffWindow(tk.Toplevel):
                 row_to_values=_row_to_values,
             )
         except Exception as e:
-            messagebox.showerror("エラー", f"PDF出力に失敗しました：{e}")
+            messagebox.showerror("エラー", f"PDF出力に失敗しました：{e}", parent=self.winfo_toplevel())
             return
 
-        messagebox.showinfo("完了", f"PDFを保存しました：\n{save_path}")
+        messagebox.showinfo("完了", f"PDFを保存しました：\n{save_path}", parent=self.winfo_toplevel())
 
     def on_export_csv(self):
         if not self.report_rows:
-            messagebox.showwarning("警告", "表示するデータがありません。")
+            messagebox.showwarning("警告", "表示するデータがありません。", parent=self.winfo_toplevel())
             return
 
         default_name = f"inventory_diff_report_{self.report_date.replace('-', '')}.csv"
         save_path = filedialog.asksaveasfilename(
             defaultextension=".csv", initialfile=default_name,
             filetypes=[("CSV files", "*.csv")],
-        )
+        parent=self.winfo_toplevel())
         if not save_path:
             return
 
@@ -121,7 +121,7 @@ class InventoryDiffWindow(tk.Toplevel):
                 for row in self.report_rows:
                     writer.writerow(_row_to_values(row))
         except Exception as e:
-            messagebox.showerror("エラー", f"CSV出力に失敗しました：{e}")
+            messagebox.showerror("エラー", f"CSV出力に失敗しました：{e}", parent=self.winfo_toplevel())
             return
 
-        messagebox.showinfo("完了", f"CSVを保存しました：\n{save_path}")
+        messagebox.showinfo("完了", f"CSVを保存しました：\n{save_path}", parent=self.winfo_toplevel())

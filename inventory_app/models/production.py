@@ -34,14 +34,6 @@ def init_production_table():
         con.commit()
 
 
-def get_bom_groups():
-    """BOMマスタに登録されている基板グループIDのリストを取得"""
-    with get_connection() as con:
-        cur = con.cursor()
-        cur.execute("SELECT DISTINCT group_id FROM component_bom ORDER BY group_id")
-        return [row["group_id"] for row in cur.fetchall()]
-
-
 def get_daily_production(target_date: str):
     """指定日の生産計画・実績一覧を取得"""
     init_production_table()

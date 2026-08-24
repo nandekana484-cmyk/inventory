@@ -233,12 +233,12 @@ class KittingProductionEntryWindow(tk.Toplevel):
     def search_plan(self):
         kitting_no = self.entry_kitting_no.get().strip()
         if not kitting_no:
-            messagebox.showwarning("入力エラー", "キッティングリストNo.を入力してください。")
+            messagebox.showwarning("入力エラー", "キッティングリストNo.を入力してください。", parent=self.winfo_toplevel())
             return
 
         plan = search_plan_by_kitting_no(kitting_no)
         if not plan:
-            messagebox.showerror("検索エラー", f"キッティングリストNo. {kitting_no} の計画が見つかりません。")
+            messagebox.showerror("検索エラー", f"キッティングリストNo. {kitting_no} の計画が見つかりません。", parent=self.winfo_toplevel())
             self.current_plan = None
             self.btn_register.config(state=tk.DISABLED)
             self.btn_correction.config(state=tk.DISABLED)
@@ -298,7 +298,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         実績CSV（lot_no + 製品名ベース）を取り込み、production_daily へ自動登録する。
         一致しなかった行は UnmatchedProductionWindow で一覧表示して通知する。
         """
-        file_path = filedialog.askopenfilename(filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
+        file_path = filedialog.askopenfilename(filetypes=[("CSV files", "*.csv"), ("All files", "*.*")], parent=self.winfo_toplevel())
         if not file_path:
             return
 
@@ -307,7 +307,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         try:
             result = import_production_csv(file_path, default_worker_id=worker_id)
         except Exception as e:
-            messagebox.showerror("エラー", f"実績CSV取込中にエラーが発生しました：\n{e}")
+            messagebox.showerror("エラー", f"実績CSV取込中にエラーが発生しました：\n{e}", parent=self.winfo_toplevel())
             return
 
         imported = result["imported"]
@@ -319,7 +319,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
             shown = "\n".join(warnings[:10])
             more = f"\n...ほか{len(warnings) - 10}件" if len(warnings) > 10 else ""
             msg += f"\n\n警告（{len(warnings)}件）：\n{shown}{more}"
-        messagebox.showinfo("実績CSV取込結果", msg)
+        messagebox.showinfo("実績CSV取込結果", msg, parent=self.winfo_toplevel())
 
         if unmatched:
             UnmatchedProductionWindow(self, unmatched)
@@ -337,7 +337,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         try:
             daily_qty = float(self.entry_daily_qty.get().strip())
         except ValueError:
-            messagebox.showwarning("入力エラー", "実績数には数値を入力してください。")
+            messagebox.showwarning("入力エラー", "実績数には数値を入力してください。", parent=self.winfo_toplevel())
             return
 
         worker_id = self.current_worker.get("worker_id", "SYSTEM")
@@ -346,13 +346,13 @@ class KittingProductionEntryWindow(tk.Toplevel):
         try:
             new_cumulative = register_daily_result(kitting_no, daily_qty, worker_id)
         except ValueError as e:
-            messagebox.showerror("登録エラー", str(e))
+            messagebox.showerror("登録エラー", str(e), parent=self.winfo_toplevel())
             return
 
         self.lbl_app_cum.config(text=f"{new_cumulative:.0f}")
         self.entry_daily_qty.delete(0, tk.END)
         self.load_history(kitting_no)
-        messagebox.showinfo("登録完了", f"実績を登録しました。アプリ入力累計：{new_cumulative:.0f}")
+        messagebox.showinfo("登録完了", f"実績を登録しました。アプリ入力累計：{new_cumulative:.0f}", parent=self.winfo_toplevel())
 
 
 class ActualCorrectionWindow(tk.Toplevel):
@@ -431,12 +431,12 @@ class ActualCorrectionWindow(tk.Toplevel):
         try:
             daily_qty = float(self.entry_edit_qty.get().strip())
         except ValueError:
-            messagebox.showwarning("入力エラー", "実績数には数値を入力してください。")
+            messagebox.showwarning("入力エラー", "実績数には数値を入力してください。", parent=self.winfo_toplevel())
             return
 
         update_daily_result(prod_log_id, daily_qty)
         self._after_change()
-        messagebox.showinfo("修正完了", "実績を修正しました。")
+        messagebox.showinfo("修正完了", "実績を修正しました。", parent=self.winfo_toplevel())
 
     def on_delete(self):
         sel = self.tree.selection()
@@ -444,12 +444,12 @@ class ActualCorrectionWindow(tk.Toplevel):
             return
         prod_log_id = int(sel[0])
 
-        if not messagebox.askyesno("確認", "選択した実績を削除します。よろしいですか？"):
+        if not messagebox.askyesno("確認", "選択した実績を削除します。よろしいですか？", parent=self.winfo_toplevel()):
             return
 
         delete_daily_result(prod_log_id)
         self._after_change()
-        messagebox.showinfo("削除完了", "実績を削除しました。")
+        messagebox.showinfo("削除完了", "実績を削除しました。", parent=self.winfo_toplevel())
 
     def _after_change(self):
         calculate_lot_completion(self.lot_no)

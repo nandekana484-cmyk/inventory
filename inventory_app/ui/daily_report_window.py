@@ -229,7 +229,7 @@ class DailyReportWindow(tk.Toplevel):
         try:
             self.report_rows = build_monthly_report(selected_date, selected_date)
         except Exception as e:
-            messagebox.showerror("エラー", f"集計に失敗しました：{e}")
+            messagebox.showerror("エラー", f"集計に失敗しました：{e}", parent=self.winfo_toplevel())
             return
 
         self.report_date = selected_date
@@ -245,7 +245,7 @@ class DailyReportWindow(tk.Toplevel):
 
     def on_print(self):
         if not self.report_rows:
-            messagebox.showwarning("警告", "本日の実績データがありません。")
+            messagebox.showwarning("警告", "本日の実績データがありません。", parent=self.winfo_toplevel())
             return
 
         tmp_path = os.path.join(
@@ -254,48 +254,48 @@ class DailyReportWindow(tk.Toplevel):
         try:
             build_daily_report_pdf(self.report_rows, self.report_date, tmp_path)
         except Exception as e:
-            messagebox.showerror("エラー", f"PDF生成に失敗しました：{e}")
+            messagebox.showerror("エラー", f"PDF生成に失敗しました：{e}", parent=self.winfo_toplevel())
             return
 
         try:
             os.startfile(tmp_path, "print")
         except Exception as e:
-            messagebox.showerror("エラー", f"印刷の起動に失敗しました：{e}")
+            messagebox.showerror("エラー", f"印刷の起動に失敗しました：{e}", parent=self.winfo_toplevel())
             return
 
-        messagebox.showinfo("印刷", "OS標準の印刷ダイアログを開きました。")
+        messagebox.showinfo("印刷", "OS標準の印刷ダイアログを開きました。", parent=self.winfo_toplevel())
 
     def on_export_pdf(self):
         if not self.report_rows:
-            messagebox.showwarning("警告", "本日の実績データがありません。")
+            messagebox.showwarning("警告", "本日の実績データがありません。", parent=self.winfo_toplevel())
             return
 
         default_name = f"daily_report_{self.report_date.replace('-', '')}.pdf"
         save_path = filedialog.asksaveasfilename(
             defaultextension=".pdf", initialfile=default_name,
             filetypes=[("PDF files", "*.pdf")],
-        )
+        parent=self.winfo_toplevel())
         if not save_path:
             return
 
         try:
             build_daily_report_pdf(self.report_rows, self.report_date, save_path)
         except Exception as e:
-            messagebox.showerror("エラー", f"PDF出力に失敗しました：{e}")
+            messagebox.showerror("エラー", f"PDF出力に失敗しました：{e}", parent=self.winfo_toplevel())
             return
 
-        messagebox.showinfo("完了", f"PDFを保存しました：\n{save_path}")
+        messagebox.showinfo("完了", f"PDFを保存しました：\n{save_path}", parent=self.winfo_toplevel())
 
     def on_export_csv(self):
         if not self.report_rows:
-            messagebox.showwarning("警告", "本日の実績データがありません。")
+            messagebox.showwarning("警告", "本日の実績データがありません。", parent=self.winfo_toplevel())
             return
 
         default_name = f"daily_report_{self.report_date.replace('-', '')}.csv"
         save_path = filedialog.asksaveasfilename(
             defaultextension=".csv", initialfile=default_name,
             filetypes=[("CSV files", "*.csv")],
-        )
+        parent=self.winfo_toplevel())
         if not save_path:
             return
 
@@ -306,7 +306,7 @@ class DailyReportWindow(tk.Toplevel):
                 for row in self.report_rows:
                     writer.writerow(_row_to_values(row))
         except Exception as e:
-            messagebox.showerror("エラー", f"CSV出力に失敗しました：{e}")
+            messagebox.showerror("エラー", f"CSV出力に失敗しました：{e}", parent=self.winfo_toplevel())
             return
 
-        messagebox.showinfo("完了", f"CSVを保存しました：\n{save_path}")
+        messagebox.showinfo("完了", f"CSVを保存しました：\n{save_path}", parent=self.winfo_toplevel())

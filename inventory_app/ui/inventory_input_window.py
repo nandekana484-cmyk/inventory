@@ -174,47 +174,47 @@ class InventoryInputWindow(tk.Toplevel):
     def on_upsert(self):
         part_no = self.entry_part_no.get().strip()
         if not part_no:
-            messagebox.showwarning("入力エラー", "96コードを入力してください。")
+            messagebox.showwarning("入力エラー", "96コードを入力してください。", parent=self.winfo_toplevel())
             return
 
         try:
             qty = int(self.entry_stock_qty.get().strip())
         except ValueError:
-            messagebox.showwarning("入力エラー", "在庫数量には整数を入力してください。")
+            messagebox.showwarning("入力エラー", "在庫数量には整数を入力してください。", parent=self.winfo_toplevel())
             return
 
         upsert_inventory(part_no, qty)
         self.load_inventory()
-        messagebox.showinfo("完了", f"96コード {part_no} の在庫数量を登録しました。")
+        messagebox.showinfo("完了", f"96コード {part_no} の在庫数量を登録しました。", parent=self.winfo_toplevel())
 
     def on_delete(self):
         part_no = self.entry_part_no.get().strip()
         if not part_no:
-            messagebox.showwarning("入力エラー", "削除する96コードを入力してください。")
+            messagebox.showwarning("入力エラー", "削除する96コードを入力してください。", parent=self.winfo_toplevel())
             return
 
-        if not messagebox.askyesno("確認", f"96コード {part_no} の在庫データを削除します。よろしいですか？"):
+        if not messagebox.askyesno("確認", f"96コード {part_no} の在庫データを削除します。よろしいですか？", parent=self.winfo_toplevel()):
             return
 
         delete_inventory(part_no)
         self.load_inventory()
         self.entry_part_no.delete(0, tk.END)
         self.entry_stock_qty.delete(0, tk.END)
-        messagebox.showinfo("完了", f"96コード {part_no} を削除しました。")
+        messagebox.showinfo("完了", f"96コード {part_no} を削除しました。", parent=self.winfo_toplevel())
 
     def on_csv_import(self):
         """
         在庫CSV（96コード・部品種別・部品支給区分・棚種別・在庫数・マスタCHK使用数等の13列）を
         取り込み、models.inventory.upsert_inventory_stock() へ保存する。
         """
-        file_path = filedialog.askopenfilename(filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
+        file_path = filedialog.askopenfilename(filetypes=[("CSV files", "*.csv"), ("All files", "*.*")], parent=self.winfo_toplevel())
         if not file_path:
             return
 
         try:
             result = _import_inventory_csv(file_path)
         except ValueError as e:
-            messagebox.showerror("エラー", f"在庫CSV取込中にエラーが発生しました：\n{e}")
+            messagebox.showerror("エラー", f"在庫CSV取込中にエラーが発生しました：\n{e}", parent=self.winfo_toplevel())
             return
 
         self.load_inventory()
@@ -226,4 +226,4 @@ class InventoryInputWindow(tk.Toplevel):
             more = f"\n...ほか{len(warnings) - 10}件" if len(warnings) > 10 else ""
             msg += f"\n\n{shown}{more}"
 
-        messagebox.showinfo("在庫CSV取込結果", msg)
+        messagebox.showinfo("在庫CSV取込結果", msg, parent=self.winfo_toplevel())

@@ -101,14 +101,14 @@ class KittingPlanImportWindow(tk.Toplevel):
         self.result_label.pack(side=tk.LEFT)
 
     def browse_file(self):
-        path = filedialog.askopenfilename(filetypes=[("CSV files","*.csv"),("All files","*.*")])
+        path = filedialog.askopenfilename(filetypes=[("CSV files","*.csv"),("All files","*.*")], parent=self.winfo_toplevel())
         if path:
             self.file_path_var.set(path)
 
     def on_start_import(self):
         file_path = self.file_path_var.get().strip()
         if not file_path or not os.path.isfile(file_path):
-            messagebox.showwarning("入力エラー", "CSVファイルを選択してください。")
+            messagebox.showwarning("入力エラー", "CSVファイルを選択してください。", parent=self.winfo_toplevel())
             return
         self.btn_import.config(state=tk.DISABLED)
         self.lbl_status.config(text="状態: 取込中...")
@@ -140,7 +140,7 @@ class KittingPlanImportWindow(tk.Toplevel):
 
         if not success:
             self.lbl_status.config(text="状態: エラー")
-            messagebox.showerror("取込エラー", f"CSV取込中にエラーが発生しました。\n\n{payload}")
+            messagebox.showerror("取込エラー", f"CSV取込中にエラーが発生しました。\n\n{payload}", parent=self.winfo_toplevel())
             self.result_label.config(text="取込失敗")
         else:
             batch_id = payload.get("batch_id")
@@ -148,7 +148,7 @@ class KittingPlanImportWindow(tk.Toplevel):
             filename = payload.get("file")
             self.lbl_status.config(text="状態: 完了")
             self.result_label.config(text=f"取込完了：{count}件（バッチID: {batch_id}、ファイル: {filename}）")
-            messagebox.showinfo("取込完了", f"{count}件のキッティング計画を取り込みました。")
+            messagebox.showinfo("取込完了", f"{count}件のキッティング計画を取り込みました。", parent=self.winfo_toplevel())
             self._load_batch_list(select_batch_id=batch_id)
 
         self.after(200, self._poll_result_queue)
@@ -266,20 +266,20 @@ class KittingPlanImportWindow(tk.Toplevel):
     def _soft_delete_selected(self):
         bid = self._get_selected_batch_id()
         if not bid:
-            messagebox.showwarning("警告", "削除対象のバッチを選択してください。")
+            messagebox.showwarning("警告", "削除対象のバッチを選択してください。", parent=self.winfo_toplevel())
             return
-        if not messagebox.askyesno("確認", f"バッチ {bid} を削除（ソフト）します。よろしいですか？"):
+        if not messagebox.askyesno("確認", f"バッチ {bid} を削除（ソフト）します。よろしいですか？", parent=self.winfo_toplevel()):
             return
         try:
             mark_batch_deleted(bid, deleted=True)
-            messagebox.showinfo("完了", f"バッチ {bid} を削除しました（ソフト削除）。")
+            messagebox.showinfo("完了", f"バッチ {bid} を削除しました（ソフト削除）。", parent=self.winfo_toplevel())
             self._load_batch_list()
             # 右ペインクリア
             for iid in self.tree_items.get_children():
                 self.tree_items.delete(iid)
             self.result_label.config(text=f"バッチ {bid} を削除しました。")
         except Exception as e:
-            messagebox.showerror("エラー", f"削除に失敗しました：{e}")
+            messagebox.showerror("エラー", f"削除に失敗しました：{e}", parent=self.winfo_toplevel())
 
     # ---------------- ソート機能 ----------------
     def _sort_treeview_column(self, treeview, col, reverse):

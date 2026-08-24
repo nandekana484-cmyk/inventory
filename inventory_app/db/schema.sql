@@ -17,30 +17,10 @@ CREATE TABLE IF NOT EXISTS parts (
     is_active INTEGER DEFAULT 1
 );
 
--- 完成品・基板・面・BOM定義
+-- 完成品マスタ
 CREATE TABLE IF NOT EXISTS final_products (
     product_id TEXT PRIMARY KEY,
     product_name TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS board_definitions (
-    board_id TEXT PRIMARY KEY,
-    product_id TEXT REFERENCES final_products(product_id),
-    setup_file_no TEXT,
-    required_sides INTEGER DEFAULT 1
-);
-
-CREATE TABLE IF NOT EXISTS component_groups (
-    group_id TEXT PRIMARY KEY,
-    board_id TEXT REFERENCES board_definitions(board_id),
-    side_number INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS component_bom (
-    bom_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    group_id TEXT REFERENCES component_groups(group_id),
-    code96 TEXT NOT NULL,
-    usage_qty REAL NOT NULL
 );
 
 -- ロット・生産実績
@@ -54,7 +34,7 @@ CREATE TABLE IF NOT EXISTS lots (
 CREATE TABLE IF NOT EXISTS production_daily (
     prod_log_id INTEGER PRIMARY KEY AUTOINCREMENT,
     lot_id TEXT REFERENCES lots(lot_id),
-    group_id TEXT REFERENCES component_groups(group_id),
+    group_id TEXT,
     report_date TEXT NOT NULL,
     daily_qty INTEGER NOT NULL,
     worker_id TEXT REFERENCES workers(worker_id)

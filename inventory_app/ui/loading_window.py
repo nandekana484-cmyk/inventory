@@ -24,6 +24,8 @@ class LoadingWindow(tk.Toplevel):
         self.progress.pack(fill=tk.X)
         self.progress.start(10)
 
-        self.transient(parent)
-        self.grab_set()
+        # transient()/grab_set() は destroy() 時にOSのウィンドウ所有関係により
+        # 親（main_window）が最前面に戻る副作用があるため使用しない。
+        self.focus_set()
+        self.attributes("-topmost", False)
         self.update_idletasks()

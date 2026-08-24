@@ -3,9 +3,8 @@
 在庫（PC在庫）＋仕掛（WIP）＋仕損（NG）＋理論在庫を突き合わせ、
 96コードごとの差異を算出するサービス。
 
-フェーズ2：WIP・NG展開を新BOM基盤（services.bom_service.BOMService、
-TSV → bom_master）に接続する。旧BOMロジック（component_bom /
-board_definitions / component_groups）への依存は完全に排除した。
+WIP・NG展開は BOM基盤（services.bom_service.BOMService、TSV → bom_master）
+経由で行う。
 """
 import logging
 

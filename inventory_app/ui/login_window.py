@@ -6,6 +6,7 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from models.workers import get_active_workers
 from ui.main_window import MainWindow
+from ui.worker_management_window import WorkerManagementWindow
 
 class LoginWindow(tk.Tk):
     def __init__(self):
@@ -38,10 +39,34 @@ class LoginWindow(tk.Tk):
         btn_login = ttk.Button(frame, text="ログイン", command=self.on_login)
         btn_login.pack(pady=10)
 
+        btn_worker_management = ttk.Button(
+            frame, text="作業者を管理（新規登録・編集）", command=self.open_worker_management
+        )
+        btn_worker_management.pack(pady=(0, 5))
+
+    def open_worker_management(self):
+        """
+        ログイン前でも作業者の新規登録・編集ができるようにする。
+        workers が0件（初回起動時等）でもログイン不能で行き詰まらないようにするための入口。
+        """
+        win = WorkerManagementWindow(self)
+        self.wait_window(win)
+        self.refresh_workers()
+
+    def refresh_workers(self):
+        """作業者管理画面での変更をログイン画面のコンボボックスへ反映する。"""
+        self.workers = get_active_workers()
+        self.worker_dict = {w['name']: w for w in self.workers}
+        self.worker_combobox['values'] = list(self.worker_dict.keys())
+        if self.workers:
+            self.worker_combobox.current(0)
+        else:
+            self.worker_combobox.set('')
+
     def on_login(self):
         selected_name = self.worker_combobox.get()
         if not selected_name:
-            messagebox.showwarning("警告", "作業者を選択してください。")
+            messagebox.showwarning("警告", "作業者を選択してください。", parent=self.winfo_toplevel())
             return
 
         selected_worker = self.worker_dict[selected_name]

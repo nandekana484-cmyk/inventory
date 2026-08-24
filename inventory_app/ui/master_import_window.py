@@ -2,14 +2,18 @@
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
-from services.master_import_service import import_parts_csv, import_bom_csv
+from services.master_import_service import import_parts_csv
 
 
 class MasterImportWindow(tk.Toplevel):
     """
-    部品マスタ（parts）・BOMマスタ（component_bom）をCSVからインポートする画面。
+    部品マスタ（parts）をCSVからインポートする画面。
     CSVフォーマットは未確定のため、列名ゆらぎ・追加/欠損列に耐えられる
     services.master_import_service を経由して取り込む。
+
+    BOM（新BOM基盤）のインポートは ui.parts_attributes_import_window
+    （丁取り数等の部品属性）と共有フォルダのTSV（services.bom_service）に
+    完全移行しており、本画面の対象外。
     """
     def __init__(self, parent):
         super().__init__(parent)
@@ -20,7 +24,6 @@ class MasterImportWindow(tk.Toplevel):
         notebook.pack(expand=True, fill=tk.BOTH, padx=10, pady=10)
 
         notebook.add(PartsImportTab(notebook), text=" 部品マスタインポート ")
-        notebook.add(BomImportTab(notebook), text=" BOMマスタインポート ")
 
 
 class _BaseImportTab(ttk.Frame):
@@ -55,7 +58,7 @@ class _BaseImportTab(ttk.Frame):
         self.tree.pack(expand=True, fill=tk.BOTH)
 
     def on_select_csv(self):
-        file_path = filedialog.askopenfilename(filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
+        file_path = filedialog.askopenfilename(filetypes=[("CSV files", "*.csv"), ("All files", "*.*")], parent=self.winfo_toplevel())
         if not file_path:
             return
         self.selected_csv_path = file_path
@@ -68,18 +71,18 @@ class _BaseImportTab(ttk.Frame):
             self.tree.insert("", tk.END, values=[row.get(c, "") for c in self.PREVIEW_COLS])
 
     def run_import(self):
-        """サブクラスで import_parts_csv() / import_bom_csv() 等を呼び出して結果dictを返す。"""
+        """サブクラスで import_parts_csv() 等を呼び出して結果dictを返す。"""
         raise NotImplementedError
 
     def on_import_execute(self):
         if not self.selected_csv_path:
-            messagebox.showwarning("警告", "CSVファイルを選択してください。")
+            messagebox.showwarning("警告", "CSVファイルを選択してください。", parent=self.winfo_toplevel())
             return
 
         try:
             result = self.run_import()
         except Exception as e:
-            messagebox.showerror("エラー", f"インポート処理中にエラーが発生しました：\n{e}")
+            messagebox.showerror("エラー", f"インポート処理中にエラーが発生しました：\n{e}", parent=self.winfo_toplevel())
             return
 
         self.load_preview(result["rows"])
@@ -91,7 +94,7 @@ class _BaseImportTab(ttk.Frame):
             more = f"\n...ほか{len(warnings) - 10}件" if len(warnings) > 10 else ""
             msg += f"\n\n警告（{len(warnings)}件）：\n{shown}{more}"
 
-        messagebox.showinfo("インポート結果", msg)
+        messagebox.showinfo("インポート結果", msg, parent=self.winfo_toplevel())
 
 
 class PartsImportTab(_BaseImportTab):
@@ -100,11 +103,3 @@ class PartsImportTab(_BaseImportTab):
 
     def run_import(self):
         return import_parts_csv(self.selected_csv_path)
-
-
-class BomImportTab(_BaseImportTab):
-    PREVIEW_COLS = ("file_no", "part_no", "qty")
-    PREVIEW_HEADERS = {"file_no": "ファイルNo", "part_no": "部品番号", "qty": "使用数量"}
-
-    def run_import(self):
-        return import_bom_csv(self.selected_csv_path)

@@ -1,10 +1,6 @@
 # services/bom_file_service.py
 """
-新BOM基盤（フェーズ1）：共有フォルダ上のBOM TSVファイルを走査・読み込みするための
-ファイルアクセス層。
-
-旧BOMロジック（component_bom / board_definitions / component_groups）とは
-完全に独立した新規実装であり、それらのテーブル・関数には一切依存しない。
+共有フォルダ上のBOM TSVファイルを走査・読み込みするためのファイルアクセス層。
 
 file_no は共有フォルダ内のTSVファイル名（拡張子を除いたファイル名）に対応する、
 という前提でインデックスを構築する。

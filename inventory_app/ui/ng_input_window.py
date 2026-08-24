@@ -80,22 +80,22 @@ class NgInputWindow(tk.Toplevel):
     def on_expand(self):
         kitting_no = self.entry_kitting_no.get().strip()
         if not kitting_no:
-            messagebox.showwarning("入力エラー", "キッティングリストNo.を入力してください。")
+            messagebox.showwarning("入力エラー", "キッティングリストNo.を入力してください。", parent=self.winfo_toplevel())
             return
 
         try:
             ng_qty = float(self.entry_ng_qty.get().strip())
         except ValueError:
-            messagebox.showwarning("入力エラー", "NG数量には数値を入力してください。")
+            messagebox.showwarning("入力エラー", "NG数量には数値を入力してください。", parent=self.winfo_toplevel())
             return
 
         if ng_qty <= 0:
-            messagebox.showwarning("入力エラー", "NG数量には0より大きい数値を入力してください。")
+            messagebox.showwarning("入力エラー", "NG数量には0より大きい数値を入力してください。", parent=self.winfo_toplevel())
             return
 
         plan = search_plan_by_kitting_no(kitting_no)
         if not plan:
-            messagebox.showerror("検索エラー", f"キッティングリストNo. {kitting_no} の計画が見つかりません。")
+            messagebox.showerror("検索エラー", f"キッティングリストNo. {kitting_no} の計画が見つかりません。", parent=self.winfo_toplevel())
             self.current_plan = None
             self.btn_register.config(state=tk.DISABLED)
             return
@@ -107,10 +107,10 @@ class NgInputWindow(tk.Toplevel):
             messagebox.showerror(
                 "エラー",
                 f"生産面（production_side）を数値として解釈できません: {plan['production_side']!r}",
-            )
+            parent=self.winfo_toplevel())
             return
         if side not in (1, 2):
-            messagebox.showerror("エラー", f"生産面（production_side）は1または2である必要があります（値: {side}）。")
+            messagebox.showerror("エラー", f"生産面（production_side）は1または2である必要があります（値: {side}）。", parent=self.winfo_toplevel())
             return
 
         try:
@@ -121,10 +121,10 @@ class NgInputWindow(tk.Toplevel):
                 "lot_no": plan.get("lot_no"),
             })
         except FileNotFoundError as e:
-            messagebox.showerror("BOMエラー", f"BOM TSVが見つかりません：\n{e}")
+            messagebox.showerror("BOMエラー", f"BOM TSVが見つかりません：\n{e}", parent=self.winfo_toplevel())
             return
         except ValueError as e:
-            messagebox.showerror("BOMエラー", f"BOM展開に失敗しました：\n{e}")
+            messagebox.showerror("BOMエラー", f"BOM展開に失敗しました：\n{e}", parent=self.winfo_toplevel())
             return
 
         self.current_plan = {
@@ -143,7 +143,7 @@ class NgInputWindow(tk.Toplevel):
             messagebox.showwarning(
                 "警告",
                 f"file_no「{file_no}」・生産面{side}のBOMが登録されていない、または対象部品がありません。",
-            )
+            parent=self.winfo_toplevel())
         self.btn_register.config(state=tk.NORMAL if parts else tk.DISABLED)
 
     def load_parts_tree(self, parts, ng_qty):
@@ -161,7 +161,7 @@ class NgInputWindow(tk.Toplevel):
 
         sel = self.tree.selection()
         if not sel:
-            messagebox.showwarning("入力エラー", "仕損として登録する部品を選択してください。")
+            messagebox.showwarning("入力エラー", "仕損として登録する部品を選択してください。", parent=self.winfo_toplevel())
             return
 
         report_date = datetime.now().strftime("%Y-%m-%d")
@@ -180,4 +180,4 @@ class NgInputWindow(tk.Toplevel):
             save_scrap_record(kitting_list_no, file_no, side, part_no, consumed_qty, report_date)
             registered += 1
 
-        messagebox.showinfo("登録完了", f"{registered}件の仕損実績を登録しました（{report_date}）。")
+        messagebox.showinfo("登録完了", f"{registered}件の仕損実績を登録しました（{report_date}）。", parent=self.winfo_toplevel())

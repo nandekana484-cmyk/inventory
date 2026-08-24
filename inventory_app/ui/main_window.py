@@ -13,6 +13,8 @@ from ui.theoretical_inventory_import_window import TheoreticalInventoryImportWin
 from ui.inventory_diff_window import InventoryDiffWindow
 from ui.master_import_window import MasterImportWindow
 from ui.ng_input_window import NgInputWindow
+from ui.parts_attributes_import_window import PartsAttributesImportWindow
+from ui.worker_management_window import WorkerManagementWindow
 
 
 class MainWindow(tk.Tk):
@@ -21,6 +23,10 @@ class MainWindow(tk.Tk):
         self.current_worker = current_worker
         self.title("部品在庫管理アプリ - メインメニュー")
         self.geometry("600x660")
+
+        # 過去に topmost=True が設定されていた場合の後遺症を防ぐため明示的に無効化する。
+        # main_window（root）はフォーカス制御（lift/focus_force/grab_set等）を一切行わない。
+        self.attributes("-topmost", False)
 
         # データベース選択領域（最上部）
         db_select_frame = ttk.Labelframe(self, text="データベース選択", padding=10)
@@ -102,6 +108,16 @@ class MainWindow(tk.Tk):
         )
         btn_ng_input.pack(fill=tk.X, pady=5)
 
+        btn_parts_attributes_import = ttk.Button(
+            body_frame, text="13. 部品属性（丁取り数）インポート", command=self.open_parts_attributes_import
+        )
+        btn_parts_attributes_import.pack(fill=tk.X, pady=5)
+
+        btn_worker_management = ttk.Button(
+            body_frame, text="14. 作業者管理", command=self.open_worker_management
+        )
+        btn_worker_management.pack(fill=tk.X, pady=5)
+
     def open_master_management(self):
         MasterManagementWindow(self, self.current_worker)
 
@@ -132,6 +148,12 @@ class MainWindow(tk.Tk):
     def open_ng_input(self):
         NgInputWindow(self, self.current_worker)
 
+    def open_parts_attributes_import(self):
+        PartsAttributesImportWindow(self)
+
+    def open_worker_management(self):
+        WorkerManagementWindow(self)
+
     def _load_db_folders(self):
         db_root = os.path.join(config.BASE_DIR, "db")
         folders = []
@@ -147,28 +169,28 @@ class MainWindow(tk.Tk):
     def on_switch_database(self):
         folder = self.db_folder_var.get().strip()
         if not folder:
-            messagebox.showwarning("警告", "切り替え先のフォルダを選択してください。")
+            messagebox.showwarning("警告", "切り替え先のフォルダを選択してください。", parent=self.winfo_toplevel())
             return
 
         config.DB_PATH = os.path.join(config.BASE_DIR, "db", folder, "inventory.db")
-        messagebox.showinfo("完了", "データベースを切り替えました。")
+        messagebox.showinfo("完了", "データベースを切り替えました。", parent=self.winfo_toplevel())
 
     def on_create_database(self):
         folder = self.new_db_folder_var.get().strip()
         if not folder:
-            messagebox.showwarning("警告", "作成するフォルダ名を入力してください。")
+            messagebox.showwarning("警告", "作成するフォルダ名を入力してください。", parent=self.winfo_toplevel())
             return
 
         new_db_path = os.path.join(config.BASE_DIR, "db", folder, "inventory.db")
         if os.path.exists(new_db_path):
-            messagebox.showwarning("警告", f"フォルダ「{folder}」のデータベースは既に存在します。")
+            messagebox.showwarning("警告", f"フォルダ「{folder}」のデータベースは既に存在します。", parent=self.winfo_toplevel())
             return
 
         init_database_at(new_db_path)
         config.DB_PATH = new_db_path
         init_kitting_plan_tables()
 
-        messagebox.showinfo("完了", "新しいデータベースを作成しました。")
+        messagebox.showinfo("完了", "新しいデータベースを作成しました。", parent=self.winfo_toplevel())
         self._load_db_folders()
         self.db_folder_var.set(folder)
         self.new_db_folder_var.set("")
