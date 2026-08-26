@@ -172,7 +172,7 @@ class MainWindow(tk.Tk):
             messagebox.showwarning("警告", "切り替え先のフォルダを選択してください。", parent=self.winfo_toplevel())
             return
 
-        config.DB_PATH = os.path.join(config.BASE_DIR, "db", folder, "inventory.db")
+        config.set_db_path(os.path.join(config.BASE_DIR, "db", folder, "inventory.db"))
         messagebox.showinfo("完了", "データベースを切り替えました。", parent=self.winfo_toplevel())
 
     def on_create_database(self):
@@ -187,7 +187,7 @@ class MainWindow(tk.Tk):
             return
 
         init_database_at(new_db_path)
-        config.DB_PATH = new_db_path
+        config.set_db_path(new_db_path)
         init_kitting_plan_tables()
 
         messagebox.showinfo("完了", "新しいデータベースを作成しました。", parent=self.winfo_toplevel())

@@ -4,7 +4,7 @@ import queue
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from services.kitting_import_service import import_kitting_plan_csv
-from config import DB_PATH
+import config
 import sqlite3
 import os
 
@@ -155,7 +155,7 @@ class KittingPlanImportWindow(tk.Toplevel):
 
     # ---------------- DBユーティリティ ----------------
     def _get_db_connection(self):
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(config.DB_PATH)
         conn.row_factory = sqlite3.Row
         return conn
 
