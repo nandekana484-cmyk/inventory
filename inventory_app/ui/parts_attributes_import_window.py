@@ -4,7 +4,9 @@ import csv
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
-from models.parts_attributes import list_parts_attributes, upsert_parts_attributes
+from models.parts_attributes import (
+    list_parts_attributes, upsert_parts_attributes, delete_parts_attributes_not_in,
+)
 
 # エンコーディング自動判定の候補（この順で試す）
 _ENCODINGS_TO_TRY = ["utf-8-sig", "utf-8", "cp932"]
@@ -39,50 +41,79 @@ def _import_parts_attributes_csv(file_path):
     多数列を含む既存フォーマット）を解析し、必要5列のみ抽出して
     models.parts_attributes.upsert_parts_attributes() へ保存する。
 
+    CSVをマスタとした差分同期：全行のupsertが正常に完了した後、今回のCSVに
+    含まれていた part_no 一覧と現在のテーブル内容を比較し、CSVに存在しない
+    既存 part_no を models.parts_attributes.delete_parts_attributes_not_in() で
+    削除する。削除は「全行upsertが正常に完了した後」にのみ実行するため、CSV解析中に
+    例外が発生した場合は削除は行われない。
+
+    事故防止ガード：CSVにデータ行が1件も無い場合（空ファイル・ヘッダーのみ等）、
+    または有効な96コードを含む行が1件も無い場合は、全件削除という事故を避けるため
+    同期処理そのものを中断し、upsert・削除のいずれも行わない。
+
     必須列：96コード（欠けている・空の行は警告してスキップ）
     任意列：丁取り数・部品種別・部品支給区分・フル数量
       （丁取り数・フル数量が数値変換できない場合は警告のうえNoneのまま保存する）
 
-    戻り値：{"imported": 成功件数, "warnings": 警告メッセージのリスト}
+    戻り値：{"imported": 成功件数(upsert件数), "deleted": 削除件数,
+             "warnings": 警告メッセージのリスト}
     """
-    imported = 0
     warnings = []
 
     with _open_csv_with_fallback(file_path) as f:
         reader = csv.DictReader(f)
-        for i, row in enumerate(reader, start=2):  # 1行目はヘッダーのためCSV上の行番号に合わせる
-            part_no = (row.get(COL_PART_NO) or "").strip()
-            if not part_no:
-                warnings.append(f"{i}行目: {COL_PART_NO}が空のためスキップしました。")
-                continue
+        rows = list(reader)
 
-            teitori_raw = (row.get(COL_TEITORI) or "").strip()
-            teitori = None
-            if teitori_raw:
-                try:
-                    teitori = int(float(teitori_raw))
-                except ValueError:
-                    warnings.append(
-                        f"{i}行目: {COL_TEITORI}「{teitori_raw}」を数値に変換できないため未設定のまま保存しました。"
-                    )
+    if not rows:
+        return {
+            "imported": 0,
+            "deleted": 0,
+            "warnings": ["CSVにデータ行が1件も無いため、インポートを中断しました（削除も行っていません）。"],
+        }
 
-            part_type = (row.get(COL_PART_TYPE) or "").strip() or None
-            supply_type = (row.get(COL_SUPPLY_TYPE) or "").strip() or None
+    imported = 0
+    seen_part_nos = []
 
-            full_qty_raw = (row.get(COL_FULL_QTY) or "").strip()
-            full_qty = None
-            if full_qty_raw:
-                try:
-                    full_qty = int(float(full_qty_raw))
-                except ValueError:
-                    warnings.append(
-                        f"{i}行目: {COL_FULL_QTY}「{full_qty_raw}」を数値に変換できないため未設定のまま保存しました。"
-                    )
+    for i, row in enumerate(rows, start=2):  # 1行目はヘッダーのためCSV上の行番号に合わせる
+        part_no = (row.get(COL_PART_NO) or "").strip()
+        if not part_no:
+            warnings.append(f"{i}行目: {COL_PART_NO}が空のためスキップしました。")
+            continue
 
-            upsert_parts_attributes(part_no, teitori, part_type, supply_type, full_qty)
-            imported += 1
+        teitori_raw = (row.get(COL_TEITORI) or "").strip()
+        teitori = None
+        if teitori_raw:
+            try:
+                teitori = int(float(teitori_raw))
+            except ValueError:
+                warnings.append(
+                    f"{i}行目: {COL_TEITORI}「{teitori_raw}」を数値に変換できないため未設定のまま保存しました。"
+                )
 
-    return {"imported": imported, "warnings": warnings}
+        part_type = (row.get(COL_PART_TYPE) or "").strip() or None
+        supply_type = (row.get(COL_SUPPLY_TYPE) or "").strip() or None
+
+        full_qty_raw = (row.get(COL_FULL_QTY) or "").strip()
+        full_qty = None
+        if full_qty_raw:
+            try:
+                full_qty = int(float(full_qty_raw))
+            except ValueError:
+                warnings.append(
+                    f"{i}行目: {COL_FULL_QTY}「{full_qty_raw}」を数値に変換できないため未設定のまま保存しました。"
+                )
+
+        upsert_parts_attributes(part_no, teitori, part_type, supply_type, full_qty)
+        imported += 1
+        seen_part_nos.append(part_no)
+
+    if not seen_part_nos:
+        warnings.append("有効な96コードを含む行が1件も無かったため、削除は行っていません。")
+        return {"imported": imported, "deleted": 0, "warnings": warnings}
+
+    deleted_part_nos = delete_parts_attributes_not_in(seen_part_nos)
+
+    return {"imported": imported, "deleted": len(deleted_part_nos), "warnings": warnings}
 
 
 class PartsAttributesImportWindow(tk.Toplevel):
@@ -163,7 +194,7 @@ class PartsAttributesImportWindow(tk.Toplevel):
 
         self.load_parts_attributes()
 
-        msg = f"成功件数：{result['imported']}件\n警告件数：{len(result['warnings'])}件"
+        msg = f"成功件数：{result['imported']}件\n警告件数：{len(result['warnings'])}件\n削除件数：{result.get('deleted', 0)}件"
         warnings = result["warnings"]
         if warnings:
             shown = "\n".join(warnings[:10])

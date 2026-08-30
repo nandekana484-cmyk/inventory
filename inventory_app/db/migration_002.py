@@ -1,7 +1,12 @@
 # db/migration_002.py
 import sqlite3
+import sys
+from pathlib import Path
 
-DB_PATH = r"C:\work\inventory\inventory_app\db\inventory.db"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from config import DB_PATH
 
 def upgrade():
     conn = sqlite3.connect(DB_PATH)

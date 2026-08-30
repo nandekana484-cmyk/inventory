@@ -9,6 +9,7 @@ import sqlite3
 import os
 
 from models.kitting_plan import list_plan_batches, mark_batch_deleted
+from ui.loading_window import LoadingWindow
 
 class KittingPlanImportWindow(tk.Toplevel):
     def __init__(self, parent, current_worker):
@@ -18,6 +19,7 @@ class KittingPlanImportWindow(tk.Toplevel):
         self.geometry("1300x720")
 
         self._result_queue = queue.Queue()
+        self._loading_window = None
 
         self.create_widgets()
         self._load_batch_list()
@@ -37,8 +39,6 @@ class KittingPlanImportWindow(tk.Toplevel):
         self.btn_import.pack(side=tk.LEFT, padx=(8,5))
         self.lbl_status = ttk.Label(top_frame, text="状態: 待機中")
         self.lbl_status.pack(side=tk.LEFT, padx=(8,0))
-        self.progress = ttk.Progressbar(top_frame, mode="indeterminate", length=200)
-        self.progress.pack(side=tk.RIGHT)
 
         # 中央の左右ペイン（PanedWindow）
         middle = ttk.Panedwindow(frame, orient=tk.HORIZONTAL)
@@ -113,7 +113,7 @@ class KittingPlanImportWindow(tk.Toplevel):
         self.btn_import.config(state=tk.DISABLED)
         self.lbl_status.config(text="状態: 取込中...")
         self.result_label.config(text="")
-        self.progress.start(10)
+        self._loading_window = LoadingWindow(self, message="キッティング計画CSVを取り込んでいます…")
         worker_id = self.current_worker.get("worker_id", "SYSTEM")
         t = threading.Thread(target=self._run_import_in_thread, args=(file_path, worker_id), daemon=True)
         t.start()
@@ -135,7 +135,9 @@ class KittingPlanImportWindow(tk.Toplevel):
             return
 
         success, payload = result
-        self.progress.stop()
+        if self._loading_window is not None:
+            self._loading_window.destroy()
+            self._loading_window = None
         self.btn_import.config(state=tk.NORMAL)
 
         if not success:
@@ -268,11 +270,22 @@ class KittingPlanImportWindow(tk.Toplevel):
         if not bid:
             messagebox.showwarning("警告", "削除対象のバッチを選択してください。", parent=self.winfo_toplevel())
             return
-        if not messagebox.askyesno("確認", f"バッチ {bid} を削除（ソフト）します。よろしいですか？", parent=self.winfo_toplevel()):
+        if not messagebox.askyesno(
+            "確認",
+            f"バッチ {bid} を削除（ソフト）します。\n"
+            "このバッチに含まれるキッティング計画も無効化され、生産実績入力画面の一覧から消えます。\n"
+            "よろしいですか？",
+            parent=self.winfo_toplevel(),
+        ):
             return
         try:
             mark_batch_deleted(bid, deleted=True)
-            messagebox.showinfo("完了", f"バッチ {bid} を削除しました（ソフト削除）。", parent=self.winfo_toplevel())
+            messagebox.showinfo(
+                "完了",
+                f"バッチ {bid} を削除しました（ソフト削除）。\n"
+                "このバッチに含まれるキッティング計画も無効化されました。",
+                parent=self.winfo_toplevel(),
+            )
             self._load_batch_list()
             # 右ペインクリア
             for iid in self.tree_items.get_children():

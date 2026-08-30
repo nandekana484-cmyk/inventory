@@ -55,6 +55,14 @@ def init_database_at(db_path: str):
             except sqlite3.OperationalError:
                 pass
 
+        # get_app_cumulative_qty() の WHERE kitting_list_no = ? 用（db/migration_007と同内容。
+        # kitting_list_no列は上のALTER TABLEで追加されるため、schema.sql単体では作成できず
+        # ここで作成する）
+        con.execute("""
+            CREATE INDEX IF NOT EXISTS idx_production_daily_kitting_list_no
+            ON production_daily(kitting_list_no)
+        """)
+
         con.commit()
     finally:
         con.close()

@@ -27,10 +27,12 @@ REPORT_HEADERS = ["No", "ファイルNo", "基板名", "ロットNo", "生産数
 
 
 def _row_to_values(row):
+    # 数量項目は生産実績入力画面の計画一覧（load_plan_list()）と同様に整数表示に揃える
+    # （DB上はREAL/INTEGER混在のため、無加工だと"100.0"のように小数点が出てしまう）。
     return [
         row["seq"], row["file_no"], row["board_name"], row["lot_no"],
-        row["daily_qty"], row["app_cumulative_qty"], row["order_qty"],
-        row["lot_completed"], row["surplus_qty"], row["lot_remaining"],
+        f"{row['daily_qty']:.0f}", f"{row['app_cumulative_qty']:.0f}", f"{row['order_qty']:.0f}",
+        f"{row['lot_completed']:.0f}", f"{row['surplus_qty']:.0f}", f"{row['lot_remaining']:.0f}",
     ]
 
 
@@ -211,6 +213,7 @@ class DailyReportWindow(tk.Toplevel):
             self.tree.heading(c, text=headers[c])
             self.tree.column(c, width=widths[c], anchor=tk.W if c in left_aligned else tk.E)
         self.tree.pack(expand=True, fill=tk.BOTH)
+        self.tree.bind("<Double-1>", self.on_row_double_click)
 
         for row in self.report_rows:
             self.tree.insert("", tk.END, values=_row_to_values(row))
@@ -235,6 +238,41 @@ class DailyReportWindow(tk.Toplevel):
         self.report_date = selected_date
         self.title(f"日報出力（{self.report_date}）")
 
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        for row in self.report_rows:
+            self.tree.insert("", tk.END, values=_row_to_values(row))
+
+    def on_row_double_click(self, event):
+        """
+        選択行に対応する実績（kitting_list_no・lot_no）を実績修正ウインドウ
+        （ui.kitting_production_entry.ActualCorrectionWindow）で開く。
+        完了済み（生産実績入力画面の一覧からは除外済み）の計画でも、
+        production_daily に実績が残っている限りここから修正できる。
+        循環import回避のため、ここで都度importする。
+        """
+        sel = self.tree.selection()
+        if not sel:
+            return
+        index = self.tree.index(sel[0])
+        if index >= len(self.report_rows):
+            return
+        row = self.report_rows[index]
+        kitting_list_no = row["kitting_list_no"]
+        if not kitting_list_no:
+            return
+
+        from ui.kitting_production_entry import ActualCorrectionWindow
+        ActualCorrectionWindow(
+            self,
+            kitting_list_no=kitting_list_no,
+            lot_no=row["lot_no"],
+            on_updated=self.refresh_report,
+        )
+
+    def refresh_report(self):
+        """実績修正後に日報の一覧を再取得して表示を更新する。"""
+        self.report_rows = build_monthly_report(self.report_date, self.report_date)
         for item in self.tree.get_children():
             self.tree.delete(item)
         for row in self.report_rows:

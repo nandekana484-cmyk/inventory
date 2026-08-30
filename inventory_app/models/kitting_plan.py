@@ -1,8 +1,9 @@
 import os
 import sqlite3
+from datetime import datetime
 
 import config
-from models.production import get_app_cumulative_qty
+from models.production import get_app_cumulative_qty_bulk
 
 
 def get_connection():
@@ -64,6 +65,13 @@ def init_kitting_plan_tables():
             WHERE COALESCE(is_active, 1) = 1
         """)
 
+        # list_plan_items_by_lot() の WHERE lot_no = ? 用（db/migration_007と同内容。
+        # 新規DB作成時にも反映されるようここでも作成する）
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_kitting_plan_items_lot_no
+            ON kitting_plan_items(lot_no)
+        """)
+
         con.commit()
 
 
@@ -102,12 +110,74 @@ def find_plan_item_by_kitting_no(kitting_list_no: str, lot_no: str = None):
 
 
 def list_plan_items_by_lot(lot_no: str):
+    """
+    唯一の呼び出し元はservices.production_service.calculate_lot_completion()
+    （調査により確認済み、他に呼び出し箇所なし）。従来is_activeを条件に含んで
+    おらず、旧バージョンの行も混ざって返っていたため、is_active=1を追加した
+    （calculate_lot_completion()がkitting_list_no/lot_noの取り違え問題と合わせて
+    修正されるタイミングで、影響範囲が1箇所のみと確認できたため合わせて対応）。
+    """
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
-            SELECT * FROM kitting_plan_items WHERE lot_no = ? AND delete_flag = 0
+            SELECT * FROM kitting_plan_items
+            WHERE lot_no = ? AND delete_flag = 0 AND COALESCE(is_active, 1) = 1
         """, (lot_no,))
         return [dict(r) for r in cur.fetchall()]
+
+
+def find_opposite_side_plan(lot_no: str, setup_file_no: str, current_side,
+                              current_plan_start_datetime: str = None):
+    """
+    同一lot_no・同一setup_file_noで、current_sideの反対のproduction_sideを持つ
+    現在アクティブな計画（COALESCE(is_active,1)=1）を1件検索する。
+
+    0件（片面のみの計画）：Noneを返す。
+    1件：そのまま返す。
+    複数件（同一lot_no・setup_file_no・反対sideに対して、日付違いの複数バッチが
+    アクティブな場合。実データで確認済みのケース）：current_plan_start_datetime
+    （選択中の計画のplan_start_datetime、"YYYY/MM/DD HH:MM:SS"形式）に最も近い
+    plan_start_datetimeを持つ行を返す。current_plan_start_datetime が省略された、
+    またはパース失敗した場合は、plan_start_datetime昇順で最初の行を返す
+    （近さの基準がないため）。
+    """
+    opposite_side = "2" if str(current_side).strip() == "1" else "1"
+
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.execute("""
+            SELECT * FROM kitting_plan_items
+            WHERE COALESCE(lot_no, '') = ?
+              AND COALESCE(setup_file_no, '') = ?
+              AND COALESCE(production_side, '') = ?
+              AND COALESCE(is_active, 1) = 1
+        """, (lot_no or "", setup_file_no or "", opposite_side))
+        candidates = [dict(row) for row in cur.fetchall()]
+
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+
+    def parse_dt(value):
+        try:
+            return datetime.strptime(value, "%Y/%m/%d %H:%M:%S")
+        except (TypeError, ValueError):
+            return None
+
+    reference = parse_dt(current_plan_start_datetime)
+    if reference is None:
+        candidates.sort(key=lambda item: item.get("plan_start_datetime") or "")
+        return candidates[0]
+
+    def diff_seconds(item):
+        dt = parse_dt(item.get("plan_start_datetime"))
+        if dt is None:
+            return float("inf")
+        return abs((dt - reference).total_seconds())
+
+    candidates.sort(key=diff_seconds)
+    return candidates[0]
 
 
 def list_plan_batches(include_deleted: bool = False):
@@ -153,7 +223,24 @@ def list_plan_batches(include_deleted: bool = False):
 
 def mark_batch_deleted(plan_batch_id: int, deleted: bool = True):
     """
-    バッチのソフト削除または復活
+    バッチのソフト削除または復活。
+
+    kitting_plan_batches.delete_flag の更新だけでは、list_active_plan_items() 等
+    kitting_plan_items.is_active しか見ない一覧取得関数に削除が一切反映されないため、
+    該当バッチに属する kitting_plan_items 行の is_active も同一トランザクションで
+    連動して更新する（片方だけ成功する中途半端な状態を避けるため、1つの
+    コネクション・1つのcommitで両方を確定させる）。
+
+    - deleted=True（削除）：このバッチに属し、現在アクティブな行（is_active=1）を
+      is_active=0 にする。
+    - deleted=False（復元）：単純に is_active=1 へ戻すことはしない。
+      同一 (kitting_list_no, lot_no) に対して、他の理由（create_plan_version() に
+      よる新バージョンの作成）で既に別の行が is_active=1 になっている場合、
+      無条件に戻すとその新しい行と共存して重複したアクティブ行が生まれてしまう
+      （UNIQUE INDEX uq_kitting_plan_items_active_kitting_lot が防ぐのは
+      (kitting_list_no, lot_no) が完全一致する場合のみ）。
+      そのため、このバッチに属し・現在is_active=0で・かつ同一(kitting_list_no, lot_no)
+      に他のアクティブ行が存在しない行のみを復元対象とする。
     """
     with get_connection() as con:
         cur = con.cursor()
@@ -166,6 +253,28 @@ def mark_batch_deleted(plan_batch_id: int, deleted: bool = True):
                 pass
         cur.execute("UPDATE kitting_plan_batches SET delete_flag = ? WHERE plan_batch_id = ?",
                     (1 if deleted else 0, plan_batch_id))
+
+        if deleted:
+            cur.execute("""
+                UPDATE kitting_plan_items
+                SET is_active = 0, updated_at = datetime('now', 'localtime')
+                WHERE plan_batch_id = ?
+                  AND COALESCE(is_active, 1) = 1
+            """, (plan_batch_id,))
+        else:
+            cur.execute("""
+                UPDATE kitting_plan_items
+                SET is_active = 1, updated_at = datetime('now', 'localtime')
+                WHERE plan_batch_id = ?
+                  AND COALESCE(is_active, 1) = 0
+                  AND NOT EXISTS (
+                      SELECT 1 FROM kitting_plan_items AS other
+                      WHERE other.kitting_list_no = kitting_plan_items.kitting_list_no
+                        AND COALESCE(other.lot_no, '') = COALESCE(kitting_plan_items.lot_no, '')
+                        AND COALESCE(other.is_active, 1) = 1
+                  )
+            """, (plan_batch_id,))
+
         con.commit()
 
 
@@ -224,9 +333,66 @@ def get_latest_plan(kitting_list_no: str, lot_no: str = None):
     return get_latest_plan_by_kitting_no(kitting_list_no, lot_no)
 
 
-def list_active_plan_items(kitting_list_no: str = None, lot_no: str = None):
+def list_active_plan_items_by_kitting_no(kitting_list_no: str) -> list:
+    """
+    指定kitting_list_noにヒットする、現在activeな計画行を全て返す（lot_noによる
+    絞り込みなし）。実DBで同一kitting_list_noが複数の異なるlot_noにまたがって
+    存在するケースが478件確認されており、services.production_service.
+    _resolve_plan_item()がlot_no省略で呼ばれた際に「候補が複数あるかどうか」
+    （＝ユーザーへの選択ダイアログが必要かどうか）を判定するために使う。
+
+    create_plan_version()は新バージョンを作る際に同一(kitting_list_no, lot_no)の
+    旧アクティブ版を必ずis_active=0にしてから登録するため、lot_no単位で
+    is_active=1の行は高々1件しか存在しない。そのため本関数は
+    「WHERE kitting_list_no=? AND is_active=1」だけで、lot_noごとに1行ずつ
+    （＝候補一覧として過不足のない状態）を返せる。
+
+    is_active列が存在しない旧DB環境（get_latest_plan_by_kitting_no()と同様の
+    分岐）では、is_active判定を行わずkitting_list_no一致行を全て返す
+    （バージョン管理が無い環境なので、そのまま「現在の状態」とみなす）。
+    """
+    if not kitting_list_no:
+        return []
+
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.execute("PRAGMA table_info(kitting_plan_items)")
+        cols = [c[1] for c in cur.fetchall()]
+
+        if "is_active" in cols:
+            cur.execute("""
+                SELECT * FROM kitting_plan_items
+                WHERE kitting_list_no = ?
+                  AND COALESCE(is_active, 1) = 1
+                ORDER BY COALESCE(lot_no, '')
+            """, (kitting_list_no,))
+        else:
+            cur.execute("""
+                SELECT * FROM kitting_plan_items
+                WHERE kitting_list_no = ?
+                ORDER BY COALESCE(lot_no, '')
+            """, (kitting_list_no,))
+
+        return [dict(row) for row in cur.fetchall()]
+
+
+def list_active_plan_items(kitting_list_no: str = None, lot_no: str = None,
+                             include_completed: bool = False):
     """
     実績入力用：現在アクティブな計画を一覧で返す（検索は部分一致）
+
+    戻り値の各要素（kitting_plan_itemsの列 + "app_cumulative_qty"）には、
+    完了判定に使ったアプリ内累計値をそのまま含める。呼び出し元（表示用に同じ値を
+    再度計算しがちな箇所）はこの値を再利用し、get_app_cumulative_qty()を
+    重複して呼ばないこと。
+
+    include_completed：Trueの場合、完了済み（実績が発注数に到達済み）判定による
+    除外（actual_qty >= order_qty でのcontinue）をスキップし、完了済み計画も
+    含めて返す。デフォルトはFalse（現状維持）。
+    find_matching_plan_items()（実績CSV自動取込用）はこの引数を指定せず、常に
+    デフォルト（完了済み除外）のまま呼び出すこと（完了済み・未完了が同一lot_no/
+    製品名で複数存在する場合に一意特定できなくなり、自動取込のマッチングが
+    壊れるため）。
     """
     sql = """
         SELECT *
@@ -249,6 +415,18 @@ def list_active_plan_items(kitting_list_no: str = None, lot_no: str = None):
         cur.execute(sql, params)
         plan_items = [dict(row) for row in cur.fetchall()]
 
+        # get_app_cumulative_qty()を件数分ループ呼び出しする代わりに、対象の
+        # (kitting_list_no, lot_no)の組を先に集めて1回（〜数回）のクエリでまとめて
+        # 取得する。同じコネクションを使い回し、追加のconnect()を発生させない。
+        #
+        # kitting_list_noだけでなくlot_noも組にして渡す理由：実DBで同一
+        # kitting_list_noが複数の異なるlot_noにまたがって存在するケースが478件
+        # 確認されており（別々の基板・別々の発注数の計画が同じkitting_list_noを
+        # 共有している）、kitting_list_noだけで集計すると別ロットの実績まで
+        # 巻き込んで合算してしまう（実データで完成数の取り違えを確認済み）。
+        kitting_list_no_lot_pairs = [(item["kitting_list_no"], item["lot_no"]) for item in plan_items]
+        cumulative_by_pair = get_app_cumulative_qty_bulk(kitting_list_no_lot_pairs, con=con)
+
     # (lot_no, setup_file_no) 単位で「2回目」計画が存在するかどうかを事前に把握する
     second_side_keys = set()
     for item in plan_items:
@@ -258,8 +436,8 @@ def list_active_plan_items(kitting_list_no: str = None, lot_no: str = None):
     result = []
     for item in plan_items:
         order_qty = item.get("order_qty") or 0
-        actual_qty = get_app_cumulative_qty(item["kitting_list_no"])
-        if actual_qty >= order_qty:
+        actual_qty = cumulative_by_pair[(item["kitting_list_no"], item["lot_no"])]
+        if not include_completed and actual_qty >= order_qty:
             # 実績が発注数に到達済み＝完了扱いのため一覧から除外
             continue
 
@@ -269,6 +447,7 @@ def list_active_plan_items(kitting_list_no: str = None, lot_no: str = None):
             # 同一ロット・file_no に2回目計画がある場合、1回目は完成品ではないため除外
             continue
 
+        item["app_cumulative_qty"] = actual_qty
         result.append(item)
 
     return result
@@ -418,9 +597,7 @@ def find_matching_plan_items(lot_no: str, product_name_normalized: str):
     #      board_name 側を normalize_product_name() で正規化した上での比較は
     #      「完全一致」と「正規化一致」が実質的に同一の判定になる。
     #   3. あいまい一致（部分一致など）：
-    #      どこまで許容するかは仕様未確定のため決め打ちしない。
-    #      TODO：あいまい一致の仕様が確定した場合、ここに追加の候補抽出ロジックを実装すること
-    #      （例：matched が空の場合に candidates に対して部分一致・編集距離等でフォールバック）。
+    #      仕様として実装しないことが決定している（完全一致のみで運用する）。
     matched = [
         item for item in candidates
         if normalize_product_name(item.get("board_name")) == product_name_normalized

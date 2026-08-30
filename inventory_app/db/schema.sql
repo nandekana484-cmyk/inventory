@@ -1,4 +1,8 @@
-﻿-- 作業者・ログイン
+﻿-- 注：kitting_plan_batches / kitting_plan_items（キッティング計画）は
+-- ここには含まれない。models/kitting_plan.py の init_kitting_plan_tables() で
+-- 別途作成される（idx_kitting_plan_items_lot_no インデックスも同所）。
+
+-- 作業者・ログイン
 CREATE TABLE IF NOT EXISTS workers (
     worker_id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -31,6 +35,11 @@ CREATE TABLE IF NOT EXISTS lots (
     status TEXT DEFAULT 'active'
 );
 
+-- plan_item_id・kitting_list_no列、および idx_production_daily_kitting_list_no
+-- インデックスは、この時点ではまだ存在しない列に対する追加のため schema.sql には
+-- 書けない。db/init_db.py の init_database_at()（ALTER TABLE直後）で作成される。
+-- 既存DBに対しては db/migration_002.py（列追加）・db/migration_007.py（インデックス）
+-- を参照。
 CREATE TABLE IF NOT EXISTS production_daily (
     prod_log_id INTEGER PRIMARY KEY AUTOINCREMENT,
     lot_id TEXT REFERENCES lots(lot_id),

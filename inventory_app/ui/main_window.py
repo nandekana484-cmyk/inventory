@@ -1,4 +1,6 @@
 ﻿import os
+import queue
+import threading
 import tkinter as tk
 from tkinter import ttk, messagebox
 import config
@@ -22,7 +24,15 @@ class MainWindow(tk.Tk):
         super().__init__()
         self.current_worker = current_worker
         self.title("部品在庫管理アプリ - メインメニュー")
-        self.geometry("600x660")
+        self.geometry("600x760")
+
+        # メインメニューから開く画面の多重表示防止用：key -> 開いているToplevelインスタンス。
+        # ウィンドウが閉じられたら _open_singleton_window() が設定した
+        # WM_DELETE_WINDOWハンドラ経由で自動的にエントリが削除される。
+        self._open_windows = {}
+        # KittingProductionEntryWindowは非同期（別スレッドでのデータ事前取得）で開くため、
+        # 生成完了までの間に連打された場合に二重にスレッドを起こさないためのガード。
+        self._kitting_entry_loading = False
 
         # 過去に topmost=True が設定されていた場合の後遺症を防ぐため明示的に無効化する。
         # main_window（root）はフォーカス制御（lift/focus_force/grab_set等）を一切行わない。
@@ -63,15 +73,19 @@ class MainWindow(tk.Tk):
         ).pack(side=tk.LEFT)
 
         # メニューボタン領域
+        # 月次データ（config.DB_PATH切り替えの対象＝月ごとのDBフォルダに入っている
+        # データ：キッティング計画・生産実績・在庫関連）と、共通マスタ（作業者・
+        # 部品マスタ等）を上下2セクションに分けて表示する。
+        # 注：現状は月次・共通いずれのテーブルも同一のDBファイル（config.DB_PATH）に
+        # 同居しており、DB切り替え時は両方まとめて切り替わる（ファイルレベルでの
+        # 分離は無い）。ここでの区分けはあくまでデータの性質によるUI上の整理であり、
+        # 実際に別ファイルに分かれているわけではない。
         body_frame = ttk.Frame(self, padding=20)
         body_frame.pack(expand=True, fill=tk.BOTH)
 
-        ttk.Label(body_frame, text="操作メニューを選択してください", font=("Helvetica", 12)).pack(pady=10)
+        ttk.Label(body_frame, text="操作メニューを選択してください", font=("Helvetica", 12)).pack(pady=(0, 10))
 
-        btn_master = ttk.Button(body_frame, text="4. マスターデータ管理", command=self.open_master_management)
-        btn_master.pack(fill=tk.X, pady=5)
-
-        ttk.Separator(body_frame, orient="horizontal").pack(fill=tk.X, pady=15)
+        ttk.Label(body_frame, text="月次データ", font=("Helvetica", 11, "bold")).pack(anchor=tk.W, pady=(5, 5))
 
         btn_kitting_import = ttk.Button(
             body_frame, text="6. キッティング計画CSV取込", command=self.open_kitting_plan_import
@@ -98,15 +112,22 @@ class MainWindow(tk.Tk):
         )
         btn_inventory_diff.pack(fill=tk.X, pady=5)
 
-        btn_master_import = ttk.Button(
-            body_frame, text="11. マスタインポート", command=self.open_master_import
-        )
-        btn_master_import.pack(fill=tk.X, pady=5)
-
         btn_ng_input = ttk.Button(
             body_frame, text="12. NG（仕損）入力", command=self.open_ng_input
         )
         btn_ng_input.pack(fill=tk.X, pady=5)
+
+        ttk.Separator(body_frame, orient="horizontal").pack(fill=tk.X, pady=15)
+
+        ttk.Label(body_frame, text="共通マスタ", font=("Helvetica", 11, "bold")).pack(anchor=tk.W, pady=(0, 5))
+
+        btn_master = ttk.Button(body_frame, text="4. マスターデータ管理", command=self.open_master_management)
+        btn_master.pack(fill=tk.X, pady=5)
+
+        btn_master_import = ttk.Button(
+            body_frame, text="11. マスタインポート", command=self.open_master_import
+        )
+        btn_master_import.pack(fill=tk.X, pady=5)
 
         btn_parts_attributes_import = ttk.Button(
             body_frame, text="13. 部品属性（丁取り数）インポート", command=self.open_parts_attributes_import
@@ -118,41 +139,164 @@ class MainWindow(tk.Tk):
         )
         btn_worker_management.pack(fill=tk.X, pady=5)
 
+        ttk.Separator(body_frame, orient="horizontal").pack(fill=tk.X, pady=15)
+
+        btn_logout = ttk.Button(body_frame, text="ログアウト", command=self.on_logout)
+        btn_logout.pack(fill=tk.X, pady=5)
+
+    def _open_singleton_window(self, key, factory):
+        """
+        メインメニューから開く画面の多重表示防止用の共通ヘルパー。
+
+        key に対応するウィンドウが既に開いていれば（self._open_windows に登録済み・
+        winfo_exists()もTrue）新規生成せず前面に出すだけにする。無ければ factory() で
+        新規生成し、WM_DELETE_WINDOWで閉じられた際に self._open_windows から
+        該当エントリを削除してから通常のdestroy()を行うようにする（各ウィンドウ
+        クラス自体には一切手を入れず、外側からprotocol()を設定するだけで済む）。
+        """
+        existing = self._open_windows.get(key)
+        if existing is not None and existing.winfo_exists():
+            existing.lift()
+            existing.focus_force()
+            return existing
+
+        window = factory()
+        self._open_windows[key] = window
+
+        def _on_close(w=window, k=key):
+            self._open_windows.pop(k, None)
+            w.destroy()
+
+        window.protocol("WM_DELETE_WINDOW", _on_close)
+        return window
+
     def open_master_management(self):
-        MasterManagementWindow(self, self.current_worker)
+        self._open_singleton_window(
+            "master_management", lambda: MasterManagementWindow(self, self.current_worker)
+        )
 
     def open_kitting_plan_import(self):
-        KittingPlanImportWindow(self, self.current_worker)
+        self._open_singleton_window(
+            "kitting_plan_import", lambda: KittingPlanImportWindow(self, self.current_worker)
+        )
 
     def open_kitting_production_entry(self):
+        """
+        生産実績入力画面を開く。計画一覧のDBアクセス（KittingProductionEntryWindow.
+        _fetch_plan_list_rows()）は重く、UIスレッドで同期実行するとその間ロード画面
+        含め一切描画更新されない（フリーズしたように見える）ため、別スレッドで
+        事前に取得し、完了をポーリングで検知してからUIスレッド上でウィジェットを
+        生成する（ui.kitting_plan_import.KittingPlanImportWindowの
+        threading.Thread + queue.Queue + after()ポーリングパターンを踏襲）。
+
+        多重表示防止：非同期のため _open_singleton_window() をそのまま使えない
+        （factory()を呼んだ時点でウィンドウが即座には出来ていない）。
+        - 既にウィンドウが開いている場合：新規スレッドは起こさず、前面に出した上で
+          既存ウィンドウの load_plan_list()（同期版、「更新」ボタンと同じ経路）を
+          呼んでデータのみ最新化する。
+        - 読み込み中（スレッド完了待ち）に再度呼ばれた場合：_kitting_entry_loading
+          フラグで二重にスレッドを起こさないようにする。
+        """
+        key = "kitting_production_entry"
+        existing = self._open_windows.get(key)
+        if existing is not None and existing.winfo_exists():
+            existing.lift()
+            existing.focus_force()
+            existing.load_plan_list()
+            return
+
+        if self._kitting_entry_loading:
+            return
+        self._kitting_entry_loading = True
+
         loading = LoadingWindow(self)
+        result_queue = queue.Queue()
 
-        def _load():
+        def _fetch_in_thread():
+            try:
+                rows = KittingProductionEntryWindow._fetch_plan_list_rows()
+                result_queue.put((True, rows))
+            except Exception as e:
+                result_queue.put((False, e))
+
+        threading.Thread(target=_fetch_in_thread, daemon=True).start()
+
+        def _poll():
+            try:
+                success, payload = result_queue.get_nowait()
+            except queue.Empty:
+                self.after(200, _poll)
+                return
+
+            self._kitting_entry_loading = False
             loading.destroy()
-            KittingProductionEntryWindow(self, self.current_worker)
+            if not success:
+                messagebox.showerror(
+                    "エラー", f"生産実績入力画面の読み込みに失敗しました：\n{payload}",
+                    parent=self,
+                )
+                return
 
-        self.after(100, _load)
+            window = KittingProductionEntryWindow(self, self.current_worker, preloaded_plan_rows=payload)
+            self._open_windows[key] = window
+
+            def _on_close(w=window):
+                self._open_windows.pop(key, None)
+                w.destroy()
+
+            window.protocol("WM_DELETE_WINDOW", _on_close)
+
+        self.after(200, _poll)
 
     def open_inventory_input(self):
-        InventoryInputWindow(self)
+        self._open_singleton_window("inventory_input", lambda: InventoryInputWindow(self))
 
     def open_theoretical_inventory_import(self):
-        TheoreticalInventoryImportWindow(self)
+        self._open_singleton_window(
+            "theoretical_inventory_import", lambda: TheoreticalInventoryImportWindow(self)
+        )
 
     def open_inventory_diff(self):
-        InventoryDiffWindow(self)
+        self._open_singleton_window("inventory_diff", lambda: InventoryDiffWindow(self))
 
     def open_master_import(self):
-        MasterImportWindow(self)
+        self._open_singleton_window("master_import", lambda: MasterImportWindow(self))
 
     def open_ng_input(self):
-        NgInputWindow(self, self.current_worker)
+        self._open_singleton_window("ng_input", lambda: NgInputWindow(self, self.current_worker))
 
     def open_parts_attributes_import(self):
-        PartsAttributesImportWindow(self)
+        self._open_singleton_window(
+            "parts_attributes_import", lambda: PartsAttributesImportWindow(self)
+        )
 
     def open_worker_management(self):
-        WorkerManagementWindow(self)
+        self._open_singleton_window("worker_management", lambda: WorkerManagementWindow(self))
+
+    def on_logout(self):
+        """
+        ログアウトし、ログイン画面に戻る。
+
+        開いている子ウィンドウ（_open_windowsで管理している多重表示防止対象、
+        および対象外のDailyReportWindow/MonthlyReportWindow/UnmatchedProductionWindow等）は、
+        個別にクローズ処理を呼ぶ必要はない。Tkinterの仕様上、親（MainWindow=このself）を
+        destroy()すると、それを親として開いた全Toplevelも連動して破棄されるため。
+
+        ui.login_window は本モジュールをトップレベルでimportしているため
+        （循環import）、ここでは関数内importで回避する。
+        """
+        if not messagebox.askyesno(
+            "ログアウト確認",
+            "ログアウトしますか？\n開いている画面はすべて閉じられます。",
+            parent=self,
+        ):
+            return
+
+        self.current_worker = None
+        self.destroy()
+
+        from ui.login_window import LoginWindow
+        LoginWindow().mainloop()
 
     def _load_db_folders(self):
         db_root = os.path.join(config.BASE_DIR, "db")

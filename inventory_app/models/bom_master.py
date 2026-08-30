@@ -62,6 +62,38 @@ def query_bom_master(file_no: str, side: int, data_ym: str = None) -> list:
         return [dict(row) for row in cur.fetchall()]
 
 
+def invalidate_bom_master_by_part_no(part_no: str) -> int:
+    """
+    指定 part_no を含む bom_master キャッシュを無効化する。
+
+    bom_master は (file_no, production_side, data_ym) 単位でキャッシュされ、
+    query_bom_master() の呼び出し側（services.bom_service.get_parts_for_file_no）は
+    「1件でも返ってくればキャッシュヒット」として扱う。そのため、該当 part_no の行
+    だけを削除すると、その (file_no, production_side, data_ym) の残りの部品行は
+    キャッシュに残ったまま返され続け、変更した part_no だけが結果から欠落した状態が
+    再計算されずに固定化されてしまう。
+
+    これを避けるため、該当 part_no を含む (file_no, production_side, data_ym) の
+    組み合わせを特定し、その組み合わせに属する行を丸ごと削除する
+    （＝次回 query_bom_master() を完全なキャッシュミスにし、_calculate_bom() で
+    全部品を再計算させる）。
+
+    戻り値：削除した行数。
+    """
+    init_bom_master_table()
+    with get_connection() as con:
+        cur = con.execute("""
+            DELETE FROM bom_master
+            WHERE (file_no, production_side, data_ym) IN (
+                SELECT DISTINCT file_no, production_side, data_ym
+                FROM bom_master
+                WHERE part_no = ?
+            )
+        """, (part_no,))
+        con.commit()
+        return cur.rowcount
+
+
 def save_bom_master(file_no: str, side: int, parts: list, data_ym: str = None,
                      source_file_hash: str = None):
     """
