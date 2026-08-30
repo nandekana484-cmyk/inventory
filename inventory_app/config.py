@@ -5,6 +5,19 @@ BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 # データベースファイルの保存パス
 DB_PATH = os.path.join(BASE_DIR, 'db', 'inventory.db')
 
+
+def set_db_path(path: str):
+    """アプリ全体で使用するDBパスを切り替える唯一の入口。
+    直接 config.DB_PATH = ... と代入するのではなく、
+    必ずこの関数を経由して切り替えること。"""
+    global DB_PATH
+    DB_PATH = path
+
+
+def get_current_db_label() -> str:
+    """UI表示用に、現在接続中のDBパスを返す。"""
+    return DB_PATH
+
 # 各種フォルダパス
 LOG_DIR = os.path.join(BASE_DIR, 'logs')
 EXPORT_DIR = os.path.join(BASE_DIR, 'exports')
