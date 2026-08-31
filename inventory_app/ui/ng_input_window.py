@@ -421,6 +421,7 @@ class NgInputWindow(tk.Toplevel):
                 "production_side": side,
                 "ng_qty": ng_qty,
                 "lot_no": plan.get("lot_no"),
+                "mounting_line": plan.get("mounting_line"),
             })
         except FileNotFoundError as e:
             messagebox.showerror("BOMエラー", f"BOM TSVが見つかりません：\n{e}", parent=self.winfo_toplevel())
@@ -450,15 +451,77 @@ class NgInputWindow(tk.Toplevel):
             parent=self.winfo_toplevel())
         self.btn_register.config(state=tk.NORMAL if parts else tk.DISABLED)
 
+    def _select_mounting_line(self, lines):
+        """
+        複数の実装ライン候補から使用するラインをユーザーに1つ選ばせる
+        モーダルダイアログ。キャンセル時は None を返す
+        （呼び出し元は展開処理を中断すること）。
+        """
+        selected = {"value": None}
+
+        dialog = tk.Toplevel(self)
+        dialog.title("実装ラインの選択")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ttk.Label(
+            dialog,
+            text="このファイルNo.には複数の実装ラインが存在します。\n"
+                 "使用するラインを選択してください。",
+        ).pack(padx=15, pady=(15, 5))
+
+        combo = ttk.Combobox(dialog, values=lines, state="readonly", width=15)
+        combo.current(0)
+        combo.pack(padx=15, pady=5)
+
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.pack(pady=(5, 15))
+
+        def on_ok():
+            selected["value"] = combo.get()
+            dialog.destroy()
+
+        def on_cancel():
+            dialog.destroy()
+
+        ttk.Button(btn_frame, text="OK", command=on_ok).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="キャンセル", command=on_cancel).pack(side=tk.LEFT, padx=5)
+
+        dialog.wait_window()
+        return selected["value"]
+
     def _expand_from_file_no(self, file_no, side):
         """
         ファイルNo.＋生産面検索（計画外）での展開。kitting_plan_itemsを一切参照しない
         （BOMService.expand_scrap_to_parts()はfile_no・sideのみで完結する設計のため）。
         計画が無いため、planned_qty超過警告は行わない。
+
+        計画（mounting_line）を持たないため、TSV上の実装ラインをBOMService.
+        list_mounting_lines()で確認し、複数存在する場合は展開前にユーザーに
+        選択させる（1件のみの場合は選択UIを出さずそのまま使う。0件の場合は
+        mounting_line=Noneのまま渡し、BOMService._calculate_bom()の
+        デフォルト方針＝最初に見つかったライン1本分に委ねる）。
         """
         ng_qty = self._resolve_ng_qty(file_no, side, None)
         if ng_qty is None:
             return
+
+        try:
+            lines = _bom_service.list_mounting_lines(file_no, side)
+        except FileNotFoundError as e:
+            messagebox.showerror("BOMエラー", f"BOM TSVが見つかりません：\n{e}", parent=self.winfo_toplevel())
+            return
+        except ValueError as e:
+            messagebox.showerror("BOMエラー", f"BOM展開に失敗しました：\n{e}", parent=self.winfo_toplevel())
+            return
+
+        mounting_line = None
+        if len(lines) == 1:
+            mounting_line = lines[0]
+        elif len(lines) >= 2:
+            mounting_line = self._select_mounting_line(lines)
+            if mounting_line is None:
+                return
 
         try:
             parts = _bom_service.expand_scrap_to_parts({
@@ -466,6 +529,7 @@ class NgInputWindow(tk.Toplevel):
                 "production_side": side,
                 "ng_qty": ng_qty,
                 "lot_no": None,
+                "mounting_line": mounting_line,
             })
         except FileNotFoundError as e:
             messagebox.showerror("BOMエラー", f"BOM TSVが見つかりません：\n{e}", parent=self.winfo_toplevel())
@@ -482,8 +546,9 @@ class NgInputWindow(tk.Toplevel):
             "is_unplanned": True,
             "lot_no": None,
         }
+        line_text = f" / 実装ライン: {mounting_line}" if mounting_line else ""
         self.lbl_plan_info.config(
-            text=f"file_no: {file_no} / 生産面: {side} / （計画外登録）"
+            text=f"file_no: {file_no} / 生産面: {side}{line_text} / （計画外登録）"
         )
 
         self.load_parts_tree(parts, ng_qty)

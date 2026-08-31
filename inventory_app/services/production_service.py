@@ -95,6 +95,7 @@ def search_plan_by_kitting_no(kitting_list_no: str, lot_no: str = None):
         "setup_file_no": plan["setup_file_no"],
         "board_name": plan["board_name"],
         "production_side": plan["production_side"],
+        "mounting_line": plan["mounting_line"],
         "planned_qty": plan["planned_qty"],
         "order_qty": plan["order_qty"],
         "cumulative_qty_external": plan["cumulative_qty_external"],
@@ -332,6 +333,7 @@ def _build_report_rows(records):
             "file_no": plan["setup_file_no"] if plan else "",
             "board_name": plan["board_name"] if plan else "",
             "production_side": plan["production_side"] if plan else None,
+            "mounting_line": plan["mounting_line"] if plan else None,
             "lot_no": lot_no,
             "daily_qty": daily_qty,
             "app_cumulative_qty": get_app_cumulative_qty(kitting_list_no, lot_no),
@@ -364,8 +366,18 @@ def build_monthly_report(from_date: str, to_date: str):
 def calculate_lot_completion(lot_no: str):
     """
     lot_no 単位でロット完成数・未完成数・余剰基板を算出する。
-    完成数は、同一 lot_no に属する各 setup_file_no（kitting_list_no）の
-    実績累計（daily_qty の SUM）のうち最小値とする。
+    完成数は、同一 lot_no に属する各 setup_file_no × production_side（面）×
+    kitting_list_no（バッチ）単位の実績累計（daily_qty の SUM）のうち
+    最小値とする。
+
+    (setup_file_no, production_side) のみをキーにすると、同一file_no・
+    同一面に対して kitting_list_no が異なる複数のバッチ（例：実装予定日
+    違いの別ロット）が同時にアクティブ（is_active=1）な場合に、片方の
+    バッチの実績がもう片方で上書きされてしまう（実データで222件の
+    setup_file_no×production_side組み合わせに、この「同時複数アクティブ」
+    パターンが確認されている）。そのためキーは
+    (setup_file_no, production_side, kitting_list_no) のタプルとし、
+    バッチ単位で完全に分離して扱う。
     """
     plan_items = list_plan_items_by_lot(lot_no)
     if not plan_items:
@@ -386,16 +398,16 @@ def calculate_lot_completion(lot_no: str):
 
     file_actuals = {}
     for item in plan_items:
-        file_no = item["setup_file_no"]
         kitting_list_no = item["kitting_list_no"]
-        file_actuals[file_no] = cumulative_by_pair[(kitting_list_no, lot_no)]
+        key = (item["setup_file_no"], item["production_side"], kitting_list_no)
+        file_actuals[key] = cumulative_by_pair[(kitting_list_no, lot_no)]
 
     completed = min(file_actuals.values())
     remaining = order_qty - completed
 
     surplus = {
-        file_no: actual_qty - completed
-        for file_no, actual_qty in file_actuals.items()
+        key: actual_qty - completed
+        for key, actual_qty in file_actuals.items()
     }
 
     return {

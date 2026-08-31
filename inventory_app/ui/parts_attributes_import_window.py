@@ -37,9 +37,10 @@ def _open_csv_with_fallback(file_path):
 
 def _import_parts_attributes_csv(file_path):
     """
-    部品属性CSV（96コード・丁取り数・部品種別・部品支給区分・フル数量ほか
-    多数列を含む既存フォーマット）を解析し、必要5列のみ抽出して
-    models.parts_attributes.upsert_parts_attributes() へ保存する。
+    部品属性TSV（96コード・丁取り数・部品種別・部品支給区分・フル数量ほか
+    多数列を含む既存フォーマット。タブ区切り、実ファイルは.tsv）を解析し、
+    必要5列のみ抽出して models.parts_attributes.upsert_parts_attributes()
+    へ保存する。
 
     CSVをマスタとした差分同期：全行のupsertが正常に完了した後、今回のCSVに
     含まれていた part_no 一覧と現在のテーブル内容を比較し、CSVに存在しない
@@ -55,13 +56,19 @@ def _import_parts_attributes_csv(file_path):
     任意列：丁取り数・部品種別・部品支給区分・フル数量
       （丁取り数・フル数量が数値変換できない場合は警告のうえNoneのまま保存する）
 
+    区切り文字・文字コードの不一致でヘッダーが正しく認識されないと、
+    全行が「96コードが空」としてスキップされてしまう（実際に発生した事例）。
+    これに気づきやすくするため、96コード空欄によるスキップが読み込み行数の
+    9割以上を占める場合は、通常の行単位警告とは別に、ファイル形式の確認を
+    促す注意喚起メッセージを warnings の先頭に追加する。
+
     戻り値：{"imported": 成功件数(upsert件数), "deleted": 削除件数,
              "warnings": 警告メッセージのリスト}
     """
     warnings = []
 
     with _open_csv_with_fallback(file_path) as f:
-        reader = csv.DictReader(f)
+        reader = csv.DictReader(f, delimiter="\t")
         rows = list(reader)
 
     if not rows:
@@ -73,11 +80,13 @@ def _import_parts_attributes_csv(file_path):
 
     imported = 0
     seen_part_nos = []
+    skipped_count = 0
 
     for i, row in enumerate(rows, start=2):  # 1行目はヘッダーのためCSV上の行番号に合わせる
         part_no = (row.get(COL_PART_NO) or "").strip()
         if not part_no:
             warnings.append(f"{i}行目: {COL_PART_NO}が空のためスキップしました。")
+            skipped_count += 1
             continue
 
         teitori_raw = (row.get(COL_TEITORI) or "").strip()
@@ -106,6 +115,16 @@ def _import_parts_attributes_csv(file_path):
         upsert_parts_attributes(part_no, teitori, part_type, supply_type, full_qty)
         imported += 1
         seen_part_nos.append(part_no)
+
+    total_rows = len(rows)
+    if total_rows > 0 and skipped_count / total_rows >= 0.9:
+        warnings.insert(
+            0,
+            f"※ 読み込んだ{total_rows}行中{skipped_count}行"
+            f"（{skipped_count / total_rows * 100:.0f}%）が{COL_PART_NO}空欄でスキップされました。"
+            "区切り文字（タブ/カンマ）や文字コードがファイルの実際の形式と"
+            "一致していない可能性があります。ファイル形式をご確認ください。",
+        )
 
     if not seen_part_nos:
         warnings.append("有効な96コードを含む行が1件も無かったため、削除は行っていません。")
@@ -175,7 +194,14 @@ class PartsAttributesImportWindow(tk.Toplevel):
             ))
 
     def on_select_csv(self):
-        file_path = filedialog.askopenfilename(filetypes=[("CSV files", "*.csv"), ("All files", "*.*")], parent=self.winfo_toplevel())
+        file_path = filedialog.askopenfilename(
+            filetypes=[
+                ("TSV files", "*.tsv"),
+                ("CSV files", "*.csv"),
+                ("All files", "*.*"),
+            ],
+            parent=self.winfo_toplevel(),
+        )
         if not file_path:
             return
         self.selected_csv_path = file_path

@@ -22,8 +22,16 @@ _bom_service = BOMService()
 def _collect_wip_totals():
     """
     本日の日報データ（build_daily_report）が持つ仕掛数量（surplus_qty）を、
-    setup_file_no・production_side ごとに BOMService.expand_wip_to_parts() で
-    96コードへ展開し、part_no（96コード）ごとの合計に集計する。
+    setup_file_no・production_side（・mounting_line）ごとに
+    BOMService.expand_wip_to_parts() で96コードへ展開し、part_no（96コード）
+    ごとの合計に集計する。
+
+    mounting_line（実装ライン）はrow（_build_report_rows()が計画から
+    補完済み）からそのまま渡す。同一file_no・sideに複数の実装ラインが
+    存在するTSVでは、ラインを指定しないと部品数量が過大計算されるため
+    （services.bom_service._calculate_bom()参照）、計画が見つからず
+    row["mounting_line"]がNoneの場合は、BOMService側のデフォルト方針
+    （最初に見つかったライン1本分のみを使う）に委ねる。
 
     以下の行は0扱いとしてスキップし、レポート自体は表示できるようにする：
     - setup_file_no が空、または surplus_qty が0（仕掛なし）
@@ -62,6 +70,7 @@ def _collect_wip_totals():
                 "production_side": side,
                 "wip_qty": wip_qty,
                 "lot_no": row.get("lot_no"),
+                "mounting_line": row.get("mounting_line"),
             })
         except FileNotFoundError:
             logger.warning("WIP展開スキップ: file_no=%s のBOM TSVが見つかりません。", file_no)

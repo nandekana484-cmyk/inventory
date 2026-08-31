@@ -930,12 +930,14 @@ class KittingProductionEntryWindow(tk.Toplevel):
         self.lbl_lot_remaining.config(text=f"{plan['lot_remaining_quantity']:.0f}")
 
         file_actuals_text = "\n".join(
-            f"{file_no}: {qty:.0f}" for file_no, qty in plan["lot_file_actuals"].items()
+            f"{file_no}（面{side} / {kitting_list_no}）: {qty:.0f}"
+            for (file_no, side, kitting_list_no), qty in plan["lot_file_actuals"].items()
         )
         self.lbl_lot_file_actuals.config(text=file_actuals_text or "-")
 
         surplus_text = "\n".join(
-            f"{file_no}: {qty:.0f}" for file_no, qty in plan["lot_surplus"].items()
+            f"{file_no}（面{side} / {kitting_list_no}）: {qty:.0f}"
+            for (file_no, side, kitting_list_no), qty in plan["lot_surplus"].items()
         )
         self.lbl_lot_surplus.config(text=surplus_text or "-")
 
