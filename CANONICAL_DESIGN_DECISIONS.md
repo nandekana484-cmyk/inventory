@@ -20,6 +20,7 @@
 | D-4 | `parts`（部品マスタ）・`final_products`（完成品マスタ）・`lots`テーブル、および「4.マスターデータ管理」「11.マスタインポート」画面は、現行のBOM基盤・キッティング計画・生産実績のいずれからも参照されない第一世代設計の名残であり、削除ではなく現状維持（参考情報として残す） | 本ファイル §5 |
 | D-5 | `kitting_list_no`単体では計画を一意に識別できない（同一kitting_list_noが複数の異なるlot_noにまたがって存在するのが正常な業務パターン）。`(kitting_list_no, lot_no)`の組み合わせで初めて一意になる | PRODUCTION_NG_ENHANCEMENTS_NOTES.md §5 |
 | D-6 | 実績・NG申告は「日付問わず1計画（kitting_list_no, lot_no）1レコード、常に上書き」で統一する（同じロットの別日生産は別のkitting_list_noとして立てる業務運用のため） | PRODUCTION_NG_ENHANCEMENTS_NOTES.md §6 |
+| D-7 | 実績CSV取込には`import_production_csv()`（即時登録、後方互換のため維持）と`parse_production_csv_for_staging()`＋`ProductionImportStagingWindow`（ステージング方式、現在の標準フロー）の2系統が**意図的に併存**している。片方が巻き戻った結果ではない | UI_WORKFLOW_FIXES_NOTES.md §3 グループH（H-2） |
 
 ---
 
@@ -65,13 +66,25 @@
    key = (item["setup_file_no"], item["production_side"], kitting_list_no)
    file_actuals[key] = ...
    ```
-   のようになっているか（`file_actuals[file_no] = ...`のような単一キーに戻っていないか）を`grep`等で直接確認する。あわせて`ui/kitting_production_entry.py`の`lot_file_actuals`/`lot_surplus`表示部分が、対応するタプル要素数（3要素）を正しく分解して表示しているかも確認する。
+   のようになっているか（`file_actuals[file_no] = ...`のような単一キーに戻っていないか）を`grep`等で直接確認する。あわせて`ui/kitting_production_entry.py`の`lot_file_actuals`表示部分が、対応するタプル要素数（3要素）を正しく分解して表示しているかも確認する（`lot_surplus`表示はグループJ（UI_WORKFLOW_FIXES_NOTES.md）で廃止済みのため、2026-09-01時点で本項目の文言から削除した）。
 2. **`services/bom_service.py`・`services/bom_file_service.py`のBOM列名定数**（`COL_SIDE="生産面"`・`COL_PART_NO="96コード"`・`COL_R_FLAG="減数種別"`）が、仮置きの値（`"先行面・後行面"`・`"部品番号"`・`"Rフラグ"`）に戻っていないか確認する。
 3. **`BOMFileIndex.build_index()`がサブフォルダを再帰的に走査しているか**（`resolve_file_no()`・`problems`機構が存在するか）を確認する（BOM_MIGRATION_NOTES.md §2・§3参照）。
 4. **`models/kitting_plan.py::list_plan_items_by_lot()`に`is_active=1`フィルタが含まれているか**を確認する。
-5. 上記いずれかが巻き戻っていた場合は、**該当するノートファイル（BOM_MIGRATION_NOTES.md）の該当セクションを参照し、そこに記載された修正内容をそのまま再適用する**（調査をやり直す必要はない。過去に確定済みの内容であるため）。
+5. **`bom_master`テーブルに`item_type`列が存在するか確認する**（`PRAGMA table_info(bom_master)`で直接確認する。基板消費枚数機能（BOM_MIGRATION_NOTES.md §13）のキャッシュ列で、`db/migration_013`で追加される。無ければ`migration_013`が未適用）。
+6. 上記いずれかが巻き戻っていた場合は、**該当するノートファイル（BOM_MIGRATION_NOTES.md）の該当セクションを参照し、そこに記載された修正内容をそのまま再適用する**（調査をやり直す必要はない。過去に確定済みの内容であるため）。ただし、そもそも一度も適用されていなかった場合（巻き戻りではない）もあり得る点に注意（2026-09-01の実DB適用時、§6参照）。
 
 ### 推奨する運用
 
 - マージ作業を行う際は、上記5項目を機械的にチェックするチェックリストとして扱い、目視確認だけでなく可能であれば簡単なスクリプト（`grep`でのパターンマッチ等）で自動検知することを検討する。
 - 本ファイル（CANONICAL_DESIGN_DECISIONS.md）とBOM_MIGRATION_NOTES.md等の各ノートは、マージのたびに「反映済み/未反映」の判定を更新し、巻き戻りが再発していないかをその都度確認する運用とする。
+
+---
+
+## 6. 整合性チェック実施記録
+
+| 確認日 | 確認内容 | 結果 |
+|---|---|---|
+| 2026-09-01 | 本ファイル§5のチェック手順（1〜4）に加え、D-1〜D-6由来の関連項目（BOM列名エイリアス、calculate_lot_completion()の3要素タプルキー、replace_daily_result_for_todayの残存有無、save_ng_declaration()のreport_date条件残存有無、bom_masterのUNIQUE制約へのmounting_line包含、K行基準の丁取り数参照、実績CSV取込のステージング化）を計7項目＋is_activeフィルタで確認 | **巻き戻り0件**（全項目一致）。D-7として追記した2系統併存も、巻き戻りではなく意図的な設計と確認済み |
+| 2026-09-01（同日、後続） | `db/migration_013`（`bom_master`へのitem_type列追加）を実DBへ適用する前に、`PRAGMA table_info(bom_master)`で現状を確認 | **巻き戻りではなく「そもそも一度も適用されていなかった」項目を発見**：実DBの`bom_master`には`item_type`列だけでなく、本来`migration_011`で追加されているはずの`mounting_line`列も存在しなかった（＝`migration_011`が実DBに未適用のまま放置されていた）。`migration_013`が「テーブルを作り直す」設計だったため、結果的に`migration_011`分（mounting_line）も`migration_013`分（item_type）も同時に反映され、1回の適用で最新スキーマに追いついた（行数は実行前後とも0件でデータ喪失なし）。**教訓**：この種の「巻き戻り検知」チェックリストは、過去に一度は正しく適用されてから巻き戻る場合だけでなく、そもそも一度も適用されていなかった場合の検知にも有効である。また「テーブル作り直し型」のマイグレーションは、複数世代分のスキーマ変更を1回の適用で吸収できるという利点も確認できた |
+
+整合性チェック手順（§5）が実際に機能し、巻き戻りを検知（1回目は「無かったこと」、2回目は「そもそも未適用だったこと」）できた実績として記録する。

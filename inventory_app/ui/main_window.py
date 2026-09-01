@@ -16,6 +16,8 @@ from ui.inventory_diff_window import InventoryDiffWindow
 from ui.master_import_window import MasterImportWindow
 from ui.ng_input_window import NgInputWindow
 from ui.parts_attributes_import_window import PartsAttributesImportWindow
+from ui.board_structure_import_window import BoardStructureImportWindow
+from ui.wip_expansion_window import WipExpansionWindow
 from ui.worker_management_window import WorkerManagementWindow
 
 
@@ -117,6 +119,11 @@ class MainWindow(tk.Tk):
         )
         btn_ng_input.pack(fill=tk.X, pady=5)
 
+        btn_wip_expansion = ttk.Button(
+            body_frame, text="16. 仕掛展開", command=self.open_wip_expansion
+        )
+        btn_wip_expansion.pack(fill=tk.X, pady=5)
+
         ttk.Separator(body_frame, orient="horizontal").pack(fill=tk.X, pady=15)
 
         ttk.Label(body_frame, text="共通マスタ", font=("Helvetica", 11, "bold")).pack(anchor=tk.W, pady=(0, 5))
@@ -138,6 +145,11 @@ class MainWindow(tk.Tk):
             body_frame, text="14. 作業者管理", command=self.open_worker_management
         )
         btn_worker_management.pack(fill=tk.X, pady=5)
+
+        btn_board_structure_import = ttk.Button(
+            body_frame, text="15. 構成基板数マスタインポート", command=self.open_board_structure_import
+        )
+        btn_board_structure_import.pack(fill=tk.X, pady=5)
 
         ttk.Separator(body_frame, orient="horizontal").pack(fill=tk.X, pady=15)
 
@@ -265,9 +277,17 @@ class MainWindow(tk.Tk):
     def open_ng_input(self):
         self._open_singleton_window("ng_input", lambda: NgInputWindow(self, self.current_worker))
 
+    def open_wip_expansion(self):
+        self._open_singleton_window("wip_expansion", lambda: WipExpansionWindow(self, self.current_worker))
+
     def open_parts_attributes_import(self):
         self._open_singleton_window(
             "parts_attributes_import", lambda: PartsAttributesImportWindow(self)
+        )
+
+    def open_board_structure_import(self):
+        self._open_singleton_window(
+            "board_structure_import", lambda: BoardStructureImportWindow(self)
         )
 
     def open_worker_management(self):

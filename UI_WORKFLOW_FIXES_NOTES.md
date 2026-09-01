@@ -199,6 +199,26 @@ if actual_qty >= order_qty:
 
 ---
 
+### グループO：親ウィンドウ最小化時のモーダルダイアログ不可視化バグ（重要）
+
+**発見の経緯**：実際に稼働中のプロセスで、「実績CSV取込：登録待ち一覧」の行をダブルクリックしても反応が無く、アプリ全体がフリーズしたように見える現象が発生した。調査の結果、`Toplevel`を`transient(parent)`で生成する際、**親ウィンドウ（生産実績入力画面）が最小化（iconic）状態だと、Tkinter/Windowsの仕様上transientウィンドウが実際には表示されない（`state()=="withdrawn"`のまま）**ことが原因と判明した。ダイアログは`grab_set()`で入力を握ったまま`wait_window()`で待ち続けるため、画面には何も表示されないのにアプリ全体の入力が奪われた状態になる（OSレベルでは`Responding: True`であり、ハングではなく見えないダイアログが応答待ちしているだけ）。応急対処としてタスクバーから親ウィンドウ（最小化されているもの）を元に戻すと、隠れていたダイアログが表示され操作を再開できた。
+
+**恒久修正**：`Toplevel`＋`transient(parent)`＋`grab_set()`パターンを使う箇所すべてに、ダイアログ生成前に`if parent.state() == "iconic": parent.deiconify()`を追加（親ウィンドウを自動的に復元してから表示する）。
+
+| # | 対象ファイル | 実施内容 | 判定 |
+|---|---|---|---|
+| O-1 | `ui/plan_candidate_dialog.py::_show_candidate_list_dialog()`（共通実装。`select_plan_candidate()`・`select_plan_candidate_by_lot()`両方に影響） | iconicチェック＋`deiconify()`を追加 | **反映済み** |
+| O-2 | `ui/kitting_production_entry.py::open_plan_checkbox_filter_popup()`（計画一覧のチェックボックス絞り込みポップアップ） | 同上 | **反映済み** |
+| O-3 | `ui/kitting_production_entry.py::_show_registration_confirm_dialog()`（登録内容の確認ダイアログ、一直線Enterフローの中核） | 同上 | **反映済み** |
+| O-4 | `ui/ng_input_window.py::_select_mounting_line()`（実装ライン選択ダイアログ） | 同上 | **反映済み** |
+| O-5 | `ui/ng_input_window.py::open_ng_checkbox_filter_popup()`（NG一覧のチェックボックス絞り込みポップアップ） | 同上 | **反映済み** |
+
+`ActualCorrectionWindow`（実績修正ウィンドウ）は`transient()`・`grab_set()`・`wait_window()`のいずれも使用しない非モーダルウィンドウのため、このバグの対象外であることを確認済み。
+
+**教訓・今後の注意点**：新しくモーダルダイアログ（`Toplevel`＋`transient`＋`grab_set`）を追加する際は、この`iconic`チェック＋`deiconify()`パターンを標準的に含めることを推奨する。
+
+---
+
 ## 4. 未対応・将来の検討事項
 
 - 項目14（実績履歴からのクリックで計画呼び出し）：未実装
@@ -206,4 +226,4 @@ if actual_qty >= order_qty:
 - ログイン⇔ログアウトを繰り返すたびに呼び出しスタックが深くなる特性（既存の設計、今回新規導入ではない）
 - フィルタ適用後、ソート状態を自動的に再適用する機能は無い（v1として手動で列ヘッダーを押し直す仕様）
 - `load_plan_list()`実行のたびにフィルタ・ソート状態がリセットされる（v1仕様）
-- `CANONICAL_DESIGN_DECISIONS.md` §5のチェックリスト項目1が、グループJ（余剰基板削除）により実態と合わなくなっている（`lot_surplus`表示の存在を前提にした文言のまま）。次回同ファイルを更新する際に修正すること
+- ~~`CANONICAL_DESIGN_DECISIONS.md` §5のチェックリスト項目1が、グループJ（余剰基板削除）により実態と合わなくなっている（`lot_surplus`表示の存在を前提にした文言のまま）。次回同ファイルを更新する際に修正すること~~ → 2026-09-01、CANONICAL_DESIGN_DECISIONS.md更新時にあわせて修正済み

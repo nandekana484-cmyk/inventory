@@ -12,6 +12,7 @@ from ui.daily_report_window import (
     build_daily_report_pdf,
     ReportPreviewWindow,
 )
+from models.wip_board_snapshot import save_wip_snapshot
 
 
 class MonthlyReportWindow(tk.Toplevel):
@@ -69,6 +70,7 @@ class MonthlyReportWindow(tk.Toplevel):
         ttk.Button(btn_frame, text="印刷プレビュー", command=self.on_preview).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="PDF出力", command=self.on_export_pdf).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="CSV出力", command=self.on_export_csv).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="仕掛数量抽出", command=self.on_extract_wip).pack(side=tk.LEFT, padx=5)
 
     def on_aggregate(self):
         from_date = self.from_date_entry.get()
@@ -183,3 +185,26 @@ class MonthlyReportWindow(tk.Toplevel):
             return
 
         messagebox.showinfo("完了", f"CSVを保存しました：\n{save_path}", parent=self.winfo_toplevel())
+
+    def on_extract_wip(self):
+        """
+        self.report_rows（既に集計済みの月報データ、services.production_service.
+        build_monthly_report()の戻り値）のうち、仕掛数量（surplus_qty）が0より
+        大きい行を抽出し、models.wip_board_snapshot.save_wip_snapshot()で
+        スナップショットとして保存する（後続の「仕掛展開」機能の入力データ用）。
+
+        save_wip_snapshot()はテーブル全体差し替え方式のため、押すたびに
+        直前の抽出結果が今回の内容で完全に置き換わる（前回の集計期間で
+        仕掛だった基板が、今回の期間の集計結果に含まれなければ残らない）。
+        """
+        if not self.report_rows:
+            messagebox.showwarning("警告", "先に集計を実行してください。", parent=self.winfo_toplevel())
+            return
+
+        wip_rows = [row for row in self.report_rows if row["surplus_qty"] > 0]
+        save_wip_snapshot(wip_rows)
+
+        messagebox.showinfo(
+            "完了", f"{len(wip_rows)}件の仕掛基板をスナップショットに保存しました。",
+            parent=self.winfo_toplevel(),
+        )

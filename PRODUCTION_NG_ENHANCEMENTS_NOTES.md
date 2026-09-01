@@ -188,3 +188,36 @@ NG連動計算式:**面1保存値 = 面1欄入力値 + 面2欄入力値、面2�
 - `scrap_records`向けの1行単位の修正・削除機能(`update_scrap_record()`/`delete_scrap_record()`)は実装していない(ユーザー決定により、kitting_list_no単位の洗い替え(`replace_scrap_records()`)で運用する方針としたため)。
 - NG一覧のフィルタ・ソート機能は、計画一覧のロジックをコピー&適応した実装であり、共通コンポーネントとしては切り出していない(将来、両者の挙動を同時に変更する必要がある場合は両方修正が必要な点に注意)。
 - `find_opposite_side_plan()`の複数候補時「最も近いplan_start_datetimeを自動選択」は、業務上本当に正しい組み合わせを保証するものではない(日時が近いというだけの推測)。誤った組み合わせになるケースがないか、実運用で注意が必要。
+
+---
+
+## 7. 構成基板数マスタ(新機能)
+
+基板名(`board_name`)単位で「構成基板数」(表示のみの参考情報、BOM計算・実績登録等の他の処理には一切使わない)を管理する新マスタを追加した。
+
+**新テーブル**：`board_structure_master`(`board_name TEXT PRIMARY KEY, board_count REAL, board_name_normalized TEXT NOT NULL, imported_at`)。既存の`models/parts_attributes.py`と同じ「CSVをマスタとした差分同期」パターン(delete-then-insert、upsert + `delete_board_structure_not_in()`)を踏襲(`models/board_structure_master.py`、`db/migration_012`)。
+
+**CSVインポート画面**：`ui/board_structure_import_window.py`(新規)。`ui/parts_attributes_import_window.py`と同構成(CSV選択→Treeview表示→インポート実行、タブ区切り、`_open_csv_with_fallback()`をコピー流用)。メインメニュー「共通マスタ」セクションに「15. 構成基板数マスタインポート」ボタンを追加。
+
+**表記ゆれ対策**：`normalize_board_name()`(NFKC正規化＋小文字化＋前後空白除去＋連続空白圧縮。`services/production_import_service.normalize_product_name()`と同一ロジックだが、models層からservices層への依存を避けるため複製)で正規化した値を`board_name_normalized`列として保存し、`get_board_structure()`はこの列で検索する(検索のたびに正規化計算をやり直さない設計)。
+
+**生産実績入力画面への表示**：`ui/kitting_production_entry.py`のinfo_frame、「ロット未完成数」行の直後(row=8。以降の「基板別実績(file_no)」はrow=9へ1つずらした)に「構成基板数」行を追加。`search_plan()`内で`plan["board_name"]`をキーに`get_board_structure()`を検索し、登録が無ければ「未登録」と表示する。
+
+---
+
+## 8. 仕掛数量抽出・仕掛展開機能(新機能)
+
+### 仕掛数量抽出(月報)
+月報画面(`ui/monthly_report_window.py`)に「仕掛数量抽出」ボタンを追加。押下時、既に集計済みの`self.report_rows`(`services.production_service.build_monthly_report()`の戻り値)から`surplus_qty > 0`の行のみを抽出し、`models.wip_board_snapshot.save_wip_snapshot()`で保存する。
+
+新テーブル：`wip_board_snapshot`(`kitting_list_no, file_no, board_name, production_side, mounting_line, lot_no, surplus_qty, created_at`)。
+
+**上書き単位はテーブル全体差し替え(スナップショット方式)**：行単位のキーによるdelete-then-insertではなく、抽出のたびにテーブル全体をDELETEしてから丸ごと入れ替える。理由：月報の集計期間は実行のたびに任意に変わり得るため、行単位キーで上書きすると、前回の集計対象だったが今回は対象外になった行が削除されずに残り続けてしまうため。
+
+### 仕掛展開画面
+`ui/wip_expansion_window.py`(新規)。`ui/ng_input_window.py`の左右ペイン構成(左：対象基板情報＋部品CheckableTreeview、右：一覧＋絞り込み＋ソート)を複製・適応。
+
+- 右ペインのデータソースは`models.wip_board_snapshot.list_wip_snapshot()`(月報で抽出したスナップショット)。列構成：`kitting_list_no・board_name・file_no・生産面・ロットNo.・実装ライン・仕掛数量・抽出日時`。
+- 行をダブルクリックすると、`services.bom_service.BOMService.expand_wip_to_parts()`(既存、NG展開の`expand_scrap_to_parts()`と同じ戻り値形式)を呼んでBOM展開する。
+- **登録操作は無し(閲覧専用)**。仕掛の部品はまだ消費されていない在庫のため、NG入力画面と異なり登録先のテーブルが無い。
+- メインメニュー「月次データ」セクションに「16. 仕掛展開」ボタンを追加(`_open_singleton_window()`パターン)。

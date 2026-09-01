@@ -20,6 +20,7 @@ from services.production_import_service import parse_production_csv_for_staging
 from models.kitting_plan import list_active_plan_items, find_opposite_side_plan, find_plan_item_by_kitting_no
 from models.production import list_daily_production_today
 from models.ng_declarations import save_ng_declaration, get_ng_declaration
+from models.board_structure_master import get_board_structure
 from ui.daily_report_window import DailyReportWindow
 from ui.monthly_report_window import MonthlyReportWindow
 from ui.plan_candidate_dialog import select_plan_candidate_by_lot
@@ -165,7 +166,8 @@ class KittingProductionEntryWindow(tk.Toplevel):
         self.lbl_app_cum = self._add_info_row(info_frame, "アプリ入力累計：", 5)
         self.lbl_lot_completed = self._add_info_row(info_frame, "ロット完成数：", 6)
         self.lbl_lot_remaining = self._add_info_row(info_frame, "ロット未完成数：", 7)
-        self.lbl_lot_file_actuals = self._add_info_row(info_frame, "基板別実績（file_no）：", 8)
+        self.lbl_board_structure_count = self._add_info_row(info_frame, "構成基板数：", 8)
+        self.lbl_lot_file_actuals = self._add_info_row(info_frame, "基板別実績（file_no）：", 9)
 
         # 実績・NG入力エリア（1つの枠に統合）。Enterキーで実績記入欄→NG面1欄→
         # NG面2欄→登録確認ダイアログ、と一直線に進める操作フローに対応する
@@ -1058,6 +1060,16 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
         self.lbl_lot_completed.config(text=f"{plan['lot_completed_quantity']:.0f}")
         self.lbl_lot_remaining.config(text=f"{plan['lot_remaining_quantity']:.0f}")
+
+        # 構成基板数マスタ（models.board_structure_master、CSVインポートのみで
+        # 更新される参照専用マスタ）から、board_nameで検索して表示する。
+        # 表記ゆれ（全角/半角・大小文字・空白）は get_board_structure() 側で
+        # 正規化して吸収するため、ここでは plan["board_name"] をそのまま渡す。
+        board_structure = get_board_structure(plan["board_name"]) if plan.get("board_name") else None
+        if board_structure and board_structure.get("board_count") is not None:
+            self.lbl_board_structure_count.config(text=f"{board_structure['board_count']:g}")
+        else:
+            self.lbl_board_structure_count.config(text="未登録")
 
         # 同一setup_file_noで面2が存在する場合、面1は完成品ではないため表示から
         # 除外する（models.kitting_plan.list_active_plan_items()の

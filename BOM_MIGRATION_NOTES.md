@@ -355,3 +355,37 @@ ui/parts_attributes_import_window.py（CSVインポート、行ごとにupsert�
        └─ models.bom_master.invalidate_bom_master_by_part_no()  … 該当part_noを含むキャッシュキーを無効化
   └─ （全行upsert後）models.parts_attributes.delete_parts_attributes_not_in()  … CSVに無いpart_noを削除・キャッシュも連動無効化
 ```
+
+---
+
+## 13. 基板消費枚数の計上（K行の96コード自体も部品として計上）
+
+### 発見の経緯
+丁取り数5の基板でNGが2台分発生した場合、部品（96コード）の消費数量は2台分として正しく計算されるが、**基板自体（K行の96コード）も「枚」単位で消費される**はず（丁取り数5枚から2台分＝0.4枚ではなく、端数切り上げで最低1枚）が、従来の実装はK行を丁取り数の参照元としてのみ使い、部品一覧には一切出力していなかった（基板自身のNG計上が漏れていた）。
+
+### 計算式（ユーザー確定）
+基板の消費枚数 = ceil(NG数量またはWIP数量 ÷ 丁取り数)
+
+### 実装上の重要な設計判断（キャッシュとの不整合リスク）
+当初の指示は「`_calculate_bom()`内でceil計算まで行う」だったが、実装時に**`bom_master`キャッシュとの不整合リスク**に気づき、設計を変更した：
+
+- `_calculate_bom()`の戻り値（`bom_master`にキャッシュされ、同一`data_ym`内で複数の異なるNG数量・WIP数量からの呼び出しに再利用される）は、**「1台あたりの比率」（1÷丁取り数）のみ**を返す（`item_type="board"`）。
+- 実際のceil計算（具体的な数量への丸め）は、数量が判明する`expand_scrap_to_parts()`／`expand_wip_to_parts()`側（`services/bom_service.py`）で行う。
+- 理由：もし`_calculate_bom()`側でNG数量2に対するceil結果（=1）を確定してキャッシュしてしまうと、次回別のNG数量（例：8）で呼び出された際にも古い切り上げ結果（1）が使い回され、誤った値になってしまう。
+- 丁取り数が未設定・0以下の場合は基板行の消費比率を算出できないため、警告ログのみ出し基板行自体を結果に含めない（部品員数そのまま採用のようなフォールバックは行わない）。
+
+### スキーマ変更
+- `_calculate_bom()`の戻り値に`item_type`キー（`"part"`＝通常部品／`"board"`＝基板自身）を追加。
+- `bom_master`キャッシュテーブルにも`item_type TEXT NOT NULL DEFAULT 'part'`列を追加（`db/migration_013`、実DB適用済み。適用時にmounting_line列も未適用だったことが判明した経緯はCANONICAL_DESIGN_DECISIONS.md §5・§6参照）。
+
+### CheckableTreeviewへのセル編集機能追加
+基板の消費枚数は端数処理が業務判断を伴うため、手動で数量を編集できる必要がある。`ui/checkable_treeview.py`に`editable_columns`引数を追加し、指定した列のみダブルクリックで編集可能にした。
+
+**重要な発見**：既存の「セルダブルクリックEntry」パターン（`ui/kitting_production_entry.py::on_plan_cell_double_click()`）は、見た目は編集風だが実際には値をTreeviewへ書き戻さない「コピー専用」の実装だった（`<Return>`/`<Escape>`/`<FocusOut>`のいずれも`Entry`を`destroy()`するだけ）。編集機能として機能させるには`self.tree.set(iid, col_key, entry.get())`による書き戻し処理を新たに追加する必要があった。
+
+バリデーション：非数値・空欄の入力は書き戻さず、元の値を維持したままEntryの背景色を変えてエラー表示する（`<Return>`時は開いたまま訂正可能、`<FocusOut>`時は書き戻さず閉じる）。`.clear()`実行時に開いている編集用オーバーレイEntryを明示的に閉じる処理も追加した（無いと、NG入力画面・仕掛展開画面が「展開」のたびに`clear()`を呼ぶ設計と噛み合わず、古いEntryが浮いたまま残るリスクがあった）。
+
+96コード列自体は編集不可のまま（誤って`part_no`を書き換えてDB保存される事故を防ぐため）。区分（「基板」／空欄）は別列で表示し、96コード列へのプレフィックス付加は避けた（プレフィックス方式だとNG入力画面の登録処理でそのまま`part_no`としてDB保存されてしまう危険があったため）。
+
+### on_register()の列位置非依存化
+`ui/ng_input_window.py::on_register()`が、タプルの位置に依存した固定unpack（`part_no, _qty, consumed_qty_text = get_row_values(iid)`）をしていたため、列追加のたびに壊れるリスクがあった。`CheckableTreeview`に列key→値を取得する`get_row_value(iid, col_key)`／`column_index`辞書を新設し、位置非依存の取得方法に書き換えた。

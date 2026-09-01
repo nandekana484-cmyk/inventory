@@ -134,10 +134,14 @@ class NgInputWindow(tk.Toplevel):
             parts_frame,
             columns=[
                 ("part_no", "96コード", 220, tk.W),
+                ("item_type_label", "区分", 70, tk.CENTER),
                 ("qty_per_product", "1台あたり数量", 140, tk.E),
                 ("consumed_qty", "消費数量（NG数×員数）", 180, tk.E),
             ],
             height=10,
+            # 消費数量のみダブルクリックで編集可能にする（96コード列は誤って
+            # 書き換えてDBに保存される事故を防ぐため編集不可のまま）。
+            editable_columns={"consumed_qty"},
         )
 
         parts_btn_row = ttk.Frame(parts_frame)
@@ -572,13 +576,19 @@ class NgInputWindow(tk.Toplevel):
         clear()してから作り直す（NG一覧からの再展開等、on_expand()が複数回
         呼ばれる場合に古い行が残らないようにするため）。デフォルト全選択状態
         （insert_row()のchecked=True）で表示する。
+
+        item_type="board"（基板自身、K行の96コード。BOMService._calculate_bom()
+        参照）の行は、区分列に「基板」と表示して通常部品と区別する（96コード列
+        自体への文字列付加は、DB保存時の96コードを誤って書き換える事故に
+        つながるため避け、別列での区別とした）。
         """
         self.tree.clear()
         for part in parts:
             qty_per_product = (part["qty"] / ng_qty) if ng_qty else 0
+            item_type_label = "基板" if part.get("item_type") == "board" else ""
             self.tree.insert_row(
                 part["part_no"],
-                (part["part_no"], f"{qty_per_product:g}", f"{part['qty']:g}"),
+                (part["part_no"], item_type_label, f"{qty_per_product:g}", f"{part['qty']:g}"),
                 checked=True,
             )
 
@@ -607,7 +617,12 @@ class NgInputWindow(tk.Toplevel):
 
         records = []
         for iid in checked_iids:
-            part_no, _qty_per_product, consumed_qty_text = self.tree.get_row_values(iid)
+            # 列位置ではなくcolumn_index（col_key→インデックス）経由で取得する
+            # ことで、区分列（item_type_label）等、将来の列追加・順序変更の
+            # 影響を受けない（以前は固定位置での3要素unpackだったため、列を
+            # 追加すると要素数不一致で例外になっていた）。
+            part_no = self.tree.get_row_value(iid, "part_no")
+            consumed_qty_text = self.tree.get_row_value(iid, "consumed_qty")
             try:
                 consumed_qty = float(consumed_qty_text)
             except ValueError:

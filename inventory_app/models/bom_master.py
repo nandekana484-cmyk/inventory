@@ -21,8 +21,10 @@ def init_bom_master_table():
     """
     bom_master テーブルの初期化（既存があれば何もしない）。
 
-    mounting_line（実装ライン）列は db/migration_011 で既存テーブルに
-    追加済みの前提（新規環境ではここで最初からmounting_line込みで作成される）。
+    mounting_line（実装ライン）列は db/migration_011 で、item_type（区分：
+    "part"=通常部品／"board"=基板自身の消費枚数）列は db/migration_013 で、
+    それぞれ既存テーブルに追加済みの前提（新規環境ではここで最初から両方
+    込みで作成される）。
     """
     with get_connection() as con:
         con.execute("""
@@ -33,6 +35,7 @@ def init_bom_master_table():
                 mounting_line TEXT NOT NULL DEFAULT '',
                 part_no TEXT NOT NULL,
                 qty_per_product REAL NOT NULL,
+                item_type TEXT NOT NULL DEFAULT 'part',
                 data_ym TEXT NOT NULL,
                 imported_at TEXT DEFAULT (datetime('now','localtime')),
                 source_file_hash TEXT,
@@ -57,7 +60,9 @@ def query_bom_master(file_no: str, side: int, mounting_line: str = "", data_ym: 
     （SQLiteのUNIQUE制約はNULL同士を別物として扱うため、ON CONFLICTを効かせる
     には具体的な値―空文字列―に揃える必要がある）。
 
-    戻り値：[{"part_no": ..., "qty_per_product": ...}, ...]（該当なしは空リスト）
+    戻り値：[{"part_no": ..., "qty_per_product": ..., "item_type": ...}, ...]
+             （該当なしは空リスト。item_typeは"part"=通常部品／"board"=基板自身の
+             消費枚数のいずれか）
     """
     init_bom_master_table()
     if data_ym is None:
@@ -65,7 +70,7 @@ def query_bom_master(file_no: str, side: int, mounting_line: str = "", data_ym: 
 
     with get_connection() as con:
         cur = con.execute("""
-            SELECT part_no, qty_per_product
+            SELECT part_no, qty_per_product, item_type
             FROM bom_master
             WHERE file_no = ? AND production_side = ? AND mounting_line = ? AND data_ym = ?
             ORDER BY part_no
@@ -112,7 +117,9 @@ def save_bom_master(file_no: str, side: int, parts: list, mounting_line: str = "
     BOM計算結果（parts）を bom_master へ保存する。
     data_ym を省略した場合は当月（get_current_ym()）を使う。
 
-    parts：[{"part_no": ..., "qty_per_product": ...}, ...]
+    parts：[{"part_no": ..., "qty_per_product": ..., "item_type": ...}, ...]
+    item_typeは省略可（省略時は"part"として保存する。呼び出し元
+    services.bom_service._calculate_bom() は常に明示的に付与する）。
 
     mounting_line：query_bom_master() と同様、呼び出し元で未指定だった場合は
     空文字列("")に正規化して渡すこと。
@@ -129,12 +136,13 @@ def save_bom_master(file_no: str, side: int, parts: list, mounting_line: str = "
             con.execute("""
                 INSERT INTO bom_master (
                     file_no, production_side, mounting_line, part_no,
-                    qty_per_product, data_ym, source_file_hash
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    qty_per_product, item_type, data_ym, source_file_hash
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(file_no, production_side, mounting_line, part_no, data_ym) DO UPDATE SET
                     qty_per_product = excluded.qty_per_product,
+                    item_type = excluded.item_type,
                     imported_at = datetime('now', 'localtime'),
                     source_file_hash = excluded.source_file_hash
             """, (file_no, side, mounting_line, part["part_no"], part["qty_per_product"],
-                  data_ym, source_file_hash))
+                  part.get("item_type", "part"), data_ym, source_file_hash))
         con.commit()

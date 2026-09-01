@@ -10,6 +10,7 @@ bom_master テーブル（models.bom_master）を組み合わせ、file_no・面
 （丁取り数マスタ）を使う。
 """
 import logging
+import math
 
 import config
 from services.bom_file_service import BOMFileIndex
@@ -132,7 +133,9 @@ class BOMService:
         場合は BOMFileIndex.problems に記録した上で、従来どおり例外を送出する
         （呼び出し元の FileNotFoundError / ValueError の捕捉方法は変更しない）。
 
-        戻り値：[{"part_no": "96000123", "qty_per_product": 3.0}, ...]
+        戻り値：[{"part_no": "96000123", "qty_per_product": 3.0, "item_type": "part"}, ...]
+        item_type="board"の行（基板自身、K行の96コード。1件、無い場合もある）が
+        通常部品の行に混ざって含まれる（_calculate_bom()参照）。
         """
         # 1. 入力検証
         if not file_no:
@@ -372,10 +375,40 @@ class BOMService:
 
             totals[part_no] = totals.get(part_no, 0) + qty
 
-        return [
-            {"part_no": part_no, "qty_per_product": qty}
+        # 基板自身（K行の96コード＝board_code）の消費枚数も、通常部品とは別に
+        # item_type="board"の1行として結果へ含める。基板の「1台あたり消費比率」は
+        # 1÷丁取り数（丁取り数枚の基板から1枚を切り出す、という意味）とし、
+        # 通常部品と同じ qty_per_product 形式で表現する（実際のNG数量／仕掛数量を
+        # 掛けた後の切り上げ計算は、expand_scrap_to_parts()/expand_wip_to_parts()側で
+        # 行う。_calculate_bom()の結果はbom_masterにキャッシュされ、呼び出しごとに
+        # 異なるNG数量／仕掛数量で再利用されるため、特定の数量を前提にした
+        # 計算結果をここでキャッシュしてはならない）。
+        # 丁取り数が未設定・0以下の場合は基板行の消費比率を算出できないため、
+        # 警告ログのみ出し基板行自体を結果に含めない（部品員数そのまま採用のような
+        # フォールバックは行わない。数量が不明なまま何かを表示する方が誤解を招くため）。
+        board_row = None
+        board_attrs = get_parts_attributes(board_code)
+        board_teitori = board_attrs.get("teitori") if board_attrs else None
+        if board_teitori is not None and board_teitori >= 1:
+            board_row = {
+                "part_no": board_code,
+                "qty_per_product": 1.0 / board_teitori,
+                "item_type": "board",
+            }
+        else:
+            logger.warning(
+                "基板行(K行)の消費数量を計算できません: file_no=%s side=%s "
+                "mounting_line=%r board_code=%s（teitori=%r）。基板行は結果に含めません。",
+                file_no, side, resolved_line, board_code, board_teitori,
+            )
+
+        result = [
+            {"part_no": part_no, "qty_per_product": qty, "item_type": "part"}
             for part_no, qty in totals.items()
         ]
+        if board_row is not None:
+            result.append(board_row)
+        return result
 
     def expand_wip_to_parts(self, wip_record: dict) -> list:
         """
@@ -389,7 +422,11 @@ class BOMService:
         }
         （"file_no" / "side" というキー名も後方互換として受け付ける）
 
-        戻り値：[{"lot_no": ..., "file_no": ..., "part_no": ..., "qty": ...}, ...]
+        戻り値：[{"lot_no": ..., "file_no": ..., "part_no": ..., "qty": ...,
+                   "item_type": "part"|"board"}, ...]
+        item_type="board"の行（基板自身、K行の96コード）は、qtyを
+        math.ceil()で切り上げる（例：丁取り数5・仕掛数量2 → ceil(2÷5)=1枚）。
+        通常部品（item_type="part"）は従来通り切り上げない。
         """
         file_no = wip_record.get("setup_file_no", wip_record.get("file_no"))
         side = wip_record.get("production_side", wip_record.get("side"))
@@ -399,15 +436,18 @@ class BOMService:
 
         parts = self.get_parts_for_file_no(file_no, side, mounting_line, data_ym)
 
-        return [
-            {
+        result = []
+        for part in parts:
+            item_type = part.get("item_type", "part")
+            raw_qty = wip_qty * part["qty_per_product"]
+            result.append({
                 "lot_no": wip_record.get("lot_no"),
                 "file_no": file_no,
                 "part_no": part["part_no"],
-                "qty": wip_qty * part["qty_per_product"],
-            }
-            for part in parts
-        ]
+                "qty": math.ceil(raw_qty) if item_type == "board" else raw_qty,
+                "item_type": item_type,
+            })
+        return result
 
     def expand_scrap_to_parts(self, scrap_record: dict) -> list:
         """
@@ -421,7 +461,11 @@ class BOMService:
         }
         （"file_no" / "side" というキー名も後方互換として受け付ける）
 
-        戻り値：[{"lot_no": ..., "file_no": ..., "part_no": ..., "qty": ...}, ...]
+        戻り値：[{"lot_no": ..., "file_no": ..., "part_no": ..., "qty": ...,
+                   "item_type": "part"|"board"}, ...]
+        item_type="board"の行（基板自身、K行の96コード）は、qtyを
+        math.ceil()で切り上げる（例：丁取り数5・NG数量2 → ceil(2÷5)=1枚）。
+        通常部品（item_type="part"）は従来通り切り上げない。
         """
         file_no = scrap_record.get("setup_file_no", scrap_record.get("file_no"))
         side = scrap_record.get("production_side", scrap_record.get("side"))
@@ -431,12 +475,15 @@ class BOMService:
 
         parts = self.get_parts_for_file_no(file_no, side, mounting_line, data_ym)
 
-        return [
-            {
+        result = []
+        for part in parts:
+            item_type = part.get("item_type", "part")
+            raw_qty = ng_qty * part["qty_per_product"]
+            result.append({
                 "lot_no": scrap_record.get("lot_no"),
                 "file_no": file_no,
                 "part_no": part["part_no"],
-                "qty": ng_qty * part["qty_per_product"],
-            }
-            for part in parts
-        ]
+                "qty": math.ceil(raw_qty) if item_type == "board" else raw_qty,
+                "item_type": item_type,
+            })
+        return result
