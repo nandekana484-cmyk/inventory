@@ -25,11 +25,24 @@ from models.kitting_plan import (
 )
 
 # 列名マッピング辞書（拡張ポイント）：canonical key -> 候補列名リスト
+#
+# 実データで確認された列構成（払い出し日・機種基板名・ロットNo・数量・累計・
+# 発注数・基板構成数）のうち、"累計"・"発注数"・"基板構成数" はここに
+# canonical keyを追加していない。これは対応漏れではなく、意図的に無視している：
+#   - "累計"：DB側で get_app_cumulative_qty() が production_daily の実績を
+#     都度合計して算出する値であり、CSVの値は使わない（照合・上書きもしない）。
+#   - "発注数"：kitting_plan_items.order_qty（別途キッティング計画CSVから
+#     取り込み済みの値）をそのまま使い続ける。このCSVの値では上書きしない。
+#   - "基板構成数"：現時点では既存の概念（丁取り数・部品構成数等）との
+#     対応関係が業務側で未確認のため、参考情報として_extraに残すのみで
+#     取り込み処理では使用しない。
+# これらの列はマッピング対象外のため parse_csv_generic() の "_extra" に
+# そのまま格納される（取り込み処理では未使用）。
 COLUMN_MAP_PRODUCTION = {
     "lot_no": ["lot_no", "ロットNo", "ロット番号"],
-    "product_name": ["product_name", "製品名", "基板名", "品名"],
-    "daily_qty": ["daily_qty", "qty", "実績数", "生産数"],
-    "report_date": ["report_date", "日付", "実績日"],
+    "product_name": ["product_name", "製品名", "基板名", "品名", "機種基板名"],
+    "daily_qty": ["daily_qty", "qty", "実績数", "生産数", "数量"],
+    "report_date": ["report_date", "日付", "実績日", "払い出し日"],
     "worker_id": ["worker_id", "担当者", "作業者"],
 }
 
@@ -108,6 +121,7 @@ def import_production_csv(file_path, default_worker_id=None):
     unmatched = []
     warnings = []
     errors = []
+    required_column_skipped_count = 0
 
     for i, row in enumerate(rows, start=2):  # 1行目はヘッダーのためCSV上の行番号に合わせる
         lot_no = row.get("lot_no")
@@ -116,10 +130,12 @@ def import_production_csv(file_path, default_worker_id=None):
 
         if not lot_no or not product_name:
             warnings.append(f"{i}行目: lot_no または product_name が空のためスキップしました。")
+            required_column_skipped_count += 1
             continue
 
         if daily_qty_raw in (None, ""):
             warnings.append(f"{i}行目: daily_qty が空のためスキップしました。")
+            required_column_skipped_count += 1
             continue
 
         try:
@@ -226,4 +242,130 @@ def import_production_csv(file_path, default_worker_id=None):
                     "error": f"反対側の面への連動登録に失敗しました：{e3}",
                 })
 
+    # 区切り文字・列名の不一致でヘッダーが正しく認識されないと、全行が
+    # 「lot_noまたはproduct_nameが空」「daily_qtyが空」として一律にスキップ
+    # されてしまう（実際に発生した事例：ui.parts_attributes_import_window.py
+    # と同種のパターン）。これに気づきやすくするため、必須列の空欄による
+    # スキップが読み込み行数の9割以上を占める場合は、通常の行単位警告とは別に、
+    # 列名の確認を促す注意喚起メッセージを warnings の先頭に追加する。
+    total_rows = len(rows)
+    if total_rows > 0 and required_column_skipped_count / total_rows >= 0.9:
+        warnings.insert(
+            0,
+            f"※ 読み込んだ{total_rows}行中{required_column_skipped_count}行"
+            f"（{required_column_skipped_count / total_rows * 100:.0f}%）が"
+            "lot_no・product_name・daily_qtyのいずれかの空欄でスキップされました。"
+            "CSVの列名がCOLUMN_MAP_PRODUCTIONの候補列名と一致していない可能性が"
+            "あります。列名をご確認ください。",
+        )
+
     return {"imported": imported, "unmatched": unmatched, "warnings": warnings, "errors": errors}
+
+
+# ステージング一覧（services.production_import_service.parse_production_csv_for_staging()の
+# 戻り値の"status"）の表示ラベル。UI側（ui/production_import_staging_window.py）で使う。
+STAGING_STATUS_LABELS = {
+    "no_candidates": "候補なし",
+    "needs_selection": "候補あり（要選択）",
+    "auto_resolvable": "自動確定可能（要確認）",
+}
+
+
+def parse_production_csv_for_staging(file_path, default_worker_id=None):
+    """
+    実績CSVを解析するが、DBへは一切書き込まない（「確認・選択・転記」方式の
+    実績取込一覧向け）。import_production_csv()（即時登録版）とは別の
+    エントリーポイントとして新設した。import_production_csv()自体は後方互換の
+    ため変更していない。
+
+    必須列の検証（lot_no・product_name・daily_qtyの空欄チェック、daily_qtyの
+    数値変換）・9割スキップ時の注意喚起は import_production_csv() と同じ
+    ロジックを踏襲する。
+
+    各行について、models.kitting_plan.find_matching_plan_items(lot_no,
+    正規化済み製品名) を呼び、そのlot_noに属する現在アクティブな計画
+    （candidates）と、製品名も一致するもの（matched）を取得した上で、
+    以下の3状態のいずれかを"status"として付与する：
+      - "no_candidates"：candidatesが0件（該当lot_noの計画が無い）
+      - "needs_selection"：candidatesは1件以上あるが、matchedの
+        kitting_list_noが0種類または複数種類で自動確定できない
+      - "auto_resolvable"：matchedのkitting_list_noがちょうど1種類
+        （import_production_csv()ならそのまま自動登録される状態）
+
+    "auto_resolvable"であっても、実際にその計画を確定させるかどうかの判断は
+    呼び出し元のUI（必ず候補選択ダイアログを経由させる方針）に委ねる。
+    本関数はcandidatesが1件のみの場合でも自動的に確定させたりはしない。
+
+    戻り値：{
+        "rows": [{"row", "lot_no", "product_name", "daily_qty", "report_date",
+                   "worker_id", "candidates", "matched", "status"}, ...],
+        "warnings": [CSV解析時点の警告メッセージ（必須列欠落・数値変換エラー等）],
+    }
+    "report_date"はCSVの「払い出し日」相当の値をそのまま保持するが、
+    参考情報としての表示用であり、実際の登録時（呼び出し元がこのモジュールの
+    外で行う）にはこの値を使わない方針（登録ボタンを押した日を使うため）。
+    """
+    rows = parse_csv_generic(file_path, COLUMN_MAP_PRODUCTION)
+
+    staged_rows = []
+    warnings = []
+    required_column_skipped_count = 0
+
+    for i, row in enumerate(rows, start=2):  # 1行目はヘッダーのためCSV上の行番号に合わせる
+        lot_no = row.get("lot_no")
+        product_name = row.get("product_name")
+        daily_qty_raw = row.get("daily_qty")
+
+        if not lot_no or not product_name:
+            warnings.append(f"{i}行目: lot_no または product_name が空のためスキップしました。")
+            required_column_skipped_count += 1
+            continue
+
+        if daily_qty_raw in (None, ""):
+            warnings.append(f"{i}行目: daily_qty が空のためスキップしました。")
+            required_column_skipped_count += 1
+            continue
+
+        try:
+            daily_qty = float(daily_qty_raw)
+        except (TypeError, ValueError):
+            warnings.append(f"{i}行目: daily_qty「{daily_qty_raw}」を数値に変換できないためスキップしました。")
+            continue
+
+        lot_no = str(lot_no).strip()
+        report_date = row.get("report_date") or None
+        worker_id = row.get("worker_id") or default_worker_id or "CSV_IMPORT"
+
+        product_name_normalized = normalize_product_name(product_name)
+        candidates, matched = find_matching_plan_items(lot_no, product_name_normalized)
+
+        if not candidates:
+            status = "no_candidates"
+        else:
+            unique_kitting_nos = {c["kitting_list_no"] for c in matched}
+            status = "auto_resolvable" if len(unique_kitting_nos) == 1 else "needs_selection"
+
+        staged_rows.append({
+            "row": i,
+            "lot_no": lot_no,
+            "product_name": product_name,
+            "daily_qty": daily_qty,
+            "report_date": report_date,
+            "worker_id": worker_id,
+            "candidates": candidates,
+            "matched": matched,
+            "status": status,
+        })
+
+    total_rows = len(rows)
+    if total_rows > 0 and required_column_skipped_count / total_rows >= 0.9:
+        warnings.insert(
+            0,
+            f"※ 読み込んだ{total_rows}行中{required_column_skipped_count}行"
+            f"（{required_column_skipped_count / total_rows * 100:.0f}%）が"
+            "lot_no・product_name・daily_qtyのいずれかの空欄でスキップされました。"
+            "CSVの列名がCOLUMN_MAP_PRODUCTIONの候補列名と一致していない可能性が"
+            "あります。列名をご確認ください。",
+        )
+
+    return {"rows": staged_rows, "warnings": warnings}

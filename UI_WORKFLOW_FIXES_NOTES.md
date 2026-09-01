@@ -135,6 +135,68 @@ if actual_qty >= order_qty:
 | D-4 | フィルタ・ソートの両立：フィルタ適用は`self._all_plan_rows`から`_populate_plan_list_tree()`で作り直す一方向の変換。ソートは「今表示されている行」に対して働くため、フィルタ→ソートの順で自然に機能する。v1としては、フィルタ適用のたびにソート状態はリセットされる仕様（自動で前回のソートを再適用する機能は今回実装しなかった） | **反映済み** |
 | D-5 | `load_plan_list()`（「更新」ボタン等）を呼ぶと、テキスト・チェックボックス両方のフィルタが自動的にリセットされる（v1仕様） | **反映済み** |
 
+### グループH：実績CSV取込のステージング化（列名マッピング拡張・確認フロー化・非同期ロード画面）
+
+**背景（列名マッピング）**：実運用のCSV列構成（払い出し日・機種基板名・ロットNo・数量・累計・発注数・基板構成数）が、既存の`COLUMN_MAP_PRODUCTION`の候補列名（「基板名」「qty」等）と一致せず、全行がサイレントにスキップされていた（以前のBOM/部品属性TSVと同種のパターン）。ただし実DBへの書き込みは発生しておらず実害は無かった。「累計」「発注数」「基板構成数」は業務確認の結果、いずれも登録には使わない参考情報と確定した（基板構成数は意味不明のまま「単なる参考情報」として確定。累計・発注数はDB側で別途管理される値のためCSVの値と照合・上書きしない）。「面」（production_side）はCSVに情報が無いが、業務ルール上「製品が生産された＝面1も面2も完了している」ため、既存の面連動ロジック（1行の登録で両面に自動反映）がそのまま正しい設計と確認された。
+
+**背景（ステージング化）**：以前の`import_production_csv()`は「選択→即時全件登録→結果表示」という確認ステップの無い一括処理だった。実績登録が「日付問わず常に1レコードに上書き」というルール（本ファイル§5関連、`PRODUCTION_NG_ENHANCEMENTS_NOTES.md`§5とも共通）に変更された後は、CSV再取込によって既存の実績（過去日付含む）が確認なしで一括上書きされるリスクが生じたため、ユーザー判断により自動登録を廃止し、以下のステージング方式に変更した。
+
+| # | 対象ファイル | 実施内容 | 判定 |
+|---|---|---|---|
+| H-1 | `services/production_import_service.py` | `COLUMN_MAP_PRODUCTION`に"product_name"候補として"機種基板名"、"daily_qty"候補として"数量"、"report_date"候補として"払い出し日"を追加。9割以上スキップ時の注意喚起メッセージを追加（部品属性インポートと同様の仕組み） | **反映済み** |
+| H-2 | `services/production_import_service.py` | `parse_production_csv_for_staging()`（新規）：DB書き込みを一切行わず、パースと候補解決（`find_matching_plan_items()`）結果のみ返す。既存の`import_production_csv()`（即時登録版）は後方互換のため無変更のまま残す | **反映済み** |
+| H-3 | `ui/kitting_production_entry.py`, `ui/production_import_staging_window.py`（新規） | `on_production_csv_import()`を「パース→`ProductionImportStagingWindow`で一覧表示→行ダブルクリックで候補選択ダイアログ→`search_plan()`で計画確定→実績記入欄へ転記→既存の一直線Enterフロー（実績→NG面1→NG面2→登録確認ダイアログ→登録）にそのまま進む」方式に変更。**候補が1件のみでも必ず候補選択ダイアログを経由し、自動確定はしない**。report_dateはCSVの「払い出し日」ではなく登録ボタンを押した日（今日）になる（`register_daily_result()`等のreport_date=None時のデフォルト動作をそのまま使うだけで実現）。登録完了後、その行はステージング一覧から削除される（`remove_callback`） | **反映済み** |
+| H-4 | `ui/kitting_production_entry.py` | 面1/面2連動（`register_opposite_side_daily_result()`）は「ユーザーが登録を確定した時点」で呼ばれるよう、タイミングをステージング方式に合わせて移動 | **反映済み** |
+| H-5 | `ui/production_import_staging_window.py` | 垂直スクロールバーを追加。ウィンドウを閉じる際、未登録の行が残っていれば確認ダイアログを表示（全て登録済み＝一覧が空の場合は確認なしでそのまま閉じる）。「候補なし」（status='no_candidates'）の行は別途保持し、「登録不可リストをCSV出力」ボタンでutf-8-sig CSVとして出力できる | **反映済み** |
+| H-6 | `ui/plan_candidate_dialog.py` | 候補選択ダイアログ（`select_plan_candidate_by_lot()`、新規）に`plan_start_datetime`（実装開始予定日）列を追加 | **反映済み** |
+| H-7 | `ui/kitting_production_entry.py` | CSV選択後のパース処理（`parse_production_csv_for_staging()`、DB・ファイルアクセスのみでTkinterに触れない）を、グループCと同じ`LoadingWindow`＋`threading.Thread(daemon=True)`＋`queue.Queue`＋`self.after(200, ...)`ポーリングのパターンで非同期化。パース完了後、UIスレッド上で`ProductionImportStagingWindow`を生成する | **反映済み** |
+
+動作確認（H-7）：`filedialog.askopenfilename`と`parse_production_csv_for_staging()`をモックし、パース処理に1秒の遅延を注入した状態で検証。`on_production_csv_import()`の呼び出し自体は約179msで即座に返り、`LoadingWindow`が表示され取込ボタンが無効化されること、パース中（約1秒間）`root.update()`ループ内の`after`コールバックが継続して実行され続けること（UIスレッドがブロックされていないこと）、パース完了後にロード画面が破棄されボタンが再有効化された上で正しいデータで`ProductionImportStagingWindow`が生成されることを確認済み。
+
+### グループI：「基板別実績」「日次実績履歴」の面1省略表示
+
+計画情報欄の「基板別実績」表示、および日次実績履歴（本日の全計画分ログ）について、面2が存在する場合は面1を表示しないよう変更した。判定ロジックは`list_active_plan_items()`の既存の「2回目計画があれば1回目除外」ロジックと同じ考え方（同一`(lot_no, setup_file_no)`で`production_side=="2"`かつ`is_active=1`の行があれば1回目を除外）に揃えた。
+
+| # | 対象ファイル | 実施内容 | 判定 |
+|---|---|---|---|
+| I-1 | `ui/kitting_production_entry.py` | `search_plan()`：`plan["lot_file_actuals"]`から、面2が存在する`setup_file_no`については面1エントリを表示から除外 | **反映済み** |
+| I-2 | `ui/kitting_production_entry.py` | `load_today_log()`：挿入前に全レコードの計画解決を1回済ませ、`(lot_no, setup_file_no)`単位で面2が存在する組み合わせを集めてから、面1の行をTreeviewへの挿入対象から除外。`self._today_all_rows`自体は変更せず全件保持 | **反映済み** |
+
+**実装中に発見・回避した潜在バグ**：表示行をフィルタすると、Treeviewの表示位置インデックス（`tree.index(row_id)`）と元データ（`self._today_all_rows`）の対応がズレ、履歴行ダブルクリックで誤った計画が開かれるバグが生まれるところだった。挿入時にiid→元レコードを直接対応付ける`self._today_row_by_iid`を新設し、`on_history_row_double_click()`をこちらから逆引きする方式に変更することで回避した。
+
+### グループJ：計画情報欄「余剰基板」の削除、不一致警告の比較対象変更
+
+| # | 対象ファイル | 実施内容 | 判定 |
+|---|---|---|---|
+| J-1 | `ui/kitting_production_entry.py` | 計画情報欄の「余剰基板」（`lot_surplus`）表示行（`lbl_lot_surplus`）を削除 | **反映済み** |
+| J-2 | `services/production_service.py` | `calculate_lot_completion()`のsurplus計算・戻り値キー（`surplus`）を、他に参照箇所が無いことを確認した上で削除 | **反映済み** |
+| J-3 | `ui/kitting_production_entry.py` | `_build_registration_preview()`の実績+NG数量の不一致警告の比較対象を、`order_qty`（発注数）から`planned_qty`（予定生産数）に変更。メッセージ文言も「計画数」→「予定生産数」に修正 | **反映済み** |
+
+> **CANONICAL_DESIGN_DECISIONS.md §5の記載更新が必要**：同ファイルのチェックリスト項目1は「`ui/kitting_production_entry.py`の`lot_file_actuals`/`lot_surplus`表示部分が...」と`lot_surplus`表示の存在を前提にした文言のままだが、J-1により`lot_surplus`表示自体が削除済みのため、このチェック項目は実態と合わなくなっている（要更新、本ドキュメントの更新スコープ外のため付記のみ）。
+
+### グループK：登録完了後の計画一覧の部分更新（大幅な性能改善）
+
+登録完了のたびに計画一覧全体を再取得すると一直線フローの快適さを損なうため、「同一lot_no内の関連行のみ」を部分更新する方式を採用した。
+
+| # | 対象ファイル | 実施内容 | 判定 |
+|---|---|---|---|
+| K-1 | `ui/kitting_production_entry.py` | `self._plan_row_iid_by_kitting_no`（新規、`(kitting_list_no, lot_no)`のタプルキー。478件のkitting_list_no重複問題（本ファイル§4関連、`PRODUCTION_NG_ENHANCEMENTS_NOTES.md`§4とも共通）を踏まえ単体キーは使わない）を`_populate_plan_list_tree()`実行時に構築し、Treeviewのiidと対応付け | **反映済み** |
+| K-2 | `ui/kitting_production_entry.py` | `_refresh_plan_list_for_lot(lot_no)`（新規）：`list_active_plan_items(lot_no=lot_no, include_completed=True)`でDB側からlot_no絞り込み（LIKE部分一致のため取得後に完全一致で再フィルタ）して対象行のみ再取得し、`calculate_lot_completion(lot_no)`をそのlot_noについて1回だけ呼ぶ。Treeviewの該当行だけを`set()`で更新（削除・再挿入はしない＝ソート順・フィルタ状態・選択状態を保持） | **反映済み** |
+| K-3 | `ui/kitting_production_entry.py` | `_perform_registration()`の最後（実績本体・面連動・NG申告の全DB書き込み完了後）で`_refresh_plan_list_for_lot(lot_no)`を呼ぶ | **反映済み** |
+
+動作確認：実測で全件再取得（接続841回・1595件・約1.9秒）→部分更新（接続2回・約6ms）に改善。フィルタ（ロットNo.チェックボックス絞り込み）・ソート（列ソート）を適用した状態での登録でも、表示件数・行順ともに変化しないことを確認済み。面連動（面1にも自動登録される）で更新される行も、同一lot_noに属する限り`list_active_plan_items(lot_no=lot_no)`の結果に自動的に含まれるため、追加対応は不要と確認した。
+
+### グループL：日報・月報の「累計数」列削除
+
+`REPORT_HEADERS`（`ui/daily_report_window.py`）から「累計数」（`app_cumulative_qty`）列を削除。
+
+**発見された潜在的な列ズレリスク**：`DailyReportWindow`/`MonthlyReportWindow`の各`__init__`には、`REPORT_HEADERS`のimportとは別に独自の`cols`/`widths`定義が存在しており、そちらも同時に修正しないと`dict(zip(cols, REPORT_HEADERS))`で列数不一致による表示ズレが発生するところだった。両方修正して解消済み。
+
+| # | 対象ファイル | 実施内容 | 判定 |
+|---|---|---|---|
+| L-1 | `ui/daily_report_window.py` | `REPORT_HEADERS`・`_row_to_values()`・`ReportPreviewWindow.COL_WIDTHS`から「累計数」列を削除 | **反映済み** |
+| L-2 | `ui/daily_report_window.py`, `ui/monthly_report_window.py` | 各ウィンドウが独自に持つ`cols`/`widths`のTreeview列定義からも`app_cumulative_qty`を削除（`REPORT_HEADERS`側の修正だけでは自動反映されない、独立した定義であることを確認した上での対応） | **反映済み** |
+
 ---
 
 ## 4. 未対応・将来の検討事項
@@ -144,3 +206,4 @@ if actual_qty >= order_qty:
 - ログイン⇔ログアウトを繰り返すたびに呼び出しスタックが深くなる特性（既存の設計、今回新規導入ではない）
 - フィルタ適用後、ソート状態を自動的に再適用する機能は無い（v1として手動で列ヘッダーを押し直す仕様）
 - `load_plan_list()`実行のたびにフィルタ・ソート状態がリセットされる（v1仕様）
+- `CANONICAL_DESIGN_DECISIONS.md` §5のチェックリスト項目1が、グループJ（余剰基板削除）により実態と合わなくなっている（`lot_surplus`表示の存在を前提にした文言のまま）。次回同ファイルを更新する際に修正すること

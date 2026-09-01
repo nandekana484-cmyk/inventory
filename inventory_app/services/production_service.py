@@ -108,7 +108,6 @@ def search_plan_by_kitting_no(kitting_list_no: str, lot_no: str = None):
     result["lot_completed_quantity"] = lot_info["completed_quantity"]
     result["lot_remaining_quantity"] = lot_info["remaining_quantity"]
     result["lot_file_actuals"] = lot_info["file_actuals"]
-    result["lot_surplus"] = lot_info["surplus"]
 
     return result, None
 
@@ -365,10 +364,15 @@ def build_monthly_report(from_date: str, to_date: str):
 
 def calculate_lot_completion(lot_no: str):
     """
-    lot_no 単位でロット完成数・未完成数・余剰基板を算出する。
+    lot_no 単位でロット完成数・未完成数を算出する。
     完成数は、同一 lot_no に属する各 setup_file_no × production_side（面）×
     kitting_list_no（バッチ）単位の実績累計（daily_qty の SUM）のうち
     最小値とする。
+
+    以前は各バッチの余剰数（"surplus"、実績累計 − 完成数）も算出していたが、
+    呼び出し元（services.production_service.search_plan_by_kitting_no()経由の
+    ui.kitting_production_entry.py「余剰基板」表示）が削除され、他に参照箇所も
+    無いことを確認した上で、この算出自体を廃止した。
 
     (setup_file_no, production_side) のみをキーにすると、同一file_no・
     同一面に対して kitting_list_no が異なる複数のバッチ（例：実装予定日
@@ -405,16 +409,10 @@ def calculate_lot_completion(lot_no: str):
     completed = min(file_actuals.values())
     remaining = order_qty - completed
 
-    surplus = {
-        key: actual_qty - completed
-        for key, actual_qty in file_actuals.items()
-    }
-
     return {
         "lot_no": lot_no,
         "order_quantity": order_qty,
         "completed_quantity": completed,
         "remaining_quantity": remaining,
         "file_actuals": file_actuals,
-        "surplus": surplus,
     }

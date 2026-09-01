@@ -128,7 +128,62 @@
 
 ---
 
-## 4. 未対応・将来の検討事項
+## 4. kitting_list_noの一意性問題(重大バグ、実データの478件に影響)
+
+### 発見の経緯
+
+「実績入力で同じキッティングNoだと実績が入力されてしまう」という報告から調査した結果、実は「**同じkitting_list_noが複数の異なるlot_noにまたがって存在する**」ことが原因と判明した。実DBで**478件**のkitting_list_noが複数lot_noにまたがっていた(is_active=1に限定しても同数)。
+
+具体例:`kitting_list_no='0002-1-K-260727-01'`が、`lot_no=277688`(board_name='BL-185SO(7031)')と`lot_no=317564`(board_name='BL-180SO(7030)')の両方に存在する。
+
+**業務ルール確認**:「1つのキッティングリストNo.に複数ロットをまとめて生産することがある」のは正常な業務パターン。`kitting_list_no`単体ではなく**`(kitting_list_no, lot_no)`の組み合わせ**で初めて1つの計画(製品)を一意に識別できる、と確定した。
+
+### 実害の実例
+
+`production_daily`の実績のうち、`kitting_list_no='0002-2-K-260803-03'`(`lot_no=277688`に本日500登録)について、`calculate_lot_completion('277688')`が誤って0を返し、`calculate_lot_completion('317564')`(実績登録していないロット)が誤って500を返す、という**完全な取り違え**が実データで発生していた。
+
+### 修正内容(3段階)
+
+1. **production_dailyの集計をlot_no単位に修正**:`get_app_cumulative_qty()`/`get_app_cumulative_qty_bulk()`/`list_daily_production_by_kitting_no()`/`replace_daily_result()`に`lot_no`条件を追加。`calculate_lot_completion()`も`get_app_cumulative_qty_bulk()`に`lot_no`を渡すよう修正。`list_active_plan_items()`も同様の巻き込みが判明し合わせて修正。CSV取込側の位置引数ズレも発見・修正。`list_plan_items_by_lot()`に`is_active=1`フィルタも追加(呼び出し元が`calculate_lot_completion()`のみと確認済み。BOM_MIGRATION_NOTES.md §4とも関連)。
+2. **scrap_records・ng_declarationsにlot_no列を追加**(`db/migration_010_add_lot_no_to_ng_tables.py`、実DB適用済み):両テーブルの関連関数に`lot_no`を条件・保存対象として追加。`query_scrap_totals()`(在庫差異レポート、全期間・全ロット通算)は意図的に`lot_no`条件を加えない(96コード単位の全体消費実数が必要なため)。
+3. **lot_noを保持しているのに渡していない4箇所の修正+複数候補選択UI**:計画一覧の行選択・履歴行ダブルクリック・NG一覧の行ダブルクリック・製品NGレポートの行ダブルクリック、いずれも既に判明している`lot_no`を検索処理に渡すよう修正。`ui/plan_candidate_dialog.py`(新規、共通コンポーネント)で、キッティングNo.のみでの検索時に複数候補があればユーザーに選択させるダイアログ(`lot_no`・基板名・`order_qty`等を一覧表示)を実装。
+
+---
+
+## 5. 実績・NG申告の上書きルールの再設計(「日付問わず1計画1レコード」への統一)
+
+### 業務ルール確認
+
+同じロットを数日に分けて生産する場合、各日の生産は**別々のkitting_list_no(別の計画)**として立てられる(同じkitting_list_noを日をまたいで使い回すことはない)。そのため、1つのkitting_list_noの中で日をまたいで実績を積み上げる必要は無く、訂正は上書きで十分。ロット全体が注文数に達しているかは`calculate_lot_completion(lot_no)`が複数のkitting_list_noを横断して(各計画の完成数の最小値を取って)判断する。
+
+CSV取込・手動入力のどちらが優先されるかについては「**後から入力された方が正**」というルールで統一。
+
+### 確定した設計
+
+- `production_daily`:`replace_daily_result_for_today()` → `replace_daily_result()`に改名。`report_date`条件を削除し、`(kitting_list_no, lot_no)`のみで一意に上書き(日付問わず常に1レコード)。
+- `ng_declarations`:`save_ng_declaration()`も同様に`report_date`条件を削除、全期間で1レコード化。
+- CSV自動取込(`import_production_csv()`)も同じ上書きルールに従う(`check_duplicate=True`)。面1/面2連動ロジックも新設共通関数`register_opposite_side_daily_result()`としてUI・CSV取込両方から呼べる形に。
+- `get_ng_declaration()`も全期間検索に変更(以前「当日限定で過去日を拾えない」バグがあり修正)。
+- `_current_daily_qty_sum()`(旧`_today_daily_qty_sum()`)も全期間検索に修正。
+- `_load_current_daily_qty()`(旧`_load_today_daily_qty()`)も同様に修正(過去日付のレコードでもプリフィルされるように)。
+
+### 面1/面2の連動ルール(業務ルール、重要)
+
+面1(先行面)でNGになった基板は面2の工程に進まない(面2部品は未消費)。そのため:
+- **面1NG申告 → 面1のみNG登録**
+- **面2NG申告 → 面1・面2両方をNG登録**(面2に到達した時点で面1は完了・消費済みのため)
+
+NG連動計算式:**面1保存値 = 面1欄入力値 + 面2欄入力値、面2保存値 = 面2欄入力値のみ**。過去の保存値には一切加算しない(都度の入力が全てを置き換える、合算ではなく上書き)。
+
+二重加算対策:面1欄のプリフィルは「保存値(面1) − 保存値(面2)」で計算する固定点計算により、画面を開き直して何も変えず再登録しても値が増え続けないことを検証済み。
+
+実績登録も同様に面2登録時、面1にも自動連動登録される(`find_opposite_side_plan()`で反対側を解決)。面1側で当日重複が見つかっても、面2側で既に確認済みのため自動上書き(確認ダイアログなし)。
+
+(NG一覧・製品NGレポートからの再展開時の「delete-then-insert」方式(グループN3、上記§3参照)とは対象が異なる:こちらは**申告・実績(枚数)**の上書きルール、N3は**展開済みscrap_records(96コード単位の部品明細)**の洗い替えルール。)
+
+---
+
+## 6. 未対応・将来の検討事項
 
 - `scrap_records`向けの1行単位の修正・削除機能(`update_scrap_record()`/`delete_scrap_record()`)は実装していない(ユーザー決定により、kitting_list_no単位の洗い替え(`replace_scrap_records()`)で運用する方針としたため)。
 - NG一覧のフィルタ・ソート機能は、計画一覧のロジックをコピー&適応した実装であり、共通コンポーネントとしては切り出していない(将来、両者の挙動を同時に変更する必要がある場合は両方修正が必要な点に注意)。

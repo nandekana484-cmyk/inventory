@@ -28,6 +28,14 @@ COL_COEFFICIENT = "マスターCHK員数係数"
 COL_PART_NO = "96コード"
 COL_R_FLAG = "減数種別"
 COL_MOUNTING_LINE = "実装ライン"
+COL_TYPE = "セットアップ部品種別"
+
+# COL_TYPE の値のうち、その行が「部品」ではなく「基板自身」を表すもの。
+# 丁取り数（models.parts_attributes.teitori）は部品自身の96コードではなく、
+# この「K行」の96コード（基板コード）に対して登録されている
+# （実データ検証済み：file_no=723 side=2 の部品96220357はteitoriを持たず、
+# 同ファイル・同実装ラインのK行の96コード96254924がteitori=5を持つ）。
+TYPE_VALUE_BOARD = "K"
 
 
 class BOMService:
@@ -76,6 +84,13 @@ class BOMService:
             （共有フォルダにTSVが未整備。resolve_file_no()で検知）
           - "read_error"：TSVは解決できたが読み込みに失敗した
             （文字コードエラー等。get_parts_for_file_no()で検知）
+          - "no_k_row_found"：丁取り数の参照元となる基板コード（K行、
+            COL_TYPE=='K'の行の96コード）が対象のfile_no・side・実装ライン内に
+            見つからない（_calculate_bom()で検知。実データ例：file_no=S722）
+          - "multiple_k_rows_found"：同一file_no・side・実装ライン内に、
+            異なる96コードを持つK行が複数見つかり、基板コードを一意に
+            決定できない（_calculate_bom()で検知。実データでは実装ライン絞り込み
+            前のfile_no=339がこれに該当したが、絞り込み後は解消される）
         """
         return dict(self._ensure_index().problems)
 
@@ -213,14 +228,42 @@ class BOMService:
           呼び出し元がラインを特定できない場合でも過大計算は防げるが、
           「どのラインの数値を使うか」は保証されない（実データ上は通常
           どのラインも同一BOMのため実害はない）。
-        - 部品員数（COL_QTY_PER_PRODUCT）が None の行はスキップ
+        - 部品員数（COL_QTY_PER_PRODUCT）が None の行はスキップ（K行自身もここで
+          スキップされる。K行は部品員数が常に空欄のため）
         - 係数（COL_COEFFICIENT）> 0 → qty = 部品員数 × 係数
         - 係数が 0（またはNone）かつ Rフラグ（COL_R_FLAG）あり
-          → models.parts_attributes.get_parts_attributes(part_no) から丁取り数を取得し、
+          → 基板コード（下記参照）で models.parts_attributes.get_parts_attributes()
+            から丁取り数を取得し、
             丁取り数が1以上 → qty = 部品員数 ÷ 丁取り数
             丁取り数が未設定（None）または0以下 → 警告ログを出し、暫定で qty = 部品員数
         - 係数が 0（またはNone）かつ Rフラグなし → 警告ログを出してスキップ
         - 同一 part_no は qty を合算する
+
+        丁取り数の参照元（基板コード）について：
+        丁取り数はRフラグが立っている行自身の96コード（部品自身）ではなく、
+        同一file_no・実装ライン内の「K行」（COL_TYPE == TYPE_VALUE_BOARD、
+        基板自身を表す行。部品員数は常に空欄）が持つ96コードに対して
+        models.parts_attributes に登録されている（実データ検証済み：
+        file_no=723 side=2 の部品96220357はteitoriを持たず、同ファイル・同
+        実装ラインのK行の96コード96254924がteitori=5を持つ。部品自身の
+        96コードで検索すると該当データが無くフォールバックが働き、本来1.0で
+        あるべき値が5.0になる実害を確認済み）。
+
+        K行探索は side では絞り込まない：K行は生産面（COL_SIDE）に関係なく
+        常に生産面=1として記録されている（実データ519ファイル・K行636件全件で
+        確認済み、生産面=2のK行は0件）。基板コードは面を問わず共通のため、
+        side=2のBOM計算であっても、生産面=1に記録されたK行を参照する
+        （実装ラインのみで絞り込む）。
+
+        K行は対象のfile_no・実装ライン内に必ず1件だけ存在する前提
+        （実データ519ファイル中517ファイルで確認済み、うち515ファイルは単一、
+        実装ライン単位で見ればfile_no=339のような複数ライン混在ファイルも
+        ライン絞り込み後は1件になる）。この前提が崩れている場合
+        （K行が0件、または絞り込み後もなお複数の異なる96コードが見つかる場合）は
+        丁取り数の参照元を一意に決定できないため、BOM展開そのものを中止し、
+        BOMFileIndex.problems に理由（"no_k_row_found" / "multiple_k_rows_found"）を
+        記録した上で ValueError を送出する（部品員数をそのまま採用するフォール
+        バックは行わない。実データではfile_no=S722がK行0件の実例）。
         """
         resolved_line = mounting_line
         if not resolved_line:
@@ -232,13 +275,65 @@ class BOMService:
                     resolved_line = candidate
                     break
 
+        def _row_in_scope(row):
+            if row.get(COL_SIDE) != side:
+                return False
+            if resolved_line and row.get(COL_MOUNTING_LINE) != resolved_line:
+                return False
+            return True
+
+        def _row_in_line_scope(row):
+            # K行探索専用：K行はside（生産面）に関係なく常に生産面=1として
+            # 記録されている（実データ519ファイル全636件のK行で確認済み、
+            # 生産面=2のK行は0件）。基板コード自体は面を問わず共通のため、
+            # sideでは絞り込まず実装ラインのみで絞り込む。
+            if resolved_line and row.get(COL_MOUNTING_LINE) != resolved_line:
+                return False
+            return True
+
+        board_codes = {
+            row.get(COL_PART_NO)
+            for row in rows
+            if _row_in_line_scope(row) and row.get(COL_TYPE) == TYPE_VALUE_BOARD and row.get(COL_PART_NO)
+        }
+
+        if len(board_codes) == 0:
+            self._ensure_index().problems[file_no] = {
+                "type": "no_k_row_found",
+                "candidates": [],
+                "message": (
+                    f"file_no={file_no!r} side={side} mounting_line={resolved_line!r} に"
+                    f"基板自身を表すK行（{COL_TYPE}='{TYPE_VALUE_BOARD}'）が見つかりません。"
+                    f"丁取り数の参照元となる基板コードを特定できないため、BOM展開を中止します。"
+                ),
+            }
+            raise ValueError(
+                f"file_no={file_no!r} side={side} mounting_line={resolved_line!r} に"
+                f"K行（基板自身の96コード）が見つからないため、BOM計算を中止しました。"
+            )
+
+        if len(board_codes) >= 2:
+            candidates = sorted(board_codes)
+            self._ensure_index().problems[file_no] = {
+                "type": "multiple_k_rows_found",
+                "candidates": candidates,
+                "message": (
+                    f"file_no={file_no!r} side={side} mounting_line={resolved_line!r} に"
+                    f"複数の異なるK行（基板コード: {', '.join(candidates)}）が見つかり、"
+                    f"丁取り数の参照元を一意に決定できないため、BOM展開を中止します。"
+                ),
+            }
+            raise ValueError(
+                f"file_no={file_no!r} side={side} mounting_line={resolved_line!r} に"
+                f"複数のK行（{', '.join(candidates)}）が見つかったため、BOM計算を中止しました。"
+            )
+
+        board_code = next(iter(board_codes))
+
         totals = {}
 
         for row in rows:
-            if row.get(COL_SIDE) != side:
-                continue
-
-            if resolved_line and row.get(COL_MOUNTING_LINE) != resolved_line:
+            if not _row_in_scope(row):
                 continue
 
             part_no = row.get(COL_PART_NO)
@@ -255,7 +350,7 @@ class BOMService:
             if coefficient and coefficient > 0:
                 qty = qty_per_product * coefficient
             elif r_flag:
-                attrs = get_parts_attributes(part_no)
+                attrs = get_parts_attributes(board_code)
                 teitori = attrs.get("teitori") if attrs else None
 
                 if teitori is not None and teitori >= 1:
@@ -263,8 +358,8 @@ class BOMService:
                 else:
                     logger.warning(
                         "丁取り数が未設定または0以下です: file_no=%s side=%s part_no=%s "
-                        "（teitori=%r）。暫定的に部品員数をそのまま採用します。",
-                        file_no, side, part_no, teitori,
+                        "board_code=%s（teitori=%r）。暫定的に部品員数をそのまま採用します。",
+                        file_no, side, part_no, board_code, teitori,
                     )
                     qty = qty_per_product
             else:

@@ -46,12 +46,12 @@ class MonthlyReportWindow(tk.Toplevel):
         tree_frame = ttk.Frame(self, padding=10)
         tree_frame.pack(expand=True, fill=tk.BOTH)
 
-        cols = ("seq", "file_no", "board_name", "lot_no", "daily_qty", "app_cumulative_qty", "order_qty",
+        cols = ("seq", "file_no", "board_name", "lot_no", "daily_qty", "order_qty",
                 "lot_completed", "surplus_qty", "lot_remaining")
         headers = dict(zip(cols, REPORT_HEADERS))
         widths = {
             "seq": 50, "file_no": 100, "board_name": 160, "lot_no": 110,
-            "daily_qty": 80, "app_cumulative_qty": 80, "order_qty": 80,
+            "daily_qty": 80, "order_qty": 80,
             "lot_completed": 80, "surplus_qty": 80, "lot_remaining": 80,
         }
         left_aligned = {"file_no", "board_name", "lot_no"}

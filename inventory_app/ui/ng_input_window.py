@@ -459,6 +459,12 @@ class NgInputWindow(tk.Toplevel):
         """
         selected = {"value": None}
 
+        # selfが最小化状態だと、transient(self)したダイアログがstate()="withdrawn"
+        # のまま実際には表示されない（ui.plan_candidate_dialog._show_candidate_list_dialog()
+        # と同じ理由・同じ対策、UI_WORKFLOW_FIXES_NOTES.md参照）。
+        if self.state() == "iconic":
+            self.deiconify()
+
         dialog = tk.Toplevel(self)
         dialog.title("実装ラインの選択")
         dialog.transient(self)
@@ -687,6 +693,12 @@ class NgInputWindow(tk.Toplevel):
 
         current_selection = self._ng_checkbox_filters.get(col_key)
         checked_values = set(full_values) if current_selection is None else set(current_selection)
+
+        # selfが最小化状態だと、transient(self)したポップアップがstate()="withdrawn"
+        # のまま実際には表示されない（ui.plan_candidate_dialog._show_candidate_list_dialog()
+        # と同じ理由・同じ対策、UI_WORKFLOW_FIXES_NOTES.md参照）。
+        if self.state() == "iconic":
+            self.deiconify()
 
         popup = tk.Toplevel(self)
         popup.title(f"{label_text} の絞り込み")

@@ -22,7 +22,7 @@ from services.production_service import build_daily_report, build_monthly_report
 JP_FONT = "HeiseiKakuGo-W5"
 registerFont(UnicodeCIDFont(JP_FONT))
 
-REPORT_HEADERS = ["No", "ファイルNo", "基板名", "ロットNo", "生産数", "累計数", "注文数",
+REPORT_HEADERS = ["No", "ファイルNo", "基板名", "ロットNo", "生産数", "注文数",
                    "引落数量", "仕掛数量", "未完了数"]
 
 
@@ -31,7 +31,7 @@ def _row_to_values(row):
     # （DB上はREAL/INTEGER混在のため、無加工だと"100.0"のように小数点が出てしまう）。
     return [
         row["seq"], row["file_no"], row["board_name"], row["lot_no"],
-        f"{row['daily_qty']:.0f}", f"{row['app_cumulative_qty']:.0f}", f"{row['order_qty']:.0f}",
+        f"{row['daily_qty']:.0f}", f"{row['order_qty']:.0f}",
         f"{row['lot_completed']:.0f}", f"{row['surplus_qty']:.0f}", f"{row['lot_remaining']:.0f}",
     ]
 
@@ -94,7 +94,7 @@ class ReportPreviewWindow(tk.Toplevel):
     ROWS_PER_PAGE = 35
 
     COL_HEADERS = REPORT_HEADERS
-    COL_WIDTHS = [25, 55, 80, 55, 45, 45, 45, 50, 50, 50]
+    COL_WIDTHS = [25, 55, 80, 55, 45, 45, 50, 50, 50]
 
     def __init__(self, parent, report_rows, report_date, title_prefix="日報",
                  headers=None, col_widths=None, row_to_values=None):
@@ -198,12 +198,12 @@ class DailyReportWindow(tk.Toplevel):
         tree_frame = ttk.Frame(self, padding=10)
         tree_frame.pack(expand=True, fill=tk.BOTH)
 
-        cols = ("seq", "file_no", "board_name", "lot_no", "daily_qty", "app_cumulative_qty", "order_qty",
+        cols = ("seq", "file_no", "board_name", "lot_no", "daily_qty", "order_qty",
                 "lot_completed", "surplus_qty", "lot_remaining")
         headers = dict(zip(cols, REPORT_HEADERS))
         widths = {
             "seq": 50, "file_no": 100, "board_name": 160, "lot_no": 110,
-            "daily_qty": 80, "app_cumulative_qty": 80, "order_qty": 80,
+            "daily_qty": 80, "order_qty": 80,
             "lot_completed": 80, "surplus_qty": 80, "lot_remaining": 80,
         }
         left_aligned = {"file_no", "board_name", "lot_no"}

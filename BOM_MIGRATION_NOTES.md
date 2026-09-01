@@ -227,6 +227,8 @@ lot_no=221608: is_active行数=10, file_actuals件数=10, 一致=True
 | 15 | `db/migration_007_add_lot_no_and_kitting_list_no_indexes.py`, `db/init_db.py`, `models/kitting_plan.py`, `db/schema.sql` | 計画一覧表示のボトルネック調査を受け、`kitting_plan_items.lot_no`・`production_daily.kitting_list_no`にインデックスを追加（`migration_005`/`006`と同じ`sys.path.insert`+`from config import DB_PATH`パターン）。新規DB作成時にも反映されるよう`init_kitting_plan_tables()`/`init_database_at()`にも同内容を追加し、`schema.sql`には実体の所在を示すコメントのみ追記 | **反映済み・実DB適用済み**（`inventory_app/db/inventory.db`に`migration_007`を実行済み。適用前後で`kitting_plan_items`=2251件・`production_daily`=0件のまま変化無しを確認。コード自体は未コミット） | - |
 | 16 | `models/production.py`, `models/kitting_plan.py`, `services/production_service.py`, `ui/kitting_production_entry.py` | `get_app_cumulative_qty_bulk()`を新設し、`list_active_plan_items()` / `load_plan_list()` / `calculate_lot_completion()`の3箇所のN+1呼び出し（ループ内で`get_app_cumulative_qty()`を個別呼び出し）を解消。`list_active_plan_items()`の戻り値に計算済みの`app_cumulative_qty`を持たせ、`load_plan_list()`側での重複計算も排除 | **反映済み**（未コミット）。効果：計画一覧表示（`load_plan_list()`相当）が**9.25秒→0.87秒（約10.6倍）**に改善（合成データ11,155件、`migration_007`適用込みで計測） | - |
 
+> **更新注記（2026-09-01）**：上記#1・#2・#3・#4・#6は、その後の環境（本ファイルの他セクション§8〜§10を参照）で改めて確認・再修正済み。特に#4（`calculate_lot_completion()`のキー拡張）は、一度反映を確認した後に**別の環境で再度単一キーへ巻き戻っている状態が発見される**、という事象が2回発生している。この巻き戻りの再発パターンと、次回環境立ち上げ時の確認手順は`CANONICAL_DESIGN_DECISIONS.md`の「環境間の整合性チェック手順」セクションに集約したので、マージ作業の際は必ずそちらを参照すること。
+
 ---
 
 ## 6. 未対応・保留中の項目
@@ -247,17 +249,97 @@ lot_no=221608: is_active行数=10, file_actuals件数=10, 一致=True
 
 ---
 
-## 8. 参考：呼び出し経路の全体像
+## 8. TSVヘッダーのA/B/C/Dパターン吸収（重要・§2の前提を修正）
+
+**§2の実列名一覧（17列）は、実は全パターン中の「パターンA」のみだった。** 103.tsv・104.tsv・427.tsvがたまたま全てパターンAだったため、当初はこれが唯一の形式だと誤認していた。「NG入力でラインを選択できるようにする」調査の過程で、全519ファイルのヘッダーを網羅的に比較した結果、以下の4パターンが存在することが判明した。
+
+| パターン | 件数 | 特徴 |
+|---|---|---|
+| A | 330件（63.7%） | 現行の列名定数と一致（生産面／96コード／セットアップ部品種別／減数種別） |
+| B | 182件（35.1%） | 別列名（先行面・後行面／基板・部品96コード／基板手付け部品／理論・実装吸着数） |
+| C | 5件（1.0%） | A/Bの列名が列ごとに混在（ハイブリッド。例：SIDE/PART_NOはB形式、TYPE/R_FLAGはA形式） |
+| D | 1件（0.2%）| ヘッダー行の1列目がデータ値（`96241701`）に置き換わっている破損ファイル（file_no=235） |
+
+**対応方針（ユーザー決定）**：A・B・Cは実質同一データのため吸収する。列ごとに独立して「ヘッダーに実在する方の列名」を採用する方式にすれば、Cの混在にも自然に対応できる（`services/bom_file_service.py`の`_COLUMN_ALIASES`辞書：canonical名→候補列名リスト、`_resolve_header_aliases()`で解決）。Dはエラー扱いとし、`^\d{6,}$`（数字のみ6桁以上）にマッチする列見出しを「データ値の紛れ込み」とみなして検知する（`problems`に新理由種別`corrupted_header`を追加）。
+
+**効果**：実運用中のsetup_file_no（481件）での成功率が、列名対応前の**47.8% → 82.3%**に改善した。
+
+---
+
+## 9. 実装ライン（mounting_line）の過大計算バグ（重要・実データの23%に影響）
+
+### 発見の経緯
+
+上記§8の調査中、`_calculate_bom()`が「実装ライン」列を一切参照せず、同一file_no・sideの全行（＝全ラインの行）を無条件に合算していることが判明。同一file_noは複数の代替ライン向けに**同じBOMを重複記載している**のが実態のため（例：file_no=154のside=1にライン`['D','L','S']`が存在し、3ラインとも完全に同じ41点の部品構成）、絞り込まずに合算すると**部品消費量が実装ライン数倍（最大3倍）に過大計算**されていた。実運用データ（is_active=1、807件のfile_no×side組み合わせ）のうち**156件（23.0%）**がこの影響を受ける。
+
+### 修正内容
+
+- `BOMService.get_parts_for_file_no(file_no, side, mounting_line=None, data_ym=None)`に`mounting_line`引数を追加。
+- 未指定時のデフォルトは「sideが一致する最初の行の実装ライン値を採用」（安全側、合算しない）。
+- `bom_master`キャッシュのUNIQUE制約に`mounting_line`を追加（`db/migration_011_add_mounting_line_to_bom_master.py`、実DB適用済み。旧キャッシュ157行はTRUNCATE、再計算可能なキャッシュのため実害なし）。
+- **計画あり登録**：`plan["mounting_line"]`を自動的に使用（ユーザー入力不要）。`services/production_service.py::search_plan_by_kitting_no()`の戻り値に`mounting_line`が元々含まれていなかったため、これも合わせて追加。
+- **計画外登録**：`BOMService.list_mounting_lines(file_no, side)`でTSVのdistinctなライン値を取得し、1件なら自動使用、複数なら`ui/ng_input_window.py`の`_select_mounting_line()`モーダルダイアログで選択させる。
+- **WIP展開（在庫差異レポート）**：`services/production_service.py::_build_report_rows()`の行辞書に`mounting_line`を追加、`services/inventory_diff_service.py::_collect_wip_totals()`経由で`expand_wip_to_parts()`まで伝播。
+
+### NG申告と展開の設計分離により、面1/面2で異なるmounting_lineでも安全
+
+`models/ng_declarations.py`のテーブルは`mounting_line`列を持たず「申告（枚数メモ）のみ」を保持する設計。実際のBOM展開は「展開」操作のたびに対象`kitting_list_no`から計画を引き直して行われるため、面1・面2が異なる`mounting_line`を持つケース（実データで25件確認、例：`lot_no=102399`の面1=D／面2=C）でも、4つの経路（直接入力・NG一覧・製品NGレポート・面連動）すべてが単一の`_expand_from_kitting_no()`に収束し、取り違えリスクが構造的に排除されていることを確認済み（修正不要と結論）。
+
+---
+
+## 10. 丁取り数の参照元バグ（K行基準への修正、重大）
+
+### 発見の経緯
+
+「部品属性は基板の事？」という質問と、BOM計算で「丁取り数が未設定」という警告が頻発していたことから調査。丁取り数（`models.parts_attributes.teitori`）は**コンポーネント自身の96コードではなく、そのfile_no・実装ライン全体を表す「セットアップ部品種別='K'」の行（基板自身）の96コード**に対して登録されている、という業務ルールが判明した。
+
+実例：file_no=723のK行（基板自身）の96コードは`96254924`、`parts_attributes`での丁取り数=5。同じfile_no内の`96220357`（部品員数=5.0、係数=0、減数種別='R'）は本来96254924の丁取り数（5）で割るべきところ、**修正前は96220357自身の96コードで`parts_attributes`を検索していた**ため該当データなし→フォールバックでqty=5.0のまま（本来1.0であるべきところ5倍の過大計算）という実害を確認した。
+
+**重要な留意点**：K行は生産面（COL_SIDE）に関係なく**常に生産面=1として記録されている**（実データ519ファイル・K行636件全件で確認、生産面=2のK行は0件）。基板コードは面を問わず共通のため、K行探索は実装ラインのみで絞り込み、sideでは絞り込まない（side=2のBOM計算であっても、生産面=1に記録されたK行を参照する）。
+
+### 修正内容
+
+- `_calculate_bom()`内で、対象の実装ライン（sideでは絞り込まない）から`セットアップ部品種別='K'`の行を1件特定し、その96コード（基板コード）を取得。
+- Rフラグ行の丁取り数検索を、部品自身の96コードではなく基板コードで行うよう修正。
+- K行が複数見つかった場合（実装ライン絞り込み後もなお。実データではfile_no=339がこれに該当したが、ラインごとに別の基板コードを持つケースであり、ライン絞り込み後は解消される）：エラー扱い（`problems`に`multiple_k_rows_found`を記録）、自動選択はしない。
+- K行が0件の場合（file_no=S722が実例）：エラー扱い（`problems`に`no_k_row_found`を記録）、部品員数そのまま採用のフォールバックは行わない（ユーザー決定）。
+
+実運用データ（839件の(setup_file_no, production_side, mounting_line)組み合わせ）での結果：成功699件（83.3%）、resolve失敗128件（既知、§3参照）、`no_k_row_found` 8件（今回新規発見。修正前はサイレントに誤った値のまま展開され続けていた）、read_tsv失敗4件（既知、§3参照）。
+
+`list_excluded_file_nos()`の理由種別（type）に`no_k_row_found`・`multiple_k_rows_found`を追加（§3の一覧に追記）。
+
+**§2で述べた「truthy判定を採用した理由と限界」（`'M'`と`'R'`を区別しない単純truthy判定）は、この丁取り数参照元の修正後も変更していない**（値の種類による分岐は依然として行わない。基板コードの特定方法のみが変わった）。
+
+---
+
+## 11. 部品属性（丁取り数マスタ）インポートのTSV対応
+
+実ファイル形式はCSV（カンマ区切り）ではなく**TSV（タブ区切り）、27列構成**であることが判明（ユーザー提供の実サンプルより）。既存の`ui/parts_attributes_import_window.py`が`csv.DictReader(f)`（デフォルトのカンマ区切り）のままだったため、区切り文字の不一致で全行が「96コードが空のためスキップ」となり、**サイレントに0件登録**になっていた（§2で報告した当初のBOM列名バグと同種のパターン）。ただし「有効な行が1件も無ければ削除しない」という既存のガードのおかげで、実データへの誤削除等の実害は無かった。
+
+列名マッピング（`COL_PART_NO="96コード"`・`COL_TEITORI="丁取り数"`等）自体は実データと一致しており、変更不要だった。
+
+**修正内容**：`csv.DictReader(f, delimiter="\t")`に変更。ファイル選択ダイアログをTSV/CSV両対応に。読み込み行数の9割以上がスキップされた場合の注意喚起メッセージ（区切り文字・文字コードの確認を促す）も追加。**カンマ区切りCSVでの実運用は存在しないため、TSV固定として確定**（ユーザー確認済み）。
+
+この修正後、実際に27列のサンプルTSVを取り込み、`parts_attributes`テーブルに884件の実データが投入された（§10の丁取り数検証はこの実データに基づく）。
+
+---
+
+## 12. 参考：呼び出し経路の全体像
+
+（§8〜§10の対応により、以下のフローは`mounting_line`引数・K行ベースの基板コード解決を
+含む形に更新済み。詳細は各セクション参照。）
 
 ```
 BOMService.initialize() / _ensure_index()
   └─ BOMFileIndex(shared_folder_path)  ※ config.BOM_FOLDER_PATH がデフォルト
        └─ build_index()  … 共有フォルダを走査し file_no → {path, mtime} を索引化
 
-BOMService.get_parts_for_file_no(file_no, side, data_ym)
-  ├─ 1. models.bom_master.query_bom_master() … キャッシュ確認（1件でもあればヒットとして返す）
+BOMService.get_parts_for_file_no(file_no, side, mounting_line=None, data_ym=None)
+  ├─ 1. models.bom_master.query_bom_master() … キャッシュ確認（file_no, side, mounting_line,
+  │      data_ymの組で1件でもあればヒットとして返す。§9参照）
   ├─ 2. （キャッシュミス時）BOMFileIndex.resolve_file_no(file_no) → read_tsv() … TSV読み込み
-  ├─ 3. _calculate_bom() … 係数 or 丁取り数（models.parts_attributes.get_parts_attributes）でqty算出
+  │      （ヘッダーのA/B/Cパターン吸収・D検知は read_tsv() 内で実施。PLACEHOLDER_KEEP() … 係数 or 丁取り数（K行の基板コードで
+  │      models.parts_attributes.get_parts_attributes()を引く。§10参照）でqty算出
   └─ 4. models.bom_master.save_bom_master() … 計算結果をキャッシュ保存
 
 BOMService.expand_wip_to_parts(wip_record)   ── get_parts_for_file_no() を利用
