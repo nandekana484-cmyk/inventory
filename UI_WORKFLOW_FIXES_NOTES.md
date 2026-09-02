@@ -164,6 +164,22 @@ if actual_qty >= order_qty:
 
 **実装中に発見・回避した潜在バグ**：表示行をフィルタすると、Treeviewの表示位置インデックス（`tree.index(row_id)`）と元データ（`self._today_all_rows`）の対応がズレ、履歴行ダブルクリックで誤った計画が開かれるバグが生まれるところだった。挿入時にiid→元レコードを直接対応付ける`self._today_row_by_iid`を新設し、`on_history_row_double_click()`をこちらから逆引きする方式に変更することで回避した。
 
+### グループI追記：日報・月報への面1省略ロジック適用、および実績不整合の検知・警告（重要な発見）
+
+**発見の経緯**：グループIで「基板別実績」「日次実績履歴」には面1省略ロジックを実装済みだったが、**日報・月報画面（`ui/daily_report_window.py`・`ui/monthly_report_window.py`）にはこのロジックが一切適用されていなかった**ことが判明した。面1・面2両方に実績があれば、両方が別々の行として一覧に表示されていた。さらに、月報の「仕掛数量抽出」機能（`on_extract_wip()`）が、面1の`surplus_qty`（仕掛数量）をそのまま抽出してしまうことも判明した。
+
+**面1が面2より多い状態の原因調査**：`ActualCorrectionWindow`（実績修正画面）が**面連動を一切行わない**ことが原因と判明した。`prod_log_id`（片面1件）だけを指定して`update_daily_result()`/`delete_daily_result()`を呼ぶ設計のため、片面だけを修正・削除すると面1・面2の実績が食い違う状態を作れる。CSV取込・手動登録の面連動（`register_opposite_side_daily_result()`）も、反対側への登録が失敗した場合は主行の登録がそのまま成功として扱われるため、失敗時に食い違いが残り得る。
+
+**業務判断の確定**：「面1が面2より多い状態」は**本来あってはならない不整合**であり、**除外した上で別途警告する**方針が確定した（業務上正当な状態ではない。CANONICAL_DESIGN_DECISIONS.md D-8にも記録）。
+
+| # | 対象ファイル | 実施内容 | 判定 |
+|---|---|---|---|
+| I-3 | `services/production_service.py` | `_build_report_rows()`（日報・月報共通関数）に面1省略ロジックを追加（グループIと同じ「1回目除外」の考え方）。除外の際、面1の実績が面2を上回っている場合は`inconsistency_warnings`リストに記録し、黙って消すのではなく事実を残す設計とした。戻り値を`(report_rows, inconsistency_warnings)`のタプルに変更 | **反映済み** |
+| I-4 | `ui/monthly_report_window.py` | 集計後、不整合があれば警告ダイアログ（対象lot_no・面1/面2それぞれの数量・「実績修正画面での片面のみの修正が原因の可能性があります」という手がかり）を表示 | **反映済み** |
+| I-5 | `ui/monthly_report_window.py` | `on_extract_wip()`：`report_rows`が既にI-3で面1省略済みのため、追加のロジック無しで自動的に面1が除外される（コード変更は無く、docstringで明記するのみ） | **反映済み** |
+
+**副次的な発見（重要）**：戻り値の型変更（タプル化）に伴い、`services/inventory_diff_service.py::_collect_wip_totals()`（在庫差異レポート機能）の呼び出し箇所も連動して修正が必要になった。調査の結果、**この既存機能も同じ「面1二重計上」の問題を抱えていた**ことが判明し、今回の修正で連動して解消された（スコープ外として放置していたら気づかれないまま残っていた可能性が高い）。
+
 ### グループJ：計画情報欄「余剰基板」の削除、不一致警告の比較対象変更
 
 | # | 対象ファイル | 実施内容 | 判定 |
@@ -216,6 +232,30 @@ if actual_qty >= order_qty:
 `ActualCorrectionWindow`（実績修正ウィンドウ）は`transient()`・`grab_set()`・`wait_window()`のいずれも使用しない非モーダルウィンドウのため、このバグの対象外であることを確認済み。
 
 **教訓・今後の注意点**：新しくモーダルダイアログ（`Toplevel`＋`transient`＋`grab_set`）を追加する際は、この`iconic`チェック＋`deiconify()`パターンを標準的に含めることを推奨する。
+
+---
+
+### グループP：未完了計画（仕掛）の月次DB間引き継ぎ機能（新機能）
+
+**背景**：月次DB切り替え（`config.DB_PATH`の切り替え、`on_switch_database()`/`on_create_database()`）は、新しい月のDBを完全にまっさらな状態（計画0件・実績0件）から作成する設計だった。未完了（仕掛が残っている）ロットの計画を、次の月のDBに引き継ぎたいという要望から新規実装した。
+
+**確定した設計方針**：
+- 引き継ぐのは「未完了の計画行そのもの」を新DBにコピーする方式（同じkitting_list_noで続きから作業できるようにする）。仕掛分だけを新しい番号で再作成する方式は不採用。
+- 「未完了」の判定基準は**lot_remaining_quantity > 0**（lot_no単位）。月報の仕掛数量抽出で使われる`surplus_qty`（record単位、別の計算式）とは意味が異なるため区別する。
+- 未完了と判定されたlot_noに属する**全kitting_list_no行をまとめてコピー**する（一部だけコピーすると新DB側で正しい完成数計算ができなくなるため）。
+- **production_daily（実績）もコピーする**：`lot_remaining_quantity`の計算式自体が累計実績（completed）に依存するため、実績をコピーしないと引き継いだ計画の「未完了数」表示が新DBで意味をなさなくなるという技術的な理由による。
+- **scrap_records・ng_declarations（NG履歴）はコピーしない**（ユーザー決定：過去のNG履歴を月をまたいで追跡する必要はない、新DBでは新規のNG申告として扱う）。
+- **wip_board_snapshotもコピー不要**（あくまである時点のスナップショットのため）。
+
+| # | 対象ファイル | 実施内容 | 判定 |
+|---|---|---|---|
+| P-1 | `services/production_service.py` | `list_incomplete_lots()`（新規）：全lot_noについて未完了かどうかを効率的に判定する。N+1を避けるため、`list_plan_items_for_all_lots()`（新規、全計画行を1回のSELECTで取得）＋`get_app_cumulative_qty_bulk()`（既存の一括取得）を組み合わせて実装。実測：500 lot_no（計1000計画行）で0.008秒 | **反映済み** |
+| P-2 | `services/db_migration_carryover.py`（新規） | `carry_over_incomplete_lots(old_db_path, new_db_path)`：旧DB読み取り→新DB書き込みの2段階。主キー（`plan_batch_id`・`plan_item_id`）は`create_plan_batch()`・`create_plan_version()`を使って新DB側で再採番（旧DBの値はそのまま使わない）。`production_daily`の`plan_item_id`も新DB側の値に付け替える | **反映済み** |
+| P-3 | `ui/main_window.py` | `on_create_database()`に「前月から未完了分を引き継ぐ」チェックボックスを追加。既存の非同期パターン（`LoadingWindow`＋スレッド＋キュー＋ポーリング）を適用 | **反映済み** |
+
+**同時操作リスクへの対策**：`config.DB_PATH`はアプリ全体で共有されるグローバル状態のため、引き継ぎ処理中（旧DB読み取り→新DB書き込みの間）に、他の画面（生産実績入力画面等）で操作されるとデータ不整合の恐れがある。対策として：
+- 引き継ぎ処理中はメインメニュー全体を操作不可にする（`_set_menu_enabled(False)`）。
+- 引き継ぎ開始前、他の子ウィンドウが開いている場合は確認ダイアログを表示し、「いいえ」なら**新DBファイルの作成自体も含めて処理を中断する**（中途半端に新DBだけ作成される状態を避ける）。
 
 ---
 

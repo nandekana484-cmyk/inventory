@@ -297,6 +297,26 @@ def _build_report_rows(records):
     （find_plan_item_by_kitting_no(kitting_list_no)）ではどちらの計画が返るか
     不定になるため、その実績が実際にどのlot_noに対して登録されたかを
     確実に示すrec["lot_id"]を優先する。
+
+    面1省略（重要）：同一(lot_no, setup_file_no)に現在アクティブな面2計画が
+    存在する場合、面1の行は一覧から除外する（models.kitting_plan.
+    list_active_plan_items()の「1回目除外」・ui.kitting_production_entry.py::
+    search_plan()の基板別実績表示と同じ考え方。面連動登録により通常は面1・面2の
+    実績数量は常に一致するはずだが、面1のみを個別に表示し続ける意味が無いため）。
+
+    ただし、面1の実績数量が面2（find_opposite_side_plan()で特定した、現在の
+    アプリ内累計＝get_app_cumulative_qty()）を上回っている場合は「不整合」として
+    扱い、除外はするが黙って消さず、戻り値のinconsistency_warningsに記録する
+    （ui.kitting_production_entry.py::ActualCorrectionWindowが面連動を行わず
+    片面のみを修正・削除できるため、面1・面2の実績が食い違う状態を作れる。
+    調査により確認済み）。面2計画が存在しない（片面のみの計画）場合は、
+    比較対象が無いため除外・警告いずれも行わない。
+
+    戻り値：(report_rows, inconsistency_warnings) のタプル。
+      report_rows：[{"seq", "kitting_list_no", ...}, ...]（面1省略後、seqは
+                    表示される行のみで1から振り直す）
+      inconsistency_warnings：[{"lot_no", "setup_file_no", "side1_kitting_list_no",
+                                 "side1_qty", "side2_kitting_list_no", "side2_qty"}, ...]
     """
     enriched = []
     for rec in records:
@@ -318,8 +338,44 @@ def _build_report_rows(records):
         if lot_no not in lot_completed or daily_qty < lot_completed[lot_no]:
             lot_completed[lot_no] = daily_qty
 
+    excluded_indices = set()
+    inconsistency_warnings = []
+    for idx, item in enumerate(enriched):
+        plan = item["plan"]
+        if plan is None:
+            continue
+        side = str(plan.get("production_side") or "").strip()
+        if side != "1":
+            continue
+
+        setup_file_no = plan.get("setup_file_no")
+        lot_no = item["lot_no"]
+        opposite = find_opposite_side_plan(lot_no, setup_file_no, "1")
+        if opposite is None:
+            continue  # 面2計画が無い（片面のみの計画）→ 除外しない
+
+        opposite_kitting_list_no = opposite["kitting_list_no"]
+        side1_qty = item["daily_qty"]
+        side2_qty = get_app_cumulative_qty(opposite_kitting_list_no, lot_no)
+
+        if side1_qty > side2_qty:
+            inconsistency_warnings.append({
+                "lot_no": lot_no,
+                "setup_file_no": setup_file_no,
+                "side1_kitting_list_no": item["kitting_list_no"],
+                "side1_qty": side1_qty,
+                "side2_kitting_list_no": opposite_kitting_list_no,
+                "side2_qty": side2_qty,
+            })
+
+        excluded_indices.add(idx)
+
     report_rows = []
-    for i, item in enumerate(enriched, start=1):
+    seq = 1
+    for idx, item in enumerate(enriched):
+        if idx in excluded_indices:
+            continue
+
         plan = item["plan"]
         kitting_list_no = item["kitting_list_no"]
         lot_no = item["lot_no"]
@@ -328,7 +384,7 @@ def _build_report_rows(records):
         completed = lot_completed.get(lot_no, 0)
 
         report_rows.append({
-            "seq": i,
+            "seq": seq,
             "kitting_list_no": kitting_list_no,
             "file_no": plan["setup_file_no"] if plan else "",
             "board_name": plan["board_name"] if plan else "",
@@ -342,13 +398,15 @@ def _build_report_rows(records):
             "surplus_qty": daily_qty - completed,
             "lot_remaining": order_qty - completed,
         })
+        seq += 1
 
-    return report_rows
+    return report_rows, inconsistency_warnings
 
 
 def build_daily_report():
     """
     本日（report_date = 今日）入力された実績を元に、日報表示用のデータを構築する。
+    戻り値は_build_report_rows()と同じ (report_rows, inconsistency_warnings) タプル。
     """
     records = list_daily_production_today()
     return _build_report_rows(records)
@@ -358,6 +416,7 @@ def build_monthly_report(from_date: str, to_date: str):
     """
     指定期間（report_date が from_date～to_date、両端含む）の実績を元に、
     月報表示用のデータを構築する。列構成・集計ロジックは日報（build_daily_report）と共通。
+    戻り値は_build_report_rows()と同じ (report_rows, inconsistency_warnings) タプル。
     """
     records = list_daily_production_range(from_date, to_date)
     return _build_report_rows(records)

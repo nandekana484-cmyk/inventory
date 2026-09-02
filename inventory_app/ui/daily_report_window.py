@@ -181,7 +181,10 @@ class DailyReportWindow(tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
         self.report_date = datetime.now().strftime("%Y-%m-%d")
-        self.report_rows = build_daily_report()
+        # inconsistency_warnings（面1・面2の実績不整合）は月報画面（ui/monthly_report_window.py）
+        # 側でのみ警告表示する（要求スコープ）。日報側はタプルを正しく受け取り
+        # 保持するに留める。
+        self.report_rows, self.inconsistency_warnings = build_daily_report()
 
         self.title(f"日報出力（{self.report_date}）")
         self.geometry("1020x500")
@@ -230,7 +233,7 @@ class DailyReportWindow(tk.Toplevel):
         selected_date = self.date_entry.get()
 
         try:
-            self.report_rows = build_monthly_report(selected_date, selected_date)
+            self.report_rows, self.inconsistency_warnings = build_monthly_report(selected_date, selected_date)
         except Exception as e:
             messagebox.showerror("エラー", f"集計に失敗しました：{e}", parent=self.winfo_toplevel())
             return
@@ -272,7 +275,7 @@ class DailyReportWindow(tk.Toplevel):
 
     def refresh_report(self):
         """実績修正後に日報の一覧を再取得して表示を更新する。"""
-        self.report_rows = build_monthly_report(self.report_date, self.report_date)
+        self.report_rows, self.inconsistency_warnings = build_monthly_report(self.report_date, self.report_date)
         for item in self.tree.get_children():
             self.tree.delete(item)
         for row in self.report_rows:

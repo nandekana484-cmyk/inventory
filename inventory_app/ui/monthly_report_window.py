@@ -25,6 +25,7 @@ class MonthlyReportWindow(tk.Toplevel):
         self.from_date = None
         self.to_date = None
         self.report_rows = []
+        self.inconsistency_warnings = []
 
         self.title("月報出力")
         self.geometry("1020x560")
@@ -77,7 +78,7 @@ class MonthlyReportWindow(tk.Toplevel):
         to_date = self.to_date_entry.get()
 
         try:
-            self.report_rows = build_monthly_report(from_date, to_date)
+            self.report_rows, self.inconsistency_warnings = build_monthly_report(from_date, to_date)
         except Exception as e:
             messagebox.showerror("エラー", f"集計に失敗しました：{e}", parent=self.winfo_toplevel())
             return
@@ -90,6 +91,35 @@ class MonthlyReportWindow(tk.Toplevel):
             self.tree.delete(item)
         for row in self.report_rows:
             self.tree.insert("", tk.END, values=_row_to_values(row))
+
+        self._show_inconsistency_warning_if_any()
+
+    def _show_inconsistency_warning_if_any(self):
+        """
+        services.production_service._build_report_rows()が検知した「面1の実績が
+        面2を上回っている」不整合（inconsistency_warnings）があれば、対象lot_noを
+        列挙した警告ダイアログを表示する。該当する面1の行は一覧から既に除外済み
+        （黙って通常表示・黙って消えるのいずれでもなく、明示的に警告する）。
+        """
+        if not self.inconsistency_warnings:
+            return
+
+        lines = "\n".join(
+            f"・lot_no={w['lot_no']}（setup_file_no={w['setup_file_no']}）："
+            f"面1（{w['side1_kitting_list_no']}）={w['side1_qty']:.0f} ＞ "
+            f"面2（{w['side2_kitting_list_no']}）={w['side2_qty']:.0f}"
+            for w in self.inconsistency_warnings
+        )
+        messagebox.showwarning(
+            "実績不整合の警告",
+            "以下のロットで面1・面2の実績に不整合があります（面1の実績数が面2を"
+            "上回っています）。実績修正画面（ActualCorrectionWindow）での片面のみの"
+            "修正が原因の可能性があります。\n"
+            "該当する面1の行は、通常表示されるはずの面2省略ルールにより一覧からは"
+            "除外されていますが、内容のご確認をお願いします。\n\n"
+            f"{lines}",
+            parent=self.winfo_toplevel(),
+        )
 
     def on_row_double_click(self, event):
         """
@@ -122,11 +152,15 @@ class MonthlyReportWindow(tk.Toplevel):
         """実績修正後に月報の一覧を再取得して表示を更新する。"""
         if not self.from_date or not self.to_date:
             return
-        self.report_rows = build_monthly_report(self.from_date, self.to_date)
+        self.report_rows, self.inconsistency_warnings = build_monthly_report(self.from_date, self.to_date)
         for item in self.tree.get_children():
             self.tree.delete(item)
         for row in self.report_rows:
             self.tree.insert("", tk.END, values=_row_to_values(row))
+
+        # ActualCorrectionWindowでの片面修正直後はここが呼ばれるため、まさに
+        # 不整合が新たに発生し得るタイミング。on_aggregate()と同様に警告する。
+        self._show_inconsistency_warning_if_any()
 
     def _period_label(self):
         return f"{self.from_date} ～ {self.to_date}"
@@ -196,6 +230,14 @@ class MonthlyReportWindow(tk.Toplevel):
         save_wip_snapshot()はテーブル全体差し替え方式のため、押すたびに
         直前の抽出結果が今回の内容で完全に置き換わる（前回の集計期間で
         仕掛だった基板が、今回の期間の集計結果に含まれなければ残らない）。
+
+        面1省略について：同一(lot_no, setup_file_no)にアクティブな面2計画が
+        存在する場合の面1行は、そもそもself.report_rowsの時点で
+        services.production_service._build_report_rows()により除外済み
+        （面連動登録により本来面1・面2の実績は常に一致するはずで、面1単独の
+        仕掛数量として抽出する意味が無いため。詳細は_build_report_rows()の
+        docstring参照）。そのためここで改めて面1を除外するロジックは持たない
+        （self.report_rowsをそのままsurplus_qty > 0でフィルタするだけでよい）。
         """
         if not self.report_rows:
             messagebox.showwarning("警告", "先に集計を実行してください。", parent=self.winfo_toplevel())

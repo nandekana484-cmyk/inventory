@@ -52,7 +52,8 @@ class MainWindow(tk.Tk):
         self.db_folder_combobox.pack(side=tk.LEFT, padx=(0, 10))
         self._load_db_folders()
 
-        ttk.Button(db_select_frame, text="切り替え", command=self.on_switch_database).pack(side=tk.LEFT)
+        self.btn_switch_database = ttk.Button(db_select_frame, text="切り替え", command=self.on_switch_database)
+        self.btn_switch_database.pack(side=tk.LEFT)
 
         ttk.Separator(db_select_frame, orient="vertical").pack(side=tk.LEFT, fill=tk.Y, padx=10)
 
@@ -62,9 +63,10 @@ class MainWindow(tk.Tk):
         self.entry_new_db_folder.pack(side=tk.LEFT, padx=(0, 10))
 
         self.carry_over_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
+        self.chk_carry_over = ttk.Checkbutton(
             db_select_frame, text="前月(現在のDB)から未完了分を引き継ぐ", variable=self.carry_over_var,
-        ).pack(side=tk.LEFT, padx=(0, 10))
+        )
+        self.chk_carry_over.pack(side=tk.LEFT, padx=(0, 10))
 
         self.btn_create_database = ttk.Button(
             db_select_frame, text="新しいデータベースを作成", command=self.on_create_database,
@@ -169,6 +171,36 @@ class MainWindow(tk.Tk):
         btn_logout = ttk.Button(body_frame, text="ログアウト", command=self.on_logout)
         btn_logout.pack(fill=tk.X, pady=5)
 
+        # メインメニュー全体の操作可否を一括で切り替えるための対象ウィジェット一覧
+        # （_set_menu_enabled()参照）。carry_over_incomplete_lots()実行中、
+        # config.DB_PATHが旧DB→新DBの間で一時的に入れ替わるため、他のボタンから
+        # 新規にウィンドウを開けたりDBを切り替えられたりすると、その一時的な
+        # 切り替わりの間にデータ不整合が起きる恐れがある。
+        self._menu_widgets = [
+            self.db_folder_combobox, self.btn_switch_database, self.entry_new_db_folder,
+            self.chk_carry_over, self.btn_create_database,
+            btn_kitting_import, btn_kitting_production, btn_inventory_input,
+            btn_theoretical_import, btn_inventory_diff, btn_ng_input, btn_wip_expansion,
+            btn_master, btn_master_import, btn_parts_attributes_import,
+            btn_worker_management, btn_board_structure_import, btn_logout,
+        ]
+
+    def _set_menu_enabled(self, enabled: bool):
+        """
+        メインメニュー全体（DB選択領域＋操作メニューのボタン群）の操作可否を
+        一括で切り替える。carry_over_incomplete_lots()実行中の他画面操作を
+        防ぐために使う（on_create_database()参照）。
+
+        self.db_folder_combobox（state="readonly"が通常の有効状態。ttk.Comboboxは
+        NORMALにすると自由入力が可能になってしまうため、readonly/disabledの
+        2状態で切り替える）だけ特別扱いする。
+        """
+        for widget in self._menu_widgets:
+            if widget is self.db_folder_combobox:
+                widget.config(state="readonly" if enabled else "disabled")
+            else:
+                widget.config(state=tk.NORMAL if enabled else tk.DISABLED)
+
     def _open_singleton_window(self, key, factory):
         """
         メインメニューから開く画面の多重表示防止用の共通ヘルパー。
@@ -194,6 +226,19 @@ class MainWindow(tk.Tk):
 
         window.protocol("WM_DELETE_WINDOW", _on_close)
         return window
+
+    def _has_open_child_windows(self) -> bool:
+        """
+        self._open_windows（_open_singleton_window()経由で開いたウィンドウ）の
+        うち、現在も実際に存在しているものが1つでもあるか確認する
+        （on_create_database()の引き継ぎ確認ダイアログ用）。
+
+        非同期で開く生産実績入力画面（open_kitting_production_entry()）は、
+        ウィンドウ生成が完了した時点でのみ self._open_windows に登録される
+        ため、読み込み中（スレッド完了待ち）の状態は「開いている」扱いには
+        ならない（その時点ではまだ実体となるウィンドウが存在しないため）。
+        """
+        return any(w.winfo_exists() for w in self._open_windows.values())
 
     def open_master_management(self):
         self._open_singleton_window(
@@ -379,6 +424,14 @@ class MainWindow(tk.Tk):
         old_db_path = config.DB_PATH
         carry_over = self.carry_over_var.get()
 
+        if carry_over and self._has_open_child_windows():
+            if not messagebox.askyesno(
+                "確認",
+                "他の画面が開いています。引き継ぎ処理中は操作しないでください。続行しますか？",
+                parent=self.winfo_toplevel(),
+            ):
+                return
+
         init_database_at(new_db_path)
 
         if not carry_over:
@@ -393,7 +446,7 @@ class MainWindow(tk.Tk):
         # 引き継ぎあり：init_kitting_plan_tables()は新DB側でcarry_over_incomplete_lots()
         # 内のcreate_plan_batch()等が最初に呼ばれた時点で自動的に初期化されるため、
         # ここで個別に呼ぶ必要はない。
-        self.btn_create_database.config(state=tk.DISABLED)
+        self._set_menu_enabled(False)
         self._create_db_loading_window = LoadingWindow(self, message="前月からの未完了分を引き継いでいます…")
 
         t = threading.Thread(
@@ -425,7 +478,7 @@ class MainWindow(tk.Tk):
         if self._create_db_loading_window is not None:
             self._create_db_loading_window.destroy()
             self._create_db_loading_window = None
-        self.btn_create_database.config(state=tk.NORMAL)
+        self._set_menu_enabled(True)
 
         if success:
             summary = payload["summary"]

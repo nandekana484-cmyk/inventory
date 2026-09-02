@@ -41,7 +41,13 @@ def _collect_wip_totals():
     """
     totals = {}
 
-    for row in build_daily_report():
+    # build_daily_report()は(report_rows, inconsistency_warnings)のタプルを返す
+    # （services.production_service._build_report_rows()の面1省略・不整合検知に
+    # 伴う変更）。inconsistency_warningsはここでは使わない（在庫差異レポートは
+    # 表示専用の集計処理のため、面1・面2の実績不整合そのものへの警告は
+    # ui.monthly_report_window.py側の責務とする）。
+    report_rows, _inconsistency_warnings = build_daily_report()
+    for row in report_rows:
         file_no = row.get("file_no")
         wip_qty = row.get("surplus_qty")
 

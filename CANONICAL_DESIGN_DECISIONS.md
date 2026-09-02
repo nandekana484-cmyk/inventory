@@ -21,6 +21,7 @@
 | D-5 | `kitting_list_no`単体では計画を一意に識別できない（同一kitting_list_noが複数の異なるlot_noにまたがって存在するのが正常な業務パターン）。`(kitting_list_no, lot_no)`の組み合わせで初めて一意になる | PRODUCTION_NG_ENHANCEMENTS_NOTES.md §5 |
 | D-6 | 実績・NG申告は「日付問わず1計画（kitting_list_no, lot_no）1レコード、常に上書き」で統一する（同じロットの別日生産は別のkitting_list_noとして立てる業務運用のため） | PRODUCTION_NG_ENHANCEMENTS_NOTES.md §6 |
 | D-7 | 実績CSV取込には`import_production_csv()`（即時登録、後方互換のため維持）と`parse_production_csv_for_staging()`＋`ProductionImportStagingWindow`（ステージング方式、現在の標準フロー）の2系統が**意図的に併存**している。片方が巻き戻った結果ではない | UI_WORKFLOW_FIXES_NOTES.md §3 グループH（H-2） |
+| D-8 | 面2が存在する場合、面1は一覧表示（基板別実績・日次実績履歴・日報・月報・仕掛数量抽出）から省略し面2のみ表示する統一ルール。ただし面1の実績が面2を上回る状態（`ActualCorrectionWindow`の片面修正等が原因）は**本来あってはならない不整合**であり、除外した上で別途警告する（黙って消さない） | UI_WORKFLOW_FIXES_NOTES.md §3 グループI（I-3〜I-5） |
 
 ---
 
