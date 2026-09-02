@@ -19,6 +19,7 @@ from ui.parts_attributes_import_window import PartsAttributesImportWindow
 from ui.board_structure_import_window import BoardStructureImportWindow
 from ui.wip_expansion_window import WipExpansionWindow
 from ui.worker_management_window import WorkerManagementWindow
+from services.db_migration_carryover import carry_over_incomplete_lots
 
 
 class MainWindow(tk.Tk):
@@ -60,7 +61,19 @@ class MainWindow(tk.Tk):
         self.entry_new_db_folder = ttk.Entry(db_select_frame, textvariable=self.new_db_folder_var, width=15)
         self.entry_new_db_folder.pack(side=tk.LEFT, padx=(0, 10))
 
-        ttk.Button(db_select_frame, text="新しいデータベースを作成", command=self.on_create_database).pack(side=tk.LEFT)
+        self.carry_over_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            db_select_frame, text="前月(現在のDB)から未完了分を引き継ぐ", variable=self.carry_over_var,
+        ).pack(side=tk.LEFT, padx=(0, 10))
+
+        self.btn_create_database = ttk.Button(
+            db_select_frame, text="新しいデータベースを作成", command=self.on_create_database,
+        )
+        self.btn_create_database.pack(side=tk.LEFT)
+
+        # on_create_database()の引き継ぎ処理（非同期）用
+        self._create_db_result_queue = queue.Queue()
+        self._create_db_loading_window = None
 
         # ヘッダー領域
         header_frame = ttk.Frame(self, padding=10)
@@ -340,6 +353,17 @@ class MainWindow(tk.Tk):
         messagebox.showinfo("完了", "データベースを切り替えました。", parent=self.winfo_toplevel())
 
     def on_create_database(self):
+        """
+        新しいデータベースを作成する。「前月から未完了分を引き継ぐ」チェックが
+        OFFの場合は従来通り同期的にまっさらなDBを作成する。
+
+        ONの場合、services.db_migration_carryover.carry_over_incomplete_lots()
+        （旧DBの未完了ロットの計画・実績を新DBへコピーする処理。件数によっては
+        時間がかかり得る）を、ui.kitting_plan_import.KittingPlanImportWindow等と
+        同じ非同期パターン（LoadingWindow＋threading.Thread(daemon=True)＋
+        queue.Queue＋self.after(200, ...)ポーリング）で実行し、UIスレッドを
+        ブロックしないようにする。
+        """
         folder = self.new_db_folder_var.get().strip()
         if not folder:
             messagebox.showwarning("警告", "作成するフォルダ名を入力してください。", parent=self.winfo_toplevel())
@@ -350,11 +374,81 @@ class MainWindow(tk.Tk):
             messagebox.showwarning("警告", f"フォルダ「{folder}」のデータベースは既に存在します。", parent=self.winfo_toplevel())
             return
 
-        init_database_at(new_db_path)
-        config.set_db_path(new_db_path)
-        init_kitting_plan_tables()
+        # 引き継ぎ処理はconfig.DB_PATHを一時的に旧DBへ切り替えるため、切り替え前の
+        # 現在のDBパス（＝引き継ぎ元）をここで確定させておく。
+        old_db_path = config.DB_PATH
+        carry_over = self.carry_over_var.get()
 
-        messagebox.showinfo("完了", "新しいデータベースを作成しました。", parent=self.winfo_toplevel())
+        init_database_at(new_db_path)
+
+        if not carry_over:
+            config.set_db_path(new_db_path)
+            init_kitting_plan_tables()
+            messagebox.showinfo("完了", "新しいデータベースを作成しました。", parent=self.winfo_toplevel())
+            self._load_db_folders()
+            self.db_folder_var.set(folder)
+            self.new_db_folder_var.set("")
+            return
+
+        # 引き継ぎあり：init_kitting_plan_tables()は新DB側でcarry_over_incomplete_lots()
+        # 内のcreate_plan_batch()等が最初に呼ばれた時点で自動的に初期化されるため、
+        # ここで個別に呼ぶ必要はない。
+        self.btn_create_database.config(state=tk.DISABLED)
+        self._create_db_loading_window = LoadingWindow(self, message="前月からの未完了分を引き継いでいます…")
+
+        t = threading.Thread(
+            target=self._run_carry_over_in_thread,
+            args=(old_db_path, new_db_path, folder),
+            daemon=True,
+        )
+        t.start()
+        self.after(200, self._poll_create_db_queue)
+
+    def _run_carry_over_in_thread(self, old_db_path, new_db_path, folder):
+        try:
+            worker_id = self.current_worker.get("worker_id", "SYSTEM")
+            summary = carry_over_incomplete_lots(old_db_path, new_db_path, imported_by=worker_id)
+            self._create_db_result_queue.put((True, {"summary": summary, "folder": folder}))
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            self._create_db_result_queue.put((False, f"{e}\n{tb}"))
+
+    def _poll_create_db_queue(self):
+        try:
+            result = self._create_db_result_queue.get_nowait()
+        except queue.Empty:
+            self.after(200, self._poll_create_db_queue)
+            return
+
+        success, payload = result
+        if self._create_db_loading_window is not None:
+            self._create_db_loading_window.destroy()
+            self._create_db_loading_window = None
+        self.btn_create_database.config(state=tk.NORMAL)
+
+        if success:
+            summary = payload["summary"]
+            folder_name = payload["folder"]
+            messagebox.showinfo(
+                "完了",
+                "新しいデータベースを作成しました。\n"
+                f"未完了ロット {summary['lots_copied']}件・"
+                f"計画行 {summary['kitting_plan_items_copied']}件・"
+                f"実績 {summary['production_daily_copied']}件を引き継ぎました。",
+                parent=self.winfo_toplevel(),
+            )
+        else:
+            # payload（失敗時）は例外メッセージ文字列のため、フォルダ名は
+            # 入力欄からそのまま取る（クリアはこの後まとめて行う）。
+            folder_name = self.new_db_folder_var.get().strip()
+            messagebox.showerror(
+                "引き継ぎエラー",
+                f"未完了分の引き継ぎ中にエラーが発生しました。\n"
+                f"新しいデータベース自体は作成済みです（切り替え済み）。\n\n{payload}",
+                parent=self.winfo_toplevel(),
+            )
+
         self._load_db_folders()
-        self.db_folder_var.set(folder)
+        self.db_folder_var.set(folder_name)
         self.new_db_folder_var.set("")

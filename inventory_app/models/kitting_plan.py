@@ -126,6 +126,36 @@ def list_plan_items_by_lot(lot_no: str):
         return [dict(r) for r in cur.fetchall()]
 
 
+def list_plan_items_for_all_lots():
+    """
+    list_plan_items_by_lot()と同じWHERE条件（delete_flag=0・COALESCE(is_active,1)=1）
+    で、lot_noによる絞り込み無しに全件を返す。
+
+    唯一の呼び出し元はservices.production_service.list_incomplete_lots()。
+    lot_no全件についてcalculate_lot_completion()相当の計算をN+1（lot_no件数分の
+    SELECT）にせず、1回のSELECTで全lot_no分の計画行をまとめて取得した上で、
+    呼び出し側でlot_noごとにグルーピングして使うためのもの。
+
+    lot_noがNULL・空文字の行（万一存在した場合）は対象外とする（lot単位の
+    完成数計算という概念自体が成立しないため。calculate_lot_completion(None)や
+    calculate_lot_completion("")は、list_plan_items_by_lot()側で該当0件となり
+    ValueErrorになる）。
+
+    戻り値：[{"kitting_list_no", "lot_no", "setup_file_no", "production_side",
+              "order_qty"}, ...]（list_plan_items_by_lot()と異なり、呼び出し側の
+              用途（lot単位の集計）に必要な列のみに絞っている）。
+    """
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.execute("""
+            SELECT kitting_list_no, lot_no, setup_file_no, production_side, order_qty
+            FROM kitting_plan_items
+            WHERE delete_flag = 0 AND COALESCE(is_active, 1) = 1
+              AND lot_no IS NOT NULL AND lot_no != ''
+        """)
+        return [dict(r) for r in cur.fetchall()]
+
+
 def find_opposite_side_plan(lot_no: str, setup_file_no: str, current_side,
                               current_plan_start_datetime: str = None):
     """

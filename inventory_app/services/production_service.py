@@ -3,6 +3,7 @@ from datetime import datetime
 from models.kitting_plan import (
     find_plan_item_by_kitting_no,
     list_plan_items_by_lot,
+    list_plan_items_for_all_lots,
     list_active_plan_items_by_kitting_no,
     find_opposite_side_plan,
 )
@@ -416,3 +417,70 @@ def calculate_lot_completion(lot_no: str):
         "remaining_quantity": remaining,
         "file_actuals": file_actuals,
     }
+
+
+def list_incomplete_lots():
+    """
+    distinctなlot_no全件について、ロット未完成数（lot_remaining_quantity、
+    calculate_lot_completion()と同じ計算式）を算出し、0より大きい（＝未完了）
+    ロットのみを一覧で返す（DB間コピー機能の「未完了lot_noの抽出」用）。
+
+    calculate_lot_completion()をlot_no件数分ループ呼び出しするとN+1
+    （list_plan_items_by_lot()のSELECTがlot_no件数分発生）になるため、
+    models.production.get_app_cumulative_qty_bulk()による一括取得
+    （list_active_plan_items()で採用済みの高速化パターン）と同じ考え方で、
+    全lot_no分の計画行をmodels.kitting_plan.list_plan_items_for_all_lots()で
+    1回のSELECTにまとめて取得し、アプリ内累計もget_app_cumulative_qty_bulk()で
+    1回（〜数回）のバルククエリにまとめて取得した上で、Python側でlot_noごとに
+    グルーピングして計算する。
+
+    list_active_plan_items()は使わない：「1回目除外」ロジック（同一setup_file_no
+    でproduction_side=2が存在する場合、対応するside=1を除外する）や完了済み
+    除外ロジック（デフォルトinclude_completed=False）が適用されており、
+    lot単位の完成数計算に必要な全ての(setup_file_no, production_side,
+    kitting_list_no)組を欠落なく集める、という本関数の目的には合わないため
+    （calculate_lot_completion()自身もlist_plan_items_by_lot()を使っており、
+    list_active_plan_items()は使っていない）。
+
+    戻り値：[{"lot_no", "kitting_list_nos"（そのlot_noに属するdistinctな
+              kitting_list_noのソート済みリスト。DB間コピー時にどのkitting_list_no
+              を対象にすればよいか把握するための情報）, "order_quantity",
+              "completed_quantity", "remaining_quantity"}, ...]
+             lot_no昇順。remaining_quantity > 0 の行のみを含む。
+    """
+    plan_items = list_plan_items_for_all_lots()
+
+    items_by_lot = {}
+    for item in plan_items:
+        items_by_lot.setdefault(item["lot_no"], []).append(item)
+
+    kitting_list_no_lot_pairs = [
+        (item["kitting_list_no"], item["lot_no"]) for item in plan_items
+    ]
+    cumulative_by_pair = get_app_cumulative_qty_bulk(kitting_list_no_lot_pairs)
+
+    results = []
+    for lot_no, items in items_by_lot.items():
+        order_qty = items[0]["order_qty"]
+
+        file_actuals = {}
+        for item in items:
+            key = (item["setup_file_no"], item["production_side"], item["kitting_list_no"])
+            file_actuals[key] = cumulative_by_pair[(item["kitting_list_no"], lot_no)]
+
+        completed = min(file_actuals.values())
+        remaining = order_qty - completed
+
+        if remaining <= 0:
+            continue
+
+        results.append({
+            "lot_no": lot_no,
+            "kitting_list_nos": sorted({item["kitting_list_no"] for item in items}),
+            "order_quantity": order_qty,
+            "completed_quantity": completed,
+            "remaining_quantity": remaining,
+        })
+
+    results.sort(key=lambda r: r["lot_no"])
+    return results
