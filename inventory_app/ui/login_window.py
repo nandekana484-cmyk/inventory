@@ -71,7 +71,13 @@ class LoginWindow(tk.Tk):
 
         selected_worker = self.worker_dict[selected_name]
         self.destroy()  # ログイン画面を閉じる
-        
+
         # メイン画面を起動
+        # 起動時のDBロック取得に失敗した場合、MainWindow.__init__()内で
+        # 自身をdestroy()して起動を中断する（ui/main_window.py参照）。destroy()済みの
+        # Tkルートはインタプリタごと破棄されるため、その後winfo_exists()等の
+        # Tk操作を呼ぶこと自体がTclErrorになる。destroy()前に設定される
+        # 素のPython属性 _lock_acquired で判定する。
         app = MainWindow(current_worker=selected_worker)
-        app.mainloop()
+        if app._lock_acquired:
+            app.mainloop()

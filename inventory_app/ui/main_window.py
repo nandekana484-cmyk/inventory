@@ -1,11 +1,13 @@
 ﻿import os
 import queue
+import socket
 import threading
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 import config
 from db.init_db import init_database_at
 from models.kitting_plan import init_kitting_plan_tables
+from services.db_lock_service import acquire_lock, release_lock, update_heartbeat, get_lock_info
 from ui.master_management import MasterManagementWindow
 from ui.kitting_plan_import import KittingPlanImportWindow
 from ui.kitting_production_entry import KittingProductionEntryWindow
@@ -26,12 +28,32 @@ class MainWindow(tk.Tk):
     def __init__(self, current_worker):
         super().__init__()
         self.current_worker = current_worker
+        self._pc_name = socket.gethostname()
+        self._worker_name = current_worker.get("name", "unknown")
+        self._lock_acquired = False
+
+        # 起動時点のconfig.DB_PATHに対してロックを取得できなければ、他PC・他ユーザーが
+        # 使用中とみなしてここで起動を中断する（以降のUI構築は行わない）。
+        # LoginWindow側は self.winfo_exists() を見てから mainloop() を呼ぶ想定
+        # （destroy済みのTkルートでmainloop()を呼ばないようにするため）。
+        if not acquire_lock(config.DB_PATH, self._worker_name, self._pc_name):
+            messagebox.showerror(
+                "データベース使用中",
+                "このデータベースは他の利用者が使用中のため起動できません。\n\n"
+                + self._format_lock_info(get_lock_info(config.DB_PATH)),
+                parent=self,
+            )
+            self.destroy()
+            return
+        self._lock_acquired = True
+
         self.title("部品在庫管理アプリ - メインメニュー")
         # 月次データ・共通マスタを左右2列表示にしたことで縦に短くなった分、
         # ウィンドウの高さは詰め、横幅は上部のデータベース選択欄（前月引き継ぎ
         # チェックボックス等を含む）と左右2列のボタン群の両方が収まる幅に広げた
         # （winfo_reqwidth()実測値920前後に基づく）。
-        self.geometry("940x600")
+        # 「データベース選択」領域が共有フォルダ用の行の追加で2段になった分、高さを広げた。
+        self.geometry("940x640")
 
         # メインメニューから開く画面の多重表示防止用：key -> 開いているToplevelインスタンス。
         # ウィンドウが閉じられたら _open_singleton_window() が設定した
@@ -46,36 +68,58 @@ class MainWindow(tk.Tk):
         self.attributes("-topmost", False)
 
         # データベース選択領域（最上部）
+        # 1段目：ローカルdb/フォルダからの選択・新規作成（既存）。
+        # 2段目：共有フォルダ（UNCパス等）上のDBを直接開く／新規作成（新規）。
+        # side=LEFTのパック済みウィジェットとside=TOPのウィジェットを同じ親に
+        # 混在させるとレイアウトが崩れるため、行ごとに専用のサブフレームに分けている。
         db_select_frame = ttk.Labelframe(self, text="データベース選択", padding=10)
         db_select_frame.pack(fill=tk.X, padx=10, pady=(10, 0))
 
+        db_select_row1 = ttk.Frame(db_select_frame)
+        db_select_row1.pack(fill=tk.X)
+
         self.db_folder_var = tk.StringVar()
         self.db_folder_combobox = ttk.Combobox(
-            db_select_frame, textvariable=self.db_folder_var, state="readonly", width=30
+            db_select_row1, textvariable=self.db_folder_var, state="readonly", width=30
         )
         self.db_folder_combobox.pack(side=tk.LEFT, padx=(0, 10))
         self._load_db_folders()
 
-        self.btn_switch_database = ttk.Button(db_select_frame, text="切り替え", command=self.on_switch_database)
+        self.btn_switch_database = ttk.Button(db_select_row1, text="切り替え", command=self.on_switch_database)
         self.btn_switch_database.pack(side=tk.LEFT)
 
-        ttk.Separator(db_select_frame, orient="vertical").pack(side=tk.LEFT, fill=tk.Y, padx=10)
+        ttk.Separator(db_select_row1, orient="vertical").pack(side=tk.LEFT, fill=tk.Y, padx=10)
 
-        ttk.Label(db_select_frame, text="新規フォルダ名：").pack(side=tk.LEFT)
+        ttk.Label(db_select_row1, text="新規フォルダ名：").pack(side=tk.LEFT)
         self.new_db_folder_var = tk.StringVar()
-        self.entry_new_db_folder = ttk.Entry(db_select_frame, textvariable=self.new_db_folder_var, width=15)
+        self.entry_new_db_folder = ttk.Entry(db_select_row1, textvariable=self.new_db_folder_var, width=15)
         self.entry_new_db_folder.pack(side=tk.LEFT, padx=(0, 10))
 
         self.carry_over_var = tk.BooleanVar(value=False)
         self.chk_carry_over = ttk.Checkbutton(
-            db_select_frame, text="前月(現在のDB)から未完了分を引き継ぐ", variable=self.carry_over_var,
+            db_select_row1, text="前月(現在のDB)から未完了分を引き継ぐ", variable=self.carry_over_var,
         )
         self.chk_carry_over.pack(side=tk.LEFT, padx=(0, 10))
 
         self.btn_create_database = ttk.Button(
-            db_select_frame, text="新しいデータベースを作成", command=self.on_create_database,
+            db_select_row1, text="新しいデータベースを作成", command=self.on_create_database,
         )
         self.btn_create_database.pack(side=tk.LEFT)
+
+        db_select_row2 = ttk.Frame(db_select_frame)
+        db_select_row2.pack(fill=tk.X, pady=(8, 0))
+
+        ttk.Label(db_select_row2, text="共有フォルダ：").pack(side=tk.LEFT)
+
+        self.btn_open_shared_database = ttk.Button(
+            db_select_row2, text="共有フォルダのDBを開く", command=self.on_open_shared_database,
+        )
+        self.btn_open_shared_database.pack(side=tk.LEFT, padx=(0, 10))
+
+        self.btn_create_shared_database = ttk.Button(
+            db_select_row2, text="共有フォルダに新規作成", command=self.on_create_shared_database,
+        )
+        self.btn_create_shared_database.pack(side=tk.LEFT)
 
         # on_create_database()の引き継ぎ処理（非同期）用
         self._create_db_result_queue = queue.Queue()
@@ -194,11 +238,48 @@ class MainWindow(tk.Tk):
         self._menu_widgets = [
             self.db_folder_combobox, self.btn_switch_database, self.entry_new_db_folder,
             self.chk_carry_over, self.btn_create_database,
+            self.btn_open_shared_database, self.btn_create_shared_database,
             btn_kitting_import, btn_kitting_production, btn_inventory_input,
             btn_theoretical_import, btn_inventory_diff, btn_ng_input, btn_wip_expansion,
             btn_master, btn_master_import, btn_parts_attributes_import,
             btn_worker_management, btn_board_structure_import, btn_logout,
         ]
+
+        # ウィンドウを閉じる（×ボタン・Alt+F4等）際にロックファイルを解放してから
+        # 終了する。on_logout()はdestroy()を直接呼ぶためこのprotocolハンドラを
+        # 経由しない → on_logout()側でも個別にロック解放する必要がある。
+        self.protocol("WM_DELETE_WINDOW", self._on_app_close)
+        # 5分間隔でロックファイルの最終更新時刻を更新し（生存確認）、
+        # LOCK_STALE_SECONDS（30分）以上更新が無いロックとして自動解除されるのを防ぐ。
+        self.after(300000, self._heartbeat)
+
+    @staticmethod
+    def _format_lock_info(info) -> str:
+        if not info:
+            return "（ロック保持者の情報を取得できませんでした）"
+        return (
+            f"作業者：{info.get('worker_name')}\n"
+            f"PC：{info.get('pc_name')}\n"
+            f"取得時刻：{info.get('acquired_at')}\n"
+            f"最終更新時刻：{info.get('last_updated')}"
+        )
+
+    def _heartbeat(self):
+        if not self.winfo_exists():
+            return
+        if self._lock_acquired:
+            update_heartbeat(config.DB_PATH)
+        self.after(300000, self._heartbeat)
+
+    def _release_current_lock(self):
+        if self._lock_acquired:
+            release_lock(config.DB_PATH)
+            self._lock_acquired = False
+
+    def _on_app_close(self):
+        """ウィンドウの×ボタン・Alt+F4等での終了時、ロックを解放してから閉じる。"""
+        self._release_current_lock()
+        self.destroy()
 
     def _set_menu_enabled(self, enabled: bool):
         """
@@ -385,6 +466,7 @@ class MainWindow(tk.Tk):
         ):
             return
 
+        self._release_current_lock()
         self.current_worker = None
         self.destroy()
 
@@ -403,14 +485,111 @@ class MainWindow(tk.Tk):
         if folders:
             self.db_folder_combobox.current(0)
 
+    def _try_switch_db_path(self, new_path: str, error_title: str = "切替不可") -> bool:
+        """
+        new_pathに対してロック取得を試み、成功すれば現在のロックを解放してから
+        config.DB_PATHをnew_pathへ切り替える共通処理。on_switch_database()・
+        on_open_shared_database()・on_create_shared_database()から使う
+        （on_create_database()の前月引き継ぎ分岐は、config.DB_PATHの切り替え
+        タイミングがcarry_over_incomplete_lots()の契約と密接に絡むため、
+        ここでは共通化せず個別に処理している）。
+
+        失敗時（他者が有効なロックを保持中）はエラーダイアログで使用者情報を
+        表示してFalseを返す。呼び出し元はこれ以上処理を進めないこと。
+        """
+        if not acquire_lock(new_path, self._worker_name, self._pc_name):
+            messagebox.showerror(
+                error_title,
+                "このデータベースは他の利用者が使用中です。\n\n"
+                + self._format_lock_info(get_lock_info(new_path)),
+                parent=self.winfo_toplevel(),
+            )
+            return False
+
+        self._release_current_lock()
+        config.set_db_path(new_path)
+        self._lock_acquired = True
+        return True
+
     def on_switch_database(self):
         folder = self.db_folder_var.get().strip()
         if not folder:
             messagebox.showwarning("警告", "切り替え先のフォルダを選択してください。", parent=self.winfo_toplevel())
             return
 
-        config.set_db_path(os.path.join(config.BASE_DIR, "db", folder, "inventory.db"))
+        new_path = os.path.join(config.BASE_DIR, "db", folder, "inventory.db")
+        if new_path == config.DB_PATH:
+            messagebox.showinfo("情報", "既にこのデータベースを使用中です。", parent=self.winfo_toplevel())
+            return
+
+        if not self._try_switch_db_path(new_path):
+            return
         messagebox.showinfo("完了", "データベースを切り替えました。", parent=self.winfo_toplevel())
+
+    def _shared_dialog_initial_dir(self) -> str:
+        """
+        共有フォルダ選択ダイアログの初期ディレクトリ。ドキュメントフォルダが
+        存在すればそこを、無ければユーザーのホームディレクトリを使う
+        （共有フォルダ自体をブックマークする仕組みは持たないため、実装しやすさ優先）。
+        """
+        documents = os.path.join(os.path.expanduser("~"), "Documents")
+        return documents if os.path.isdir(documents) else os.path.expanduser("~")
+
+    def on_open_shared_database(self):
+        """
+        共有フォルダ（UNCパス等）上の既存の.dbファイルを直接選択して切り替える。
+        ローカルのdb/フォルダ限定だった既存の「切り替え」プルダウンとは別経路で、
+        任意のパスをconfig.set_db_path()に渡せるようにする。
+        """
+        selected = filedialog.askopenfilename(
+            title="共有フォルダのデータベースファイルを選択",
+            initialdir=self._shared_dialog_initial_dir(),
+            filetypes=[("SQLite データベース", "*.db"), ("すべてのファイル", "*.*")],
+            parent=self.winfo_toplevel(),
+        )
+        if not selected:
+            return
+
+        new_path = os.path.abspath(selected)
+        if new_path == os.path.abspath(config.DB_PATH):
+            messagebox.showinfo("情報", "既にこのデータベースを使用中です。", parent=self.winfo_toplevel())
+            return
+
+        if not self._try_switch_db_path(new_path, error_title="開けません"):
+            return
+        messagebox.showinfo("完了", f"データベースを切り替えました：\n{new_path}", parent=self.winfo_toplevel())
+
+    def on_create_shared_database(self):
+        """
+        共有フォルダ内の新規フォルダにinventory.dbを新規作成して切り替える。
+        既存のon_create_database()（ローカルdb/フォルダ限定・前月引き継ぎ対応）とは
+        別経路。前月引き継ぎには対応しない（必要な場合はローカルで作成してから
+        ファイルごと共有フォルダへ移動する運用を想定）。
+        """
+        selected_dir = filedialog.askdirectory(
+            title="新しいデータベースを作成するフォルダを選択",
+            initialdir=self._shared_dialog_initial_dir(),
+            parent=self.winfo_toplevel(),
+        )
+        if not selected_dir:
+            return
+
+        new_path = os.path.join(os.path.abspath(selected_dir), "inventory.db")
+        if os.path.exists(new_path):
+            messagebox.showwarning(
+                "警告",
+                f"選択したフォルダには既にデータベースが存在します：\n{new_path}",
+                parent=self.winfo_toplevel(),
+            )
+            return
+
+        init_database_at(new_path)
+
+        if not self._try_switch_db_path(new_path, error_title="作成不可"):
+            return
+
+        init_kitting_plan_tables()
+        messagebox.showinfo("完了", f"新しいデータベースを作成しました：\n{new_path}", parent=self.winfo_toplevel())
 
     def on_create_database(self):
         """
@@ -448,6 +627,20 @@ class MainWindow(tk.Tk):
                 return
 
         init_database_at(new_db_path)
+
+        # 新DBは直前にinit_database_at()で作成したばかりのフォルダのため、通常は
+        # ロック取得に失敗することはないが、念のため他パスと同様に確認する
+        # （万一失敗した場合、新DBファイル自体は作成済みだが未使用のまま残る）。
+        if not acquire_lock(new_db_path, self._worker_name, self._pc_name):
+            messagebox.showerror(
+                "作成不可",
+                "新しいデータベースは既に他の利用者が使用中です。\n\n"
+                + self._format_lock_info(get_lock_info(new_db_path)),
+                parent=self.winfo_toplevel(),
+            )
+            return
+        self._release_current_lock()
+        self._lock_acquired = True
 
         if not carry_over:
             config.set_db_path(new_db_path)

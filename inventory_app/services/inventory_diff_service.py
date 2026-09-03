@@ -3,92 +3,71 @@
 在庫（PC在庫）＋仕掛（WIP）＋仕損（NG）＋理論在庫を突き合わせ、
 96コードごとの差異を算出するサービス。
 
-WIP・NG展開は BOM基盤（services.bom_service.BOMService、TSV → bom_master）
-経由で行う。
+NG展開・WIP展開はいずれもBOM基盤（services.bom_service.BOMService、TSV →
+bom_master）経由で事前に行われ、結果がmodels.scrap_records／
+models.wip_scrap_recordsに確定登録済みという前提で、本サービスは
+それらの集計結果を読むだけの薄いレイヤーとする（詳細は_collect_wip_totals()
+のdocstring参照）。
 """
-import logging
-
 from models.inventory import list_inventory
 from models.theoretical_inventory import list_theoretical_inventory
 from models.scrap_records import query_scrap_totals
-from services.bom_service import BOMService
-from services.production_service import build_daily_report
-
-logger = logging.getLogger(__name__)
-
-_bom_service = BOMService()
+from models.wip_board_snapshot import list_wip_snapshot
+from models.wip_scrap_records import query_wip_totals, list_wip_scrap_summary
 
 
 def _collect_wip_totals():
     """
-    本日の日報データ（build_daily_report）が持つ仕掛数量（surplus_qty）を、
-    setup_file_no・production_side（・mounting_line）ごとに
-    BOMService.expand_wip_to_parts() で96コードへ展開し、part_no（96コード）
-    ごとの合計に集計する。
+    仕掛展開画面（ui.wip_expansion_window.WipExpansionWindow）で確定登録済みの
+    仕掛展開結果（models.wip_scrap_records）から、96コード（part_no）単位の
+    合計仕掛数量を取得する。
 
-    mounting_line（実装ライン）はrow（_build_report_rows()が計画から
-    補完済み）からそのまま渡す。同一file_no・sideに複数の実装ラインが
-    存在するTSVでは、ラインを指定しないと部品数量が過大計算されるため
-    （services.bom_service._calculate_bom()参照）、計画が見つからず
-    row["mounting_line"]がNoneの場合は、BOMService側のデフォルト方針
-    （最初に見つかったライン1本分のみを使う）に委ねる。
+    以前は本日の日報データ（services.production_service.build_daily_report()、
+    「本日」のみが対象範囲）が持つsurplus_qtyを、呼び出しのたびに
+    BOMService.expand_wip_to_parts()（共有フォルダ上のTSV読み込みを伴う）で
+    都度展開していた。この方式には2つの問題があった：
+      1. build_daily_report()は「本日」限定であり、月報の「仕掛数量抽出」
+         （models.wip_board_snapshot）や仕掛展開画面（models.wip_scrap_records）
+         とはそもそも別系統のデータソースだった（設計上の食い違い。調査で判明）。
+      2. 在庫差異レポートを開くたびに、仕掛のある行数分だけBOM展開（共有フォルダ
+         アクセス）が直列実行され、画面表示前にUIが完全にフリーズする、
+         全画面中で最も深刻な遅延要因になっていた。
+    仕掛展開画面側で既に確定登録（BOM展開済み・96コード単位で保存済み）された
+    データをそのまま集計するだけの方式に変更したことで、本関数はBOM展開・
+    共有フォルダアクセスを一切行わなくなり、DBのみで完結する。
 
-    以下の行は0扱いとしてスキップし、レポート自体は表示できるようにする：
-    - setup_file_no が空、または surplus_qty が0（仕掛なし）
-    - production_side が1/2として解釈できない
-    - 該当 setup_file_no のBOM TSVが共有フォルダに存在しない（FileNotFoundError）
-    - BOM展開に失敗した（ValueError：TSVパース失敗・入力不正等）
+    注意：まだ仕掛展開画面で確定登録されていない仕掛基板
+    （models.wip_board_snapshotには存在するがmodels.wip_scrap_recordsに
+    対応行が無いもの）の分は、ここには反映されない。その件数は
+    count_unconfirmed_wip_boards()で別途取得でき、ui.inventory_diff_window側で
+    注意表示するために使う。
     """
-    totals = {}
+    return query_wip_totals()
 
-    # build_daily_report()は(report_rows, inconsistency_warnings)のタプルを返す
-    # （services.production_service._build_report_rows()の面1省略・不整合検知に
-    # 伴う変更）。inconsistency_warningsはここでは使わない（在庫差異レポートは
-    # 表示専用の集計処理のため、面1・面2の実績不整合そのものへの警告は
-    # ui.monthly_report_window.py側の責務とする）。
-    report_rows, _inconsistency_warnings = build_daily_report()
-    for row in report_rows:
-        file_no = row.get("file_no")
-        wip_qty = row.get("surplus_qty")
 
-        if not file_no or not wip_qty:
-            continue
+def count_unconfirmed_wip_boards() -> int:
+    """
+    models.wip_board_snapshot（月報の「仕掛数量抽出」によるスナップショット）の
+    うち、models.wip_scrap_records（仕掛展開画面での確定登録）に対応する行が
+    まだ無いものの件数を返す。
 
-        try:
-            side = int(row.get("production_side"))
-        except (TypeError, ValueError):
-            logger.warning(
-                "WIP展開スキップ: file_no=%s の production_side を解釈できません（値: %r）。",
-                file_no, row.get("production_side"),
-            )
-            continue
+    ui.wip_expansion_window.WipExpansionWindow._fetch_wip_list_rows() の
+    「未確定」判定と同じロジック（(kitting_list_no, lot_no, production_side)
+    キーでの突き合わせ）をここでも独立して行う。在庫差異レポート
+    （ui.inventory_diff_window）が、_collect_wip_totals()に反映されていない
+    未確定分の存在をユーザーに注意表示するために使う。
+    """
+    confirmed_keys = {
+        (s["kitting_list_no"], s["lot_no"] or "", str(s["production_side"]))
+        for s in list_wip_scrap_summary()
+    }
 
-        if side not in (1, 2):
-            logger.warning(
-                "WIP展開スキップ: file_no=%s の production_side が1/2以外です（値: %s）。",
-                file_no, side,
-            )
-            continue
-
-        try:
-            parts = _bom_service.expand_wip_to_parts({
-                "setup_file_no": file_no,
-                "production_side": side,
-                "wip_qty": wip_qty,
-                "lot_no": row.get("lot_no"),
-                "mounting_line": row.get("mounting_line"),
-            })
-        except FileNotFoundError:
-            logger.warning("WIP展開スキップ: file_no=%s のBOM TSVが見つかりません。", file_no)
-            continue
-        except ValueError as e:
-            logger.warning("WIP展開スキップ: file_no=%s のBOM展開に失敗しました（%s）。", file_no, e)
-            continue
-
-        for part in parts:
-            totals[part["part_no"]] = totals.get(part["part_no"], 0) + part["qty"]
-
-    return totals
+    count = 0
+    for row in list_wip_snapshot():
+        key = (row["kitting_list_no"], row["lot_no"] or "", str(row["production_side"]))
+        if key not in confirmed_keys:
+            count += 1
+    return count
 
 
 def _collect_scrap_totals():

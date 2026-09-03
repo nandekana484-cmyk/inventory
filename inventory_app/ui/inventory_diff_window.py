@@ -5,7 +5,7 @@ from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
-from services.inventory_diff_service import build_inventory_diff_report
+from services.inventory_diff_service import build_inventory_diff_report, count_unconfirmed_wip_boards
 from ui.daily_report_window import ReportPreviewWindow, build_daily_report_pdf
 
 REPORT_HEADERS = ["部品番号", "在庫数量", "仕掛数量", "仕損数量", "合計数量", "理論在庫数量", "差異数量"]
@@ -27,14 +27,32 @@ class InventoryDiffWindow(tk.Toplevel):
     印刷プレビュー・PDF出力・CSV出力は日報（ui.daily_report_window）の
     ReportPreviewWindow / build_daily_report_pdf をそのまま再利用し、
     列構成（REPORT_HEADERS / _row_to_values）だけこの画面専用のものを渡す。
+
+    仕掛数量（wip_qty）は、仕掛展開画面（ui.wip_expansion_window）で確定登録
+    済みのデータ（models.wip_scrap_records）のみを集計したものであり、
+    まだ確定登録されていない仕掛基板の分は含まれない
+    （services.inventory_diff_service._collect_wip_totals()参照）。この画面を
+    開いた際、未確定の仕掛基板があれば注意メッセージを表示する。
     """
     def __init__(self, parent):
         super().__init__(parent)
         self.report_date = datetime.now().strftime("%Y-%m-%d")
         self.report_rows = build_inventory_diff_report()
+        self.unconfirmed_wip_count = count_unconfirmed_wip_boards()
 
         self.title("在庫差異レポート")
         self.geometry("900x520")
+
+        if self.unconfirmed_wip_count > 0:
+            ttk.Label(
+                self,
+                text=(
+                    f"※ 未確定の仕掛基板が{self.unconfirmed_wip_count}件あります。"
+                    "仕掛数量（仕掛列）に反映されていません。"
+                    "仕掛展開画面で確定登録してから再度ご確認ください。"
+                ),
+                foreground="red",
+            ).pack(anchor=tk.W, padx=10, pady=(10, 0))
 
         tree_frame = ttk.Frame(self, padding=10)
         tree_frame.pack(expand=True, fill=tk.BOTH)

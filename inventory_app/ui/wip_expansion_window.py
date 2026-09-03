@@ -4,6 +4,7 @@ from tkinter import ttk, messagebox
 
 from services.bom_service import BOMService
 from models.wip_board_snapshot import list_wip_snapshot
+from models.wip_scrap_records import save_wip_scrap_records, list_wip_scrap_summary
 from ui.checkable_treeview import CheckableTreeview
 
 _bom_service = BOMService()
@@ -94,9 +95,25 @@ class WipExpansionWindow(tk.Toplevel):
 
         btn_frame = ttk.Frame(left_frame, padding=10)
         btn_frame.pack(fill=tk.X)
+        self.btn_confirm = ttk.Button(
+            btn_frame, text="仕掛確定登録", command=self.on_confirm, state=tk.DISABLED,
+        )
+        self.btn_confirm.pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="仕掛製品レポート", command=self.open_wip_product_report).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="仕掛96レポート", command=self.open_wip_parts_report).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="閉じる", command=self.destroy).pack(side=tk.RIGHT, padx=5)
 
         self._create_wip_list_widgets(right_frame)
+
+    def open_wip_product_report(self):
+        """循環import回避のため、ここで都度importする（ui.ng_input_window.open_product_ng_report()と同じ理由）。"""
+        from ui.wip_product_report_window import WipProductReportWindow
+        WipProductReportWindow(self)
+
+    def open_wip_parts_report(self):
+        """循環import回避のため、ここで都度importする。"""
+        from ui.wip_parts_report_window import WipPartsReportWindow
+        WipPartsReportWindow(self)
 
     # ------------------------------------------------------------------
     # 展開処理（左ペイン）
@@ -120,6 +137,52 @@ class WipExpansionWindow(tk.Toplevel):
         mounting_line = values[self._wip_col_index["mounting_line"]] or None
         surplus_qty_text = values[self._wip_col_index["surplus_qty"]]
 
+        self._expand_row(kitting_list_no, board_name, file_no, side_text, lot_no, mounting_line, surplus_qty_text)
+
+    def expand_by_identity(self, kitting_list_no, lot_no=None, production_side=None):
+        """
+        外部（ui.wip_product_report_window.WipProductReportWindow等）から、
+        kitting_list_no（・lot_no・production_side）を指定して該当基板を
+        自動展開するための入口（ui.product_ng_report_window.ProductNgReportWindow
+        がui.ng_input_window.NgInputWindowの検索欄を埋めてon_expand()を呼ぶのと
+        同じ役割）。
+
+        self._all_wip_rows（_fetch_wip_list_rows()の結果、仕掛一覧の全件）から
+        一致する行を検索し、on_wip_list_double_click()と同じ展開処理
+        （_expand_row()）を呼ぶ。lot_no・production_sideを渡すとその条件でも
+        絞り込む（省略時はkitting_list_noのみで一致した最初の行を使う）。
+
+        一致する行が無い場合はエラーダイアログを表示してFalseを返す
+        （呼び出し時点でwip_board_snapshotの内容が変わっている等、
+        通常は起こらないはずだが念のため）。
+        """
+        idx = self._wip_col_index
+        for row in self._all_wip_rows:
+            if row[idx["kitting_list_no"]] != kitting_list_no:
+                continue
+            if lot_no is not None and (row[idx["lot_no"]] or None) != lot_no:
+                continue
+            if production_side is not None and str(row[idx["side"]]) != str(production_side):
+                continue
+            self._expand_row(
+                row[idx["kitting_list_no"]], row[idx["board_name"]], row[idx["file_no"]],
+                row[idx["side"]], row[idx["lot_no"]] or None, row[idx["mounting_line"]] or None,
+                row[idx["surplus_qty"]],
+            )
+            return True
+
+        messagebox.showerror(
+            "検索エラー", f"キッティングリストNo. {kitting_list_no} の仕掛データが見つかりません。",
+            parent=self.winfo_toplevel(),
+        )
+        return False
+
+    def _expand_row(self, kitting_list_no, board_name, file_no, side_text, lot_no, mounting_line, surplus_qty_text):
+        """
+        on_wip_list_double_click()・expand_by_identity()共通の展開処理本体
+        （値の取得元がTreeviewの行かexpand_by_identity()の検索結果かの違いを
+        吸収し、以降のバリデーション・BOM展開ロジックを一本化する）。
+        """
         try:
             side = int(side_text)
         except (TypeError, ValueError):
@@ -177,6 +240,50 @@ class WipExpansionWindow(tk.Toplevel):
                 f"file_no「{file_no}」・生産面{side}のBOMが登録されていない、または対象部品がありません。",
                 parent=self.winfo_toplevel(),
             )
+        self.btn_confirm.config(state=tk.NORMAL if parts else tk.DISABLED)
+
+    def on_confirm(self):
+        """
+        選択された部品を仕掛展開結果として確定登録する。対象kitting_list_no・
+        lot_no・production_sideの既存wip_scrap_records（あれば）は全て削除した上で、
+        今回チェック済み（選択済み）の部品のみを登録し直す（delete-then-insert。
+        ui.ng_input_window.NgInputWindow.on_register() と同じパターン）。
+        """
+        if not self.current_row:
+            return
+
+        checked_iids = self.tree.get_checked_iids()
+        if not checked_iids:
+            messagebox.showwarning("入力エラー", "確定登録する部品を選択してください。", parent=self.winfo_toplevel())
+            return
+
+        kitting_list_no = self.current_row["kitting_list_no"]
+        file_no = self.current_row["file_no"]
+        side = self.current_row["side"]
+        lot_no = self.current_row.get("lot_no")
+        mounting_line = self.current_row.get("mounting_line")
+
+        records = []
+        for iid in checked_iids:
+            part_no = self.tree.get_row_value(iid, "part_no")
+            consumed_qty_text = self.tree.get_row_value(iid, "consumed_qty")
+            try:
+                consumed_qty = float(consumed_qty_text)
+            except ValueError:
+                continue
+            records.append({"part_no": part_no, "qty": consumed_qty})
+
+        if not records:
+            return
+
+        save_wip_scrap_records(kitting_list_no, file_no, side, records, lot_no=lot_no, mounting_line=mounting_line)
+
+        messagebox.showinfo(
+            "登録完了", f"{len(records)}件の仕掛展開結果を確定登録しました。", parent=self.winfo_toplevel(),
+        )
+
+        # 登録内容を右ペインの仕掛一覧（状態列）へ即時反映する
+        self.load_wip_list()
 
     def load_parts_tree(self, parts, wip_qty):
         """
@@ -210,7 +317,7 @@ class WipExpansionWindow(tk.Toplevel):
         WIP一覧用に再実装したもの。
         """
         cols_wip = ("kitting_list_no", "board_name", "file_no", "side", "lot_no",
-                    "mounting_line", "surplus_qty", "created_at")
+                    "mounting_line", "surplus_qty", "status", "created_at")
         self._wip_col_index = {key: i for i, key in enumerate(cols_wip)}
 
         self._wip_filter_labels = {
@@ -221,6 +328,7 @@ class WipExpansionWindow(tk.Toplevel):
             "lot_no": "ロットNo.",
             "mounting_line": "実装ライン",
             "surplus_qty": "仕掛数量",
+            "status": "状態",
             "created_at": "抽出日時",
         }
 
@@ -240,6 +348,7 @@ class WipExpansionWindow(tk.Toplevel):
         self._add_wip_checkbox_filter_button(wip_filter_row1, "side")
         self._add_wip_checkbox_filter_button(wip_filter_row1, "lot_no")
         self._add_wip_checkbox_filter_button(wip_filter_row1, "mounting_line")
+        self._add_wip_checkbox_filter_button(wip_filter_row1, "status")
 
         self._add_wip_filter_entry(wip_filter_row2, "surplus_qty", self._wip_filter_labels["surplus_qty"], width=8)
         self._add_wip_filter_entry(wip_filter_row2, "created_at", self._wip_filter_labels["created_at"], width=16)
@@ -261,6 +370,7 @@ class WipExpansionWindow(tk.Toplevel):
         self.tree_wip_list.column("lot_no", width=100, anchor=tk.W)
         self.tree_wip_list.column("mounting_line", width=90, anchor=tk.W)
         self.tree_wip_list.column("surplus_qty", width=90, anchor=tk.E)
+        self.tree_wip_list.column("status", width=90, anchor=tk.CENTER)
         self.tree_wip_list.column("created_at", width=140, anchor=tk.W)
 
         vsb_wip = ttk.Scrollbar(right_frame, orient="vertical", command=self.tree_wip_list.yview)
@@ -420,11 +530,26 @@ class WipExpansionWindow(tk.Toplevel):
     def _fetch_wip_list_rows():
         """
         WIP一覧のDBアクセス部分のみを行う（Tkinterウィジェットには一切触れない）。
-        models.wip_board_snapshot.list_wip_snapshot() の内容を、Treeviewへそのまま
-        渡せる values タプルのリストに変換する。
+        models.wip_board_snapshot.list_wip_snapshot() の内容に、
+        models.wip_scrap_records.list_wip_scrap_summary()（確定登録済みの
+        仕掛展開結果）を(kitting_list_no, lot_no, production_side)キーで
+        突き合わせ、「確定済み」「未確定」の状態列を付与する
+        （ui.ng_input_window._fetch_ng_list_rows()の未展開／展開済み判定と同じ考え方）。
+
+        キー比較時、wip_board_snapshot.production_sideはTEXT列・
+        wip_scrap_records.production_sideはINTEGER列と型が異なるため、
+        str()で揃えてから比較する。
         """
-        return [
-            (
+        confirmed_keys = {
+            (s["kitting_list_no"], s["lot_no"] or "", str(s["production_side"]))
+            for s in list_wip_scrap_summary()
+        }
+
+        rows = []
+        for row in list_wip_snapshot():
+            key = (row["kitting_list_no"], row["lot_no"] or "", str(row["production_side"]))
+            status = "確定済み" if key in confirmed_keys else "未確定"
+            rows.append((
                 row["kitting_list_no"],
                 row["board_name"],
                 row["file_no"],
@@ -432,10 +557,10 @@ class WipExpansionWindow(tk.Toplevel):
                 row["lot_no"] or "",
                 row["mounting_line"] or "",
                 f"{row['surplus_qty']:g}",
+                status,
                 row["created_at"] or "",
-            )
-            for row in list_wip_snapshot()
-        ]
+            ))
+        return rows
 
     def _populate_wip_tree(self, rows):
         for item in self.tree_wip_list.get_children():

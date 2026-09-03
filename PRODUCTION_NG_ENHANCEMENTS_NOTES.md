@@ -188,6 +188,11 @@ NG連動計算式:**面1保存値 = 面1欄入力値 + 面2欄入力値、面2�
 - `scrap_records`向けの1行単位の修正・削除機能(`update_scrap_record()`/`delete_scrap_record()`)は実装していない(ユーザー決定により、kitting_list_no単位の洗い替え(`replace_scrap_records()`)で運用する方針としたため)。
 - NG一覧のフィルタ・ソート機能は、計画一覧のロジックをコピー&適応した実装であり、共通コンポーネントとしては切り出していない(将来、両者の挙動を同時に変更する必要がある場合は両方修正が必要な点に注意)。
 - `find_opposite_side_plan()`の複数候補時「最も近いplan_start_datetimeを自動選択」は、業務上本当に正しい組み合わせを保証するものではない(日時が近いというだけの推測)。誤った組み合わせになるケースがないか、実運用で注意が必要。
+- **ロード画面（`LoadingWindow`＋非同期パターン）の追加、途中で中断**：CSV/TSV読み込み処理における非同期ロード画面の有無を9画面調査した結果、対応済みは在庫差異レポート（§9 Step3でBOM展開自体を廃止し、ロード画面が不要になる形で解消）のみ。以下が未着手：
+  - NG入力画面（`ui/ng_input_window.py`）・仕掛展開画面（`ui/wip_expansion_window.py`）へのロード画面追加。あわせて、両画面が独立して`BOMService()`をモジュールレベルで生成しており、共有フォルダのインデックス構築（`BOMFileIndex.build_index()`）が最大2回発生する無駄も未解消。
+  - 各種CSVインポート5画面（部品属性・構成基板数・マスタインポート・96部品在庫・理論在庫）へのロード画面追加。行ごとの個別DB書き込みによる体感遅延も未解消（バッチ化等の検討余地あり）。
+- **「対象外」マークの仕組み**：NG一覧・仕掛一覧それぞれに「展開不要と判断した項目」を示す仕組みが未実装。設計方針（独立した「除外リスト」テーブルが必要、`scrap_records`等既存3テーブルはdelete-then-insertのため列追加ではフラグが生存しない）までは決定済みだが実装は未着手。これが完成して初めて、「全項目が展開済みまたは対象外になった状態でのみ在庫差異レポート作成を許可する」というゲート機能が実現できる。
+- 上記2項目は共有フォルダ運用・DBロック機構（`UI_WORKFLOW_FIXES_NOTES.md` グループQ）と同時期に整理された未完了タスクの一部。バックアップ機能・.exe化（共有フォルダ運用の最終目標）については`UI_WORKFLOW_FIXES_NOTES.md` §4を参照。
 
 ---
 
@@ -220,4 +225,36 @@ NG連動計算式:**面1保存値 = 面1欄入力値 + 面2欄入力値、面2�
 - 右ペインのデータソースは`models.wip_board_snapshot.list_wip_snapshot()`(月報で抽出したスナップショット)。列構成：`kitting_list_no・board_name・file_no・生産面・ロットNo.・実装ライン・仕掛数量・抽出日時`。
 - 行をダブルクリックすると、`services.bom_service.BOMService.expand_wip_to_parts()`(既存、NG展開の`expand_scrap_to_parts()`と同じ戻り値形式)を呼んでBOM展開する。
 - **登録操作は無し(閲覧専用)**。仕掛の部品はまだ消費されていない在庫のため、NG入力画面と異なり登録先のテーブルが無い。
+  （※この記述は導入当時の状態。その後、下記「仕掛展開結果の保存・レポート機能への拡張（Step1〜3）」で登録・保存機能が追加されたため、現在は登録先テーブル`wip_scrap_records`が存在する）
 - メインメニュー「月次データ」セクションに「16. 仕掛展開」ボタンを追加(`_open_singleton_window()`パターン)。
+
+---
+
+## 9. 仕掛展開結果の保存・レポート機能への拡張（Step1〜3、新機能）
+
+### 背景・確定した業務フロー
+
+NG入力画面（仕損）と同様に、仕掛展開画面でも展開結果を保存・レポート出力できるようにし、最終的には「NG一覧・仕掛一覧の全項目が展開済み（確定）または対象外になった状態で在庫差異レポートを作成する」という業務フローを実現したい、という要望から着手した。
+
+**重要な前提の発見**：在庫差異レポートの仕掛数量は、以前から`wip_board_snapshot`（月報の仕掛数量抽出・仕掛展開画面が参照するもの）を全く見ておらず、「本日の実績」（`services.production_service.build_daily_report()`）から都度独自に再計算していた。同じ「仕掛」という言葉を使いながら、仕掛展開画面と在庫差異レポートが別々のデータソースを見ているという食い違いが存在していた。
+
+### Step1: 仕掛展開結果の保存機能
+
+- 新テーブル`wip_scrap_records`（`models/wip_scrap_records.py`、新規。`scrap_records`と同様の構造：`kitting_list_no, file_no, production_side, part_no, qty, lot_no, mounting_line, created_at`）。
+- `save_wip_scrap_records(kitting_list_no, file_no, side, records, lot_no, mounting_line)`（`replace_scrap_records()`と同じdelete-then-insertパターン、`(kitting_list_no, production_side, lot_no)`キー）。
+- `ui/wip_expansion_window.py`に「仕掛確定登録」ボタンを追加（NG入力画面の`btn_register`と同じ有効化タイミング：展開成功時にNORMAL）。押下時、`CheckableTreeview.get_checked_iids()`でチェック済み部品を取得し保存する（`NgInputWindow.on_register()`と同じパターン）。
+- 右ペインの仕掛一覧に「確定済み/未確定」の状態列を追加（`_fetch_wip_list_rows()`が`wip_board_snapshot`と`wip_scrap_records`を`(kitting_list_no, lot_no, production_side)`キーで突き合わせ、NG一覧の未展開/展開済みと同じ考え方で判定）。
+
+### Step2: 仕掛版レポート2種
+
+- `ui/wip_product_report_window.py`（仕掛製品レポート、`product_ng_report_window.py`ベース）・`ui/wip_parts_report_window.py`（仕掛96レポート、`parts_ng_report_window.py`ベース）を新規実装。列構成・PDF出力・印刷・CSV出力（utf-8-sig）は既存の`ui/daily_report_window.py`の共通実装（`build_daily_report_pdf()`・`ReportPreviewWindow`）をそのまま流用。
+- `models/wip_scrap_records.py::query_wip_totals_range()`（期間指定版、96コード単位のSUM）を新設。`wip_scrap_records`には`report_date`列が無く`created_at`（日時文字列）のみのため、`substr(created_at, 1, 10)`で日付部分を切り出して範囲比較する設計にした（既存の`query_scrap_totals_range()`と同じ設計思想を、列構成の違いに合わせて適応）。
+- `ui/wip_expansion_window.py`の`on_wip_list_double_click()`を`_expand_row()`として共通処理に切り出し、外部から特定の行を自動展開できる`expand_by_identity(kitting_list_no, lot_no, production_side)`を新設（レポート画面の行ダブルクリックから、新規に`WipExpansionWindow`を開いて自動展開する導線用。`ui.product_ng_report_window.ProductNgReportWindow.on_row_double_click()`が新規`NgInputWindow`を開く既存パターンと同じ考え方）。
+
+### Step3: 在庫差異レポートの仕掛数量参照先の変更
+
+- `services/inventory_diff_service.py::_collect_wip_totals()`を全面書き換え。`BOMService.expand_wip_to_parts()`の都度呼び出し（共有フォルダアクセスを伴う）を廃止し、`models/wip_scrap_records.py::query_wip_totals()`（新規、`query_scrap_totals()`と同じパターン、96コード単位のSUM）から集計する形に変更した。
+  **依頼時に指定された関数名（`list_wip_scrap_summary()`）は`(kitting_list_no, production_side, lot_no)`単位の集計であり96コード単位の内訳を持たないため、そのままでは使用できないことが実装時に判明し、正しい集計粒度を持つ新関数`query_wip_totals()`を追加する形に修正された**（集計粒度の違いに気づかず実装していたら誤った集計値になるところだった）。
+- `inventory_diff_service.py`から`BOMService`・`build_daily_report`関連のimportを全て削除し、在庫差異レポートがDBアクセスのみで完結する（共有フォルダへ一切アクセスしない）ことを確認した。
+- 実行時間の実測：約4.6ms（以前はBOM展開のたびに共有フォルダアクセスが発生する構造で、仕掛のある行数分だけ画面表示前に直列実行される最も深刻な遅延要因だった）。
+- `count_unconfirmed_wip_boards()`（`wip_board_snapshot`×`wip_scrap_records`の突き合わせ）を追加し、未確定の仕掛基板がある場合は`ui/inventory_diff_window.py`に警告表示（「※ 未確定の仕掛基板がN件あります。仕掛数量（仕掛列）に反映されていません。」）。0件なら非表示。
