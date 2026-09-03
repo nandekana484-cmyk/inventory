@@ -137,7 +137,17 @@ class KittingProductionEntryWindow(tk.Toplevel):
         # 高さの合計に対し十分な余裕を持たせた高さ（1080p等の一般的なディスプレイ
         # でも十分収まる）。拡張可能（expand=True）な唯一の要素であるhist_frameが
         # 不足分を吸収してしまい極端に潰れることのないよう、850px以上を保つこと。
-        self.geometry("1150x850")
+        # 縦850pxだと画面からはみ出す環境があるため700pxに縮小した。
+        # 実測（1150x850時点）：info_frame reqheight=289px・entry_frame
+        # （実績+NG入力統合）reqheight=147px・hist_frame reqheight=265px
+        # （それぞれpack pady=5の上下10pxずつを含む）。info_frame・entry_frameは
+        # fill=tk.X（expand無し）のため常に自然サイズが確保され、expand=True・
+        # fill=tk.BOTHのhist_frameのみが縮小分を吸収する設計（左側3フレームの
+        # pack順序による優先度）。実際に1150x700で検証したところ、
+        # info_frame・entry_frameは289px/147pxのまま変化せず、hist_frameのみ
+        # 265px→234px（約1行分）に縮み、登録ボタン等は引き続きウィンドウ内に
+        # 収まることを確認済み。
+        self.geometry("1150x700")
 
         self.create_widgets()
 

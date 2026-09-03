@@ -72,6 +72,154 @@ def init_kitting_plan_tables():
             ON kitting_plan_items(lot_no)
         """)
 
+        # キッティングNo.未確定のまま取り込まれた計画行の一時保存テーブル
+        # （services.kitting_import_service.import_kitting_plan_csv()から使う）。
+        # 識別キーは (lot_no, setup_file_no, production_side, order_qty)。
+        # 後日キッティングNo.が付与されて再取込された際、この識別キーが一致すれば
+        # 「未確定期間からの確定」として扱い、正式なkitting_plan_itemsへ移行する
+        # （upsert_pending_kitting_plan_item()・find_pending_kitting_plan_item()・
+        # delete_pending_kitting_plan_item()参照）。
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS pending_kitting_plan_items (
+                pending_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lot_no TEXT,
+                setup_file_no TEXT,
+                production_side TEXT,
+                order_qty REAL DEFAULT 0,
+                mounting_line TEXT,
+                board_name TEXT,
+                planned_qty REAL DEFAULT 0,
+                cumulative_qty_external REAL DEFAULT 0,
+                status TEXT,
+                plan_start_datetime TEXT,
+                plan_end_datetime TEXT,
+                deadline TEXT,
+                actual_start_datetime TEXT,
+                actual_end_datetime TEXT,
+                delete_flag INTEGER DEFAULT 0,
+                source_file TEXT,
+                created_by TEXT,
+                created_at TEXT DEFAULT (datetime('now','localtime')),
+                updated_at TEXT DEFAULT (datetime('now','localtime'))
+            )
+        """)
+
+        # 識別キーの重複防止（本体のupsert_pending_kitting_plan_item()はSELECT→
+        # UPDATE/INSERTで明示的に上書き判定するため、このインデックス自体は
+        # 直接のON CONFLICT対象としては使わないが、想定外の経路からの重複挿入を
+        # DBレベルでも防ぐための保険として作成する）。
+        cur.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_pending_kitting_plan_items_identity
+            ON pending_kitting_plan_items(
+                COALESCE(lot_no, ''), COALESCE(setup_file_no, ''),
+                COALESCE(production_side, ''), COALESCE(order_qty, 0)
+            )
+        """)
+
+        con.commit()
+
+
+def upsert_pending_kitting_plan_item(data: dict, created_by: str = None) -> int:
+    """
+    キッティングNo.未確定の計画行をpending_kitting_plan_itemsへ保存する。
+
+    識別キー (lot_no, setup_file_no, production_side, order_qty) が一致する行が
+    既にあれば内容を上書き（delete-then-insertではなく、SELECTで既存行を確認した
+    上でUPDATE、無ければINSERT）、無ければ新規追加する。
+
+    data：services.kitting_import_service.import_kitting_plan_csv()が組み立てる
+    item辞書（kitting_list_noを除く）をそのまま渡せる想定。未知のキーは無視する。
+
+    戻り値：対象行のpending_id。
+    """
+    init_kitting_plan_tables()
+
+    lot_no = data.get("lot_no")
+    setup_file_no = data.get("setup_file_no")
+    production_side = data.get("production_side")
+    order_qty = data.get("order_qty") or 0
+
+    values = (
+        data.get("mounting_line"),
+        data.get("board_name"),
+        data.get("planned_qty") or 0,
+        data.get("cumulative_qty_external") or 0,
+        data.get("status"),
+        data.get("plan_start_datetime"),
+        data.get("plan_end_datetime"),
+        data.get("deadline"),
+        data.get("actual_start_datetime"),
+        data.get("actual_end_datetime"),
+        data.get("delete_flag") or 0,
+        data.get("source_file"),
+        created_by,
+    )
+
+    with get_connection() as con:
+        cur = con.cursor()
+        existing = cur.execute("""
+            SELECT pending_id FROM pending_kitting_plan_items
+            WHERE COALESCE(lot_no, '') = COALESCE(?, '')
+              AND COALESCE(setup_file_no, '') = COALESCE(?, '')
+              AND COALESCE(production_side, '') = COALESCE(?, '')
+              AND COALESCE(order_qty, 0) = COALESCE(?, 0)
+        """, (lot_no, setup_file_no, production_side, order_qty)).fetchone()
+
+        if existing:
+            pending_id = existing["pending_id"]
+            cur.execute("""
+                UPDATE pending_kitting_plan_items SET
+                    mounting_line = ?, board_name = ?, planned_qty = ?,
+                    cumulative_qty_external = ?, status = ?, plan_start_datetime = ?,
+                    plan_end_datetime = ?, deadline = ?, actual_start_datetime = ?,
+                    actual_end_datetime = ?, delete_flag = ?, source_file = ?,
+                    created_by = ?, updated_at = datetime('now', 'localtime')
+                WHERE pending_id = ?
+            """, values + (pending_id,))
+        else:
+            cur.execute("""
+                INSERT INTO pending_kitting_plan_items (
+                    lot_no, setup_file_no, production_side, order_qty,
+                    mounting_line, board_name, planned_qty, cumulative_qty_external,
+                    status, plan_start_datetime, plan_end_datetime, deadline,
+                    actual_start_datetime, actual_end_datetime, delete_flag,
+                    source_file, created_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (lot_no, setup_file_no, production_side, order_qty) + values)
+            pending_id = cur.lastrowid
+
+        con.commit()
+        return pending_id
+
+
+def find_pending_kitting_plan_item(lot_no, setup_file_no, production_side, order_qty):
+    """
+    識別キー (lot_no, setup_file_no, production_side, order_qty) に一致する
+    保留行（pending_kitting_plan_items）を1件検索する。
+
+    キッティングNo.が付与された行を取り込む際、その行が以前「未確定」のまま
+    保留登録されていたものの確定なのかを判定するために使う
+    （services.kitting_import_service.import_kitting_plan_csv()から呼ぶ）。
+
+    戻り値：一致する行（辞書）。無ければNone。
+    """
+    init_kitting_plan_tables()
+    with get_connection() as con:
+        row = con.execute("""
+            SELECT * FROM pending_kitting_plan_items
+            WHERE COALESCE(lot_no, '') = COALESCE(?, '')
+              AND COALESCE(setup_file_no, '') = COALESCE(?, '')
+              AND COALESCE(production_side, '') = COALESCE(?, '')
+              AND COALESCE(order_qty, 0) = COALESCE(?, 0)
+        """, (lot_no, setup_file_no, production_side, order_qty)).fetchone()
+        return dict(row) if row else None
+
+
+def delete_pending_kitting_plan_item(pending_id: int):
+    """保留行（pending_kitting_plan_items）を1件削除する（確定登録が完了した後に呼ぶ）。"""
+    init_kitting_plan_tables()
+    with get_connection() as con:
+        con.execute("DELETE FROM pending_kitting_plan_items WHERE pending_id = ?", (pending_id,))
         con.commit()
 
 

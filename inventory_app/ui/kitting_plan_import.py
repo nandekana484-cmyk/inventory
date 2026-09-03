@@ -120,8 +120,8 @@ class KittingPlanImportWindow(tk.Toplevel):
 
     def _run_import_in_thread(self, file_path, worker_id):
         try:
-            batch_id, count = import_kitting_plan_csv(file_path, worker_id)
-            self._result_queue.put((True, {"batch_id": batch_id, "count": count, "file": os.path.basename(file_path)}))
+            result = import_kitting_plan_csv(file_path, worker_id)
+            self._result_queue.put((True, {**result, "file": os.path.basename(file_path)}))
         except Exception as e:
             import traceback
             tb = traceback.format_exc()
@@ -146,11 +146,23 @@ class KittingPlanImportWindow(tk.Toplevel):
             self.result_label.config(text="取込失敗")
         else:
             batch_id = payload.get("batch_id")
-            count = payload.get("count")
+            count = payload.get("inserted")
+            pending_saved_count = payload.get("pending_saved_count", 0)
+            confirmed_from_pending_count = payload.get("confirmed_from_pending_count", 0)
             filename = payload.get("file")
             self.lbl_status.config(text="状態: 完了")
-            self.result_label.config(text=f"取込完了：{count}件（バッチID: {batch_id}、ファイル: {filename}）")
-            messagebox.showinfo("取込完了", f"{count}件のキッティング計画を取り込みました。", parent=self.winfo_toplevel())
+
+            status_text = f"取込完了：{count}件（バッチID: {batch_id}、ファイル: {filename}）"
+            msg = f"{count}件のキッティング計画を取り込みました。"
+            if pending_saved_count:
+                status_text += f"（保留登録：{pending_saved_count}件）"
+                msg += f"\n{pending_saved_count}件のキッティングNo.未確定行を保留登録しました。"
+            if confirmed_from_pending_count:
+                status_text += f"（保留から確定：{confirmed_from_pending_count}件）"
+                msg += f"\n{confirmed_from_pending_count}件が保留から確定されました。"
+
+            self.result_label.config(text=status_text)
+            messagebox.showinfo("取込完了", msg, parent=self.winfo_toplevel())
             self._load_batch_list(select_batch_id=batch_id)
 
         self.after(200, self._poll_result_queue)

@@ -14,6 +14,8 @@ _ENCODINGS_TO_TRY = ["utf-8-sig", "utf-8", "cp932"]
 # 構成基板数CSVの列名
 COL_BOARD_NAME = "基板名"
 COL_BOARD_COUNT = "構成基板数"
+# 構成基板数列の候補列名（この順で最初に一致したものを使う）
+COL_BOARD_COUNT_CANDIDATES = ["構成基板数", "構成数"]
 
 
 def _open_csv_with_fallback(file_path):
@@ -34,9 +36,13 @@ def _open_csv_with_fallback(file_path):
 
 def _import_board_structure_csv(file_path):
     """
-    構成基板数CSV（基板名・構成基板数の2列、タブ区切り。ui/parts_attributes_import_window.py
-    と同じくタブ区切り想定）を解析し、models.board_structure_master.upsert_board_structure()
-    へ保存する。
+    構成基板数CSV（基板名・構成基板数の2列、カンマ区切り）を解析し、
+    models.board_structure_master.upsert_board_structure() へ保存する。
+
+    以前はui/parts_attributes_import_window.py（タブ区切りTSV）に合わせて
+    delimiter="\\t"としていたが、実運用のCSVはカンマ区切りであり、
+    区切り文字の不一致によりヘッダーが正しく認識されず全行がスキップされる
+    （インポート0件になる）不具合が発覚したため、カンマ区切りに修正した。
 
     CSVをマスタとした差分同期：全行のupsertが正常に完了した後、今回のCSVに
     含まれていた board_name 一覧と現在のテーブル内容を比較し、CSVに存在しない
@@ -49,33 +55,61 @@ def _import_board_structure_csv(file_path):
     同期処理そのものを中断し、upsert・削除のいずれも行わない。
 
     必須列：基板名（欠けている・空の行は警告してスキップ）
-    任意列：構成基板数（数値変換できない場合は警告のうえNoneのまま保存する）
+    任意列：構成基板数。候補列名（COL_BOARD_COUNT_CANDIDATES＝「構成基板数」
+    「構成数」）のいずれかがヘッダーに存在すればそれを使う。いずれも見つからず、
+    かつCSVがちょうど2列構成（基板名列＋もう1列）の場合に限り、その「もう1列」
+    を構成基板数として位置ベースで読み込むフォールバックを行う（実運用のCSVで
+    2列目にヘッダー名自体が付いていない実例が発覚したため）。3列以上ある場合は
+    誤った列を拾うリスクを避けるためフォールバックしない（候補列名一致のみ）。
+    数値変換できない場合は警告のうえNoneのまま保存する。
 
     区切り文字・文字コードの不一致でヘッダーが正しく認識されないと、
     全行が「基板名が空」としてスキップされてしまう（部品属性インポートと同種の
     パターン）。これに気づきやすくするため、基板名空欄によるスキップが読み込み
     行数の9割以上を占める場合は、通常の行単位警告とは別に、ファイル形式の確認を
-    促す注意喚起メッセージを warnings の先頭に追加する。
+    促す注意喚起メッセージを warnings の先頭に追加する。同様に、基板名は取得
+    できたが構成基板数が未取得（空欄・非数値・列自体が無い）だった行が、
+    インポート件数の5割以上を占める場合も、列名・区切り文字の確認を促す
+    注意喚起メッセージを追加する。
 
     戻り値：{"imported": 成功件数(upsert件数), "deleted": 削除件数,
+             "board_count_missing": 構成基板数が未取得だったimported行数,
+             "notices": 警告とは別の情報メッセージのリスト（列位置フォールバック発動時等）,
              "warnings": 警告メッセージのリスト}
     """
     warnings = []
+    notices = []
 
     with _open_csv_with_fallback(file_path) as f:
-        reader = csv.DictReader(f, delimiter="\t")
+        reader = csv.DictReader(f, delimiter=",")
         rows = list(reader)
+        fieldnames = reader.fieldnames or []
 
     if not rows:
         return {
             "imported": 0,
             "deleted": 0,
+            "board_count_missing": 0,
+            "notices": [],
             "warnings": ["CSVにデータ行が1件も無いため、インポートを中断しました（削除も行っていません）。"],
         }
+
+    # 構成基板数列の決定：候補列名を優先し、いずれも無くCSVがちょうど2列
+    # （基板名列＋もう1列）の場合のみ、その「もう1列」を位置ベースで採用する。
+    board_count_col = next((c for c in COL_BOARD_COUNT_CANDIDATES if c in fieldnames), None)
+    if board_count_col is None:
+        other_columns = [fn for fn in fieldnames if fn != COL_BOARD_NAME]
+        if len(fieldnames) == 2 and len(other_columns) == 1:
+            board_count_col = other_columns[0]
+            notices.append(
+                f"列名が想定（{'/'.join(COL_BOARD_COUNT_CANDIDATES)}）と異なるため、"
+                "2列目を構成基板数として読み込みました。"
+            )
 
     imported = 0
     seen_board_names = []
     skipped_count = 0
+    board_count_missing_count = 0
 
     for i, row in enumerate(rows, start=2):  # 1行目はヘッダーのためCSV上の行番号に合わせる
         board_name = (row.get(COL_BOARD_NAME) or "").strip()
@@ -84,7 +118,7 @@ def _import_board_structure_csv(file_path):
             skipped_count += 1
             continue
 
-        board_count_raw = (row.get(COL_BOARD_COUNT) or "").strip()
+        board_count_raw = (row.get(board_count_col) or "").strip() if board_count_col is not None else ""
         board_count = None
         if board_count_raw:
             try:
@@ -97,6 +131,8 @@ def _import_board_structure_csv(file_path):
         upsert_board_structure(board_name, board_count)
         imported += 1
         seen_board_names.append(board_name)
+        if board_count is None:
+            board_count_missing_count += 1
 
     total_rows = len(rows)
     if total_rows > 0 and skipped_count / total_rows >= 0.9:
@@ -108,13 +144,27 @@ def _import_board_structure_csv(file_path):
             "一致していない可能性があります。ファイル形式をご確認ください。",
         )
 
+    if imported > 0 and board_count_missing_count / imported >= 0.5:
+        warnings.append(
+            f"※ 登録した{imported}行中{board_count_missing_count}行"
+            f"（{board_count_missing_count / imported * 100:.0f}%）で{COL_BOARD_COUNT}を取得できませんでした。"
+            f"区切り文字や列名（{'/'.join(COL_BOARD_COUNT_CANDIDATES)}）が"
+            "ファイルの実際の形式と一致していない可能性があります。ファイル形式をご確認ください。"
+        )
+
     if not seen_board_names:
         warnings.append("有効な基板名を含む行が1件も無かったため、削除は行っていません。")
-        return {"imported": imported, "deleted": 0, "warnings": warnings}
+        return {
+            "imported": imported, "deleted": 0, "board_count_missing": board_count_missing_count,
+            "notices": notices, "warnings": warnings,
+        }
 
     deleted_board_names = delete_board_structure_not_in(seen_board_names)
 
-    return {"imported": imported, "deleted": len(deleted_board_names), "warnings": warnings}
+    return {
+        "imported": imported, "deleted": len(deleted_board_names),
+        "board_count_missing": board_count_missing_count, "notices": notices, "warnings": warnings,
+    }
 
 
 class BoardStructureImportWindow(tk.Toplevel):
@@ -169,7 +219,6 @@ class BoardStructureImportWindow(tk.Toplevel):
     def on_select_csv(self):
         file_path = filedialog.askopenfilename(
             filetypes=[
-                ("TSV files", "*.tsv"),
                 ("CSV files", "*.csv"),
                 ("All files", "*.*"),
             ],
@@ -193,7 +242,17 @@ class BoardStructureImportWindow(tk.Toplevel):
 
         self.load_board_structure()
 
-        msg = f"成功件数：{result['imported']}件\n警告件数：{len(result['warnings'])}件\n削除件数：{result.get('deleted', 0)}件"
+        msg = (
+            f"成功件数：{result['imported']}件\n"
+            f"構成基板数未取得件数：{result.get('board_count_missing', 0)}件\n"
+            f"警告件数：{len(result['warnings'])}件\n"
+            f"削除件数：{result.get('deleted', 0)}件"
+        )
+
+        notices = result.get("notices") or []
+        if notices:
+            msg += "\n\n" + "\n".join(notices)
+
         warnings = result["warnings"]
         if warnings:
             shown = "\n".join(warnings[:10])

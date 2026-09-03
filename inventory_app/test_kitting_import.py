@@ -15,11 +15,13 @@ config.DB_PATH = os.path.join(_tmp_dir, "test_kitting_import.db")
 
 from services.kitting_import_service import import_kitting_plan_csv
 
-batch_id, inserted_count = import_kitting_plan_csv(
+result = import_kitting_plan_csv(
     r"C:\work\inventory\inventory_app\imports\test_kitting_small.csv",
     worker_id="TEST_USER"
 )
 
-print("batch_id:", batch_id)
-print("inserted_count:", inserted_count)
+print("batch_id:", result["batch_id"])
+print("inserted:", result["inserted"])
+print("pending_saved_count:", result["pending_saved_count"])
+print("confirmed_from_pending_count:", result["confirmed_from_pending_count"])
 print("(このテスト実行は一時DBに対して行われました:", config.DB_PATH, ")")

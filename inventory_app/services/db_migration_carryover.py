@@ -26,11 +26,34 @@ config.DB_PATH（アプリ全体で共有されるグローバルな「現在の
 「現在のDB」になるべきだから）。
 """
 import os
+from datetime import datetime
 
 import config
-from models.kitting_plan import get_connection as get_plan_connection, create_plan_batch, create_plan_version
+from models.kitting_plan import (
+    get_connection as get_plan_connection, create_plan_batch, create_plan_version,
+    init_kitting_plan_tables,
+)
 from models.production import get_connection as get_production_connection, replace_daily_result
 from services.production_service import list_incomplete_lots
+
+# plan_start_datetimeの実データ形式（"YYYY/MM/DD HH:MM:SS"、スラッシュ区切り＋時刻付き。
+# UI_WORKFLOW_FIXES_NOTES.md/PRODUCTION_NG_ENHANCEMENTS_NOTES.md等で既出のkitting_plan_items
+# 標準形式と同一）。
+_PLAN_START_DATETIME_FORMAT = "%Y/%m/%d %H:%M:%S"
+
+# ロットNo重複疑いと判定する経過日数のしきい値（約1年。うるう年を厳密には考慮しない、
+# 「実装しやすい方針」としての単純な日数比較）。
+_LOT_NO_DUPLICATE_THRESHOLD_DAYS = 365
+
+
+def _parse_plan_start_datetime(value):
+    """plan_start_datetimeを日時にパースする。None・空文字・パース不能な場合はNoneを返す。"""
+    if not value:
+        return None
+    try:
+        return datetime.strptime(str(value).strip(), _PLAN_START_DATETIME_FORMAT)
+    except (ValueError, TypeError):
+        return None
 
 
 def _fetch_plan_items_for_lot(lot_no: str) -> list:
@@ -47,6 +70,100 @@ def _fetch_plan_items_for_lot(lot_no: str) -> list:
             WHERE lot_no = ? AND delete_flag = 0 AND COALESCE(is_active, 1) = 1
         """, (lot_no,))
         return [dict(row) for row in cur.fetchall()]
+
+
+def _fetch_existing_plan_start_datetimes_for_lot(lot_no: str) -> list:
+    """
+    書き込み先DB（呼び出し時点でconfig.DB_PATHが指している方）に、指定lot_noを
+    持つkitting_plan_items行が既に存在するか確認し、その各行のplan_start_datetime
+    （生の文字列）をリストで返す（無ければ空リスト）。
+
+    is_active・delete_flagでは絞り込まない：無効化済み・削除フラグ付きの行でも
+    「そのlot_noが過去にこのDBで使われていた」という事実自体が重複疑いの根拠に
+    なるため、現在アクティブな行だけに限定すると見逃しが生じる。
+
+    新DBがまだ一度もcreate_plan_batch()等を呼ばれていない真っさらな状態だと
+    kitting_plan_itemsテーブル自体が存在しないため、create_plan_batch()と
+    同様にinit_kitting_plan_tables()で事前に存在を保証する。
+    """
+    init_kitting_plan_tables()
+    with get_plan_connection() as con:
+        cur = con.execute(
+            "SELECT plan_start_datetime FROM kitting_plan_items WHERE lot_no = ?",
+            (lot_no,),
+        )
+        return [row["plan_start_datetime"] for row in cur.fetchall()]
+
+
+def _check_lot_no_duplicate(lot_no: str, old_plan_start_datetimes: list) -> dict:
+    """
+    書き込み先DB（新DB）に既に同じlot_noの行が存在するかを確認し、重複疑いの
+    有無を判定する（carry_over_incomplete_lots()の書き込みフェーズから、対象
+    lot_noごとに呼ぶ）。
+
+    old_plan_start_datetimes：引き継ぎ元（旧DB）側で、このlot_noに属する
+    kitting_plan_items行が持つplan_start_datetime（生の文字列）のリスト。
+
+    判定方針：
+    - 新DB側に該当lot_noの行が1つも無ければ、通常の（重複ではない）ケースとして
+      Noneを返す（呼び出し元は警告リストに追加しない）。
+    - 新DB側の各行のplan_start_datetimeと、旧DB側の各plan_start_datetimeの
+      全組み合わせを比較する。いずれかの組でパース可能かつ差が
+      _LOT_NO_DUPLICATE_THRESHOLD_DAYS（365日）以上離れていれば「重複疑いあり」
+      （"suspected_duplicate"）と判定する。日数差が最大の組を代表値として返す
+      （最も疑わしい＝別ロットの可能性が高い組み合わせをユーザーに提示するため）。
+    - 「重複疑いあり」に該当する組が無く、かつ新DB側・旧DB側どちらかに
+      パース不能（None・空欄・形式不正）なplan_start_datetimeが1件でも含まれる
+      場合は「判定不能」（"undetermined"）とする（実装しやすさを優先し、
+      パース不能な行は「重複でない」と断定せず、人が確認できるよう警告に含める
+      方針を採用した）。
+    - 上記いずれにも該当しない（＝新DB側に行はあるが、全ての組み合わせが
+      パース可能かつ365日未満の差）場合はNoneを返す（通常の月またぎ再利用として
+      警告しない）。
+
+    戻り値：Noneまたは
+    {"reason": "suspected_duplicate" | "undetermined",
+     "existing_plan_start_datetime": 新DB側の代表値（生文字列、無ければNone),
+     "old_plan_start_datetime": 旧DB側の代表値（生文字列、無ければNone)}
+    """
+    existing_raw_list = _fetch_existing_plan_start_datetimes_for_lot(lot_no)
+    if not existing_raw_list:
+        return None
+
+    old_raw_list = old_plan_start_datetimes or [None]
+    existing_raw_list = existing_raw_list or [None]
+
+    best_suspected = None  # (day_diff, existing_raw, old_raw)
+    has_undetermined = False
+
+    for existing_raw in existing_raw_list:
+        existing_dt = _parse_plan_start_datetime(existing_raw)
+        for old_raw in old_raw_list:
+            old_dt = _parse_plan_start_datetime(old_raw)
+            if existing_dt is None or old_dt is None:
+                has_undetermined = True
+                continue
+            day_diff = abs((old_dt - existing_dt).days)
+            if day_diff >= _LOT_NO_DUPLICATE_THRESHOLD_DAYS:
+                if best_suspected is None or day_diff > best_suspected[0]:
+                    best_suspected = (day_diff, existing_raw, old_raw)
+
+    if best_suspected is not None:
+        _, existing_raw, old_raw = best_suspected
+        return {
+            "reason": "suspected_duplicate",
+            "existing_plan_start_datetime": existing_raw,
+            "old_plan_start_datetime": old_raw,
+        }
+
+    if has_undetermined:
+        return {
+            "reason": "undetermined",
+            "existing_plan_start_datetime": existing_raw_list[0],
+            "old_plan_start_datetime": old_raw_list[0],
+        }
+
+    return None
 
 
 def _fetch_production_daily_for_lot(lot_no: str, kitting_list_nos: list) -> list:
@@ -98,6 +215,22 @@ def carry_over_incomplete_lots(old_db_path: str, new_db_path: str, imported_by: 
               （新DBは空のため実質新規追加だが、delete-then-insertの実装を
               流用することで「1計画=1レコード」ルールにも自然に従う）。
 
+    ロットNo重複チェック（各lot_noのcreate_plan_version()呼び出し前）：
+    新DB（コピー先）に、これから引き継ごうとしているlot_noと同じlot_noを持つ
+    kitting_plan_items行が既に存在するか確認する。存在し、かつその行の
+    plan_start_datetimeが引き継ぎ元（旧DB）側の対応する行と1年（365日）以上
+    離れている場合、「lot_no重複の疑いあり」として記録する（1年未満の差は、
+    同一ロットの通常の月またぎ再利用とみなし警告しない）。判定不能
+    （plan_start_datetimeがNone・パース不能）な組み合わせが含まれる場合は、
+    誤って「重複でない」と断定しないよう「判定不能」として同様に記録する
+    （_check_lot_no_duplicate()参照）。
+
+    この重複チェックは、既に別の計画で使われているlot_noを、意図せず同一lot_no
+    として扱ってしまうリスク（calculate_lot_completion(lot_no)等、lot_no単位で
+    複数kitting_list_noを意図的に集約する関数が、無関係な計画を誤って同一ロット
+    として合算してしまう）への注意喚起であり、コピー処理自体を止めるものではない
+    （検知しても引き継ぎは通常通り続行する）。
+
     scrap_records・ng_declarations・wip_board_snapshotはコピーしない
     （モジュールdocstring参照）。
 
@@ -106,6 +239,12 @@ def carry_over_incomplete_lots(old_db_path: str, new_db_path: str, imported_by: 
         "kitting_plan_items_copied": int,    # コピーしたkitting_plan_items行数
         "production_daily_copied": int,      # コピーしたproduction_daily行数
         "lot_nos": [lot_no, ...],            # コピーしたlot_noの一覧
+        "duplicate_lot_warnings": [           # ロットNo重複の疑いがあったlot_no一覧
+            {"lot_no": str, "reason": "suspected_duplicate" | "undetermined",
+             "old_plan_start_datetime": str または None,
+             "existing_plan_start_datetime": str または None},
+            ...
+        ],
     }
     """
     try:
@@ -128,11 +267,20 @@ def carry_over_incomplete_lots(old_db_path: str, new_db_path: str, imported_by: 
         "kitting_plan_items_copied": 0,
         "production_daily_copied": 0,
         "lot_nos": [],
+        "duplicate_lot_warnings": [],
     }
 
     source_label = f"carry_over:{os.path.basename(os.path.dirname(old_db_path)) or old_db_path}"
 
     for lot, plan_items, production_rows in lots_data:
+        # create_plan_version()で新DBへ書き込む前に、新DB側の既存状態に対して
+        # ロットNo重複チェックを行う（このlot自身の書き込みで状態が変わる前に
+        # 確認する必要があるため、create_plan_batch()より前で行う）。
+        old_plan_start_datetimes = [item.get("plan_start_datetime") for item in plan_items]
+        duplicate_check = _check_lot_no_duplicate(lot["lot_no"], old_plan_start_datetimes)
+        if duplicate_check is not None:
+            summary["duplicate_lot_warnings"].append({"lot_no": lot["lot_no"], **duplicate_check})
+
         batch_id = create_plan_batch(source_label, imported_by, len(plan_items))
 
         kitting_list_no_to_new_plan_item_id = {}

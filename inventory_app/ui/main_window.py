@@ -27,7 +27,11 @@ class MainWindow(tk.Tk):
         super().__init__()
         self.current_worker = current_worker
         self.title("部品在庫管理アプリ - メインメニュー")
-        self.geometry("600x760")
+        # 月次データ・共通マスタを左右2列表示にしたことで縦に短くなった分、
+        # ウィンドウの高さは詰め、横幅は上部のデータベース選択欄（前月引き継ぎ
+        # チェックボックス等を含む）と左右2列のボタン群の両方が収まる幅に広げた
+        # （winfo_reqwidth()実測値920前後に基づく）。
+        self.geometry("940x600")
 
         # メインメニューから開く画面の多重表示防止用：key -> 開いているToplevelインスタンス。
         # ウィンドウが閉じられたら _open_singleton_window() が設定した
@@ -92,7 +96,7 @@ class MainWindow(tk.Tk):
         # メニューボタン領域
         # 月次データ（config.DB_PATH切り替えの対象＝月ごとのDBフォルダに入っている
         # データ：キッティング計画・生産実績・在庫関連）と、共通マスタ（作業者・
-        # 部品マスタ等）を上下2セクションに分けて表示する。
+        # 部品マスタ等）を左右2列に分けて表示する（共通マスタを左、月次データを右）。
         # 注：現状は月次・共通いずれのテーブルも同一のDBファイル（config.DB_PATH）に
         # 同居しており、DB切り替え時は両方まとめて切り替わる（ファイルレベルでの
         # 分離は無い）。ここでの区分けはあくまでデータの性質によるUI上の整理であり、
@@ -102,74 +106,85 @@ class MainWindow(tk.Tk):
 
         ttk.Label(body_frame, text="操作メニューを選択してください", font=("Helvetica", 12)).pack(pady=(0, 10))
 
-        ttk.Label(body_frame, text="月次データ", font=("Helvetica", 11, "bold")).pack(anchor=tk.W, pady=(5, 5))
+        columns_frame = ttk.Frame(body_frame)
+        columns_frame.pack(fill=tk.BOTH, expand=True)
+
+        master_frame = ttk.Frame(columns_frame)
+        master_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+
+        ttk.Separator(columns_frame, orient="vertical").pack(side=tk.LEFT, fill=tk.Y)
+
+        monthly_frame = ttk.Frame(columns_frame)
+        monthly_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(10, 0))
+
+        ttk.Label(monthly_frame, text="月次データ", font=("Helvetica", 11, "bold")).pack(anchor=tk.W, pady=(0, 5))
 
         btn_kitting_import = ttk.Button(
-            body_frame, text="6. キッティング計画CSV取込", command=self.open_kitting_plan_import
+            monthly_frame, text="1. 生産計画読込", command=self.open_kitting_plan_import
         )
         btn_kitting_import.pack(fill=tk.X, pady=5)
 
         btn_kitting_production = ttk.Button(
-            body_frame, text="7. 生産実績入力（キッティングリストNo.）", command=self.open_kitting_production_entry
+            monthly_frame, text="2. 生産実績入力", command=self.open_kitting_production_entry
         )
         btn_kitting_production.pack(fill=tk.X, pady=5)
 
-        btn_inventory_input = ttk.Button(
-            body_frame, text="8. 96部品在庫入力", command=self.open_inventory_input
-        )
-        btn_inventory_input.pack(fill=tk.X, pady=5)
-
-        btn_theoretical_import = ttk.Button(
-            body_frame, text="9. 理論在庫インポート", command=self.open_theoretical_inventory_import
-        )
-        btn_theoretical_import.pack(fill=tk.X, pady=5)
-
-        btn_inventory_diff = ttk.Button(
-            body_frame, text="10. 在庫差異レポート", command=self.open_inventory_diff
-        )
-        btn_inventory_diff.pack(fill=tk.X, pady=5)
-
         btn_ng_input = ttk.Button(
-            body_frame, text="12. NG（仕損）入力", command=self.open_ng_input
+            monthly_frame, text="3. NG・仕損展開", command=self.open_ng_input
         )
         btn_ng_input.pack(fill=tk.X, pady=5)
 
         btn_wip_expansion = ttk.Button(
-            body_frame, text="16. 仕掛展開", command=self.open_wip_expansion
+            monthly_frame, text="4. 仕掛部品展開", command=self.open_wip_expansion
         )
         btn_wip_expansion.pack(fill=tk.X, pady=5)
 
-        ttk.Separator(body_frame, orient="horizontal").pack(fill=tk.X, pady=15)
-
-        ttk.Label(body_frame, text="共通マスタ", font=("Helvetica", 11, "bold")).pack(anchor=tk.W, pady=(0, 5))
-
-        btn_master = ttk.Button(body_frame, text="4. マスターデータ管理", command=self.open_master_management)
-        btn_master.pack(fill=tk.X, pady=5)
-
-        btn_master_import = ttk.Button(
-            body_frame, text="11. マスタインポート", command=self.open_master_import
+        btn_inventory_input = ttk.Button(
+            monthly_frame, text="5. 在庫値入力", command=self.open_inventory_input
         )
-        btn_master_import.pack(fill=tk.X, pady=5)
+        btn_inventory_input.pack(fill=tk.X, pady=5)
+
+        btn_theoretical_import = ttk.Button(
+            monthly_frame, text="6. 理論値入力", command=self.open_theoretical_inventory_import
+        )
+        btn_theoretical_import.pack(fill=tk.X, pady=5)
+
+        btn_inventory_diff = ttk.Button(
+            monthly_frame, text="7. 在庫値出力", command=self.open_inventory_diff
+        )
+        btn_inventory_diff.pack(fill=tk.X, pady=5)
+
+        ttk.Label(master_frame, text="共通マスタ", font=("Helvetica", 11, "bold")).pack(anchor=tk.W, pady=(0, 5))
+
+        btn_board_structure_import = ttk.Button(
+            master_frame, text="1. 構成基板数マスター", command=self.open_board_structure_import
+        )
+        btn_board_structure_import.pack(fill=tk.X, pady=5)
 
         btn_parts_attributes_import = ttk.Button(
-            body_frame, text="13. 部品属性（丁取り数）インポート", command=self.open_parts_attributes_import
+            master_frame, text="2. 基板丁数マスター", command=self.open_parts_attributes_import
         )
         btn_parts_attributes_import.pack(fill=tk.X, pady=5)
 
         btn_worker_management = ttk.Button(
-            body_frame, text="14. 作業者管理", command=self.open_worker_management
+            master_frame, text="3. 作業者管理", command=self.open_worker_management
         )
         btn_worker_management.pack(fill=tk.X, pady=5)
 
-        btn_board_structure_import = ttk.Button(
-            body_frame, text="15. 構成基板数マスタインポート", command=self.open_board_structure_import
+        btn_master = ttk.Button(master_frame, text="4. マスターデータ管理", command=self.open_master_management)
+        btn_master.pack(fill=tk.X, pady=5)
+
+        btn_master_import = ttk.Button(
+            master_frame, text="5. マスターインポート", command=self.open_master_import
         )
-        btn_board_structure_import.pack(fill=tk.X, pady=5)
+        btn_master_import.pack(fill=tk.X, pady=5)
 
         ttk.Separator(body_frame, orient="horizontal").pack(fill=tk.X, pady=15)
 
-        btn_logout = ttk.Button(body_frame, text="ログアウト", command=self.on_logout)
-        btn_logout.pack(fill=tk.X, pady=5)
+        # ログアウトボタンは他のメニューボタンと違い誤操作を避けたいため、
+        # fill=tk.Xで全幅に広げず、横幅を約半分程度に抑えて中央に配置する。
+        btn_logout = ttk.Button(body_frame, text="ログアウト", command=self.on_logout, width=35)
+        btn_logout.pack(pady=5)
 
         # メインメニュー全体の操作可否を一括で切り替えるための対象ウィジェット一覧
         # （_set_menu_enabled()参照）。carry_over_incomplete_lots()実行中、
@@ -483,14 +498,33 @@ class MainWindow(tk.Tk):
         if success:
             summary = payload["summary"]
             folder_name = payload["folder"]
-            messagebox.showinfo(
-                "完了",
+            msg = (
                 "新しいデータベースを作成しました。\n"
                 f"未完了ロット {summary['lots_copied']}件・"
                 f"計画行 {summary['kitting_plan_items_copied']}件・"
-                f"実績 {summary['production_daily_copied']}件を引き継ぎました。",
-                parent=self.winfo_toplevel(),
+                f"実績 {summary['production_daily_copied']}件を引き継ぎました。"
             )
+
+            duplicate_warnings = summary.get("duplicate_lot_warnings") or []
+            if duplicate_warnings:
+                reason_labels = {
+                    "suspected_duplicate": "重複疑いあり（1年以上前の既存計画と同じロットNo.）",
+                    "undetermined": "判定不能（実装開始予定日が不明のため要確認）",
+                }
+                lines = [
+                    f"・{w['lot_no']}：{reason_labels.get(w['reason'], w['reason'])}"
+                    f"（新DB既存：{w['existing_plan_start_datetime'] or '不明'} / "
+                    f"引き継ぎ元：{w['old_plan_start_datetime'] or '不明'}）"
+                    for w in duplicate_warnings[:10]
+                ]
+                more = f"\n...ほか{len(duplicate_warnings) - 10}件" if len(duplicate_warnings) > 10 else ""
+                msg += (
+                    f"\n\n※ ロットNo.重複の疑いがあります（{len(duplicate_warnings)}件）。"
+                    "新DBに既に同じロットNo.の計画が存在していました。誤って別ロットが"
+                    "混同されていないか確認してください。\n" + "\n".join(lines) + more
+                )
+
+            messagebox.showinfo("完了", msg, parent=self.winfo_toplevel())
         else:
             # payload（失敗時）は例外メッセージ文字列のため、フォルダ名は
             # 入力欄からそのまま取る（クリアはこの後まとめて行う）。

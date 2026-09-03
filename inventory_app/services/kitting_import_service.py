@@ -2,9 +2,22 @@
 import csv
 import os
 import traceback
-from typing import Callable, Optional, Tuple
+from typing import Callable, Optional
 
-from models.kitting_plan import create_plan_batch, create_plan_version, get_connection
+from models.kitting_plan import (
+    create_plan_batch, create_plan_version, get_connection,
+    upsert_pending_kitting_plan_item, find_pending_kitting_plan_item,
+    delete_pending_kitting_plan_item,
+)
+
+# 保留（pending_kitting_plan_items）から確定へ引き継ぐ際、現在のCSV行の値が
+# 空欄・未設定であれば保留側の値で補う対象フィールド。識別キー自体
+# （lot_no・setup_file_no・production_side・order_qty）は一致が前提のため対象外。
+_PENDING_MERGE_FIELDS = (
+    "mounting_line", "board_name", "planned_qty", "cumulative_qty_external",
+    "status", "plan_start_datetime", "plan_end_datetime", "deadline",
+    "actual_start_datetime", "actual_end_datetime",
+)
 
 def _to_float(val, default=0.0):
     try:
@@ -50,16 +63,45 @@ def _normalize_row_to_16cols(row):
     combined_last = ",".join(rest)
     return first15 + [combined_last]
 
+def _merge_from_pending(item: dict, pending_row: dict) -> dict:
+    """
+    現在のCSV行（item）のうち空欄・未設定のフィールドを、保留行（pending_row）の
+    対応する値で補う。識別キー自体は一致が前提のため対象にしない。
+    現在行の値が既にあれば、それを優先しそのまま使う（保留側で上書きしない）。
+    """
+    merged = dict(item)
+    for field in _PENDING_MERGE_FIELDS:
+        if not merged.get(field) and pending_row.get(field):
+            merged[field] = pending_row[field]
+    return merged
+
+
 def import_kitting_plan_csv(
     file_path: str,
     worker_id: str = "SYSTEM",
     progress_callback: Optional[Callable[[int, int], None]] = None,
     batch_size: int = 500
-) -> Tuple[int, int]:
+) -> dict:
     """
     安全で堅牢な CSV インポート。
     - progress_callback(current, total) が渡された場合はバッチごとに進捗通知する。
-    - 戻り値： (batch_id, inserted_count)
+
+    キッティングNo.（1列目）が空欄の行は、以前は単純に破棄していたが、
+    現在はmodels.kitting_plan.pending_kitting_plan_itemsへ保留登録する
+    （delete-then-insertではなく、識別キー(lot_no, setup_file_no,
+    production_side, order_qty)が一致する既存行があれば上書き、無ければ新規
+    追加）。逆に、キッティングNo.が付与された行を処理する際は、その行の
+    識別キーが保留テーブルに一致する行として存在するか確認し、存在すれば
+    「未確定期間からの確定」として扱う：保留側の行を削除した上で、現在行の
+    値（保留側にしか無かった値があれば_merge_from_pending()で補完）を使って
+    通常通りcreate_plan_version()で正式登録する。
+
+    戻り値：{
+        "batch_id": int,
+        "inserted": int,                       # kitting_plan_itemsへ正式登録した件数
+        "pending_saved_count": int,             # 保留テーブルへ新規保存・更新した件数
+        "confirmed_from_pending_count": int,    # 保留から確定した件数（insertedの内数）
+    }
     """
     # 1) 事前行数カウント（正確な進捗表示のため。大ファイルでは時間がかかるが許容）
     total_lines = 0
@@ -86,18 +128,18 @@ def import_kitting_plan_csv(
         header = next(reader, None)
     except StopIteration:
         f.close()
-        return batch_id, 0
+        return {"batch_id": batch_id, "inserted": 0, "pending_saved_count": 0, "confirmed_from_pending_count": 0}
+
+    pending_saved_count = 0
+    confirmed_from_pending_count = 0
+    source_file_name = os.path.basename(file_path)
 
     # 4) Process rows streaming
     for idx, raw_row in enumerate(reader, start=1):
         row = _normalize_row_to_16cols(raw_row)
         kitting_no = row[0].strip()
-        if not kitting_no:
-            # skip empty key rows
-            continue
 
         item = {
-            "kitting_list_no": kitting_no,
             "delete_flag": _to_int_flag(row[1]),
             "setup_file_no": row[2],
             "lot_no": row[3],
@@ -115,10 +157,38 @@ def import_kitting_plan_csv(
             "actual_end_datetime": row[15],
         }
 
+        if not kitting_no:
+            # キッティングNo.未確定：破棄せず保留テーブルへ保存する
+            try:
+                upsert_pending_kitting_plan_item(
+                    {**item, "source_file": source_file_name}, created_by=worker_id,
+                )
+                pending_saved_count += 1
+            except Exception as e:
+                tb = traceback.format_exc()
+                errors.append({"row": idx, "kitting_list_no": "", "error": str(e), "traceback": tb})
+                print(f"[kitting_import] ERROR (pending save) at row {idx}: {e}")
+            continue
+
+        item["kitting_list_no"] = kitting_no
+
+        # キッティングNo.が付与された行の識別キーが、以前保留登録された行と
+        # 一致するか確認する（「未確定期間からの確定」の検知）。
+        pending_match = find_pending_kitting_plan_item(
+            item["lot_no"], item["setup_file_no"], item["production_side"], item["order_qty"],
+        )
+        if pending_match is not None:
+            item = _merge_from_pending(item, pending_match)
+
         try:
             # Create new version (this does an INSERT and handles versioning)
             create_plan_version(plan_batch_id=batch_id, kitting_list_no=item["kitting_list_no"], data=item, created_by=worker_id)
             inserted += 1
+            if pending_match is not None:
+                # 正式登録が成功した後に保留側を削除する（登録が失敗した場合、
+                # 保留行は残し次回の取込で再度確定を試みられるようにする）。
+                delete_pending_kitting_plan_item(pending_match["pending_id"])
+                confirmed_from_pending_count += 1
         except Exception as e:
             tb = traceback.format_exc()
             errors.append({"row": idx, "kitting_list_no": kitting_no, "error": str(e), "traceback": tb})
@@ -152,4 +222,14 @@ def import_kitting_plan_csv(
     else:
         print(f"[kitting_import] completed successfully. inserted: {inserted}")
 
-    return batch_id, inserted
+    if pending_saved_count:
+        print(f"[kitting_import] saved {pending_saved_count} row(s) with empty kitting_list_no to pending table.")
+    if confirmed_from_pending_count:
+        print(f"[kitting_import] confirmed {confirmed_from_pending_count} row(s) from pending table.")
+
+    return {
+        "batch_id": batch_id,
+        "inserted": inserted,
+        "pending_saved_count": pending_saved_count,
+        "confirmed_from_pending_count": confirmed_from_pending_count,
+    }
