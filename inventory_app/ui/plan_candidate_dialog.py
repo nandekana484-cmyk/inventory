@@ -13,6 +13,8 @@ ui.ng_input_window.NgInputWindow.on_expand()/_expand_from_kitting_no()の
 経路が無くなった）ため、現在使っているのはui.ng_input_window.NgInputWindowの
 みである。
 """
+from datetime import datetime
+
 import tkinter as tk
 from tkinter import ttk, messagebox
 
@@ -143,23 +145,90 @@ def select_plan_candidate(parent, kitting_list_no, candidates):
     return _show_candidate_list_dialog(parent, "ロットNo.の選択", description, candidates)
 
 
-def select_plan_candidate_by_lot(parent, lot_no, product_name, candidates):
+def _parse_plan_start_datetime(value):
+    try:
+        return datetime.strptime(str(value).strip(), "%Y/%m/%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_report_date(value):
+    if not value:
+        return None
+    try:
+        return datetime.strptime(str(value).strip(), "%Y-%m-%d")
+    except (TypeError, ValueError):
+        return None
+
+
+def _sort_candidates_by_report_date_closeness(candidates, report_date):
     """
-    候補一覧（models.kitting_plan.find_matching_plan_items()が返すcandidates、
-    lot_noに属する現在アクティブな計画一覧。製品名の一致・不一致は問わない）
-    から、実績CSV取込のステージング一覧（ui.production_import_staging_window）
+    report_date（CSVの払い出し日、"YYYY-MM-DD"形式を期待）がパース可能な場合、
+    各候補のplan_start_datetime（"YYYY/MM/DD HH:MM:SS"形式）との日数差が
+    小さい順に安定ソートする。models.kitting_plan.find_opposite_side_plan()の
+    「パース→日数差→最小を選ぶ」というパターンを、1件選ぶのではなく全件を
+    並べ替えるために転用したもの。
+
+    plan_start_datetimeがパース不能な候補は末尾に回す（それら同士の相対順序は
+    元のまま、sorted()の安定性による）。report_date自体がNone・パース不能な
+    場合は、比較の基準が無いためソートせず元の順序のリストをそのまま返す。
+    """
+    reference = _parse_report_date(report_date)
+    if reference is None:
+        return list(candidates)
+
+    def sort_key(candidate):
+        dt = _parse_plan_start_datetime(candidate.get("plan_start_datetime"))
+        if dt is None:
+            return (1, 0)
+        return (0, abs((dt - reference).days))
+
+    return sorted(candidates, key=sort_key)
+
+
+def select_plan_candidate_by_lot(parent, lot_no, product_name, candidates, matched, report_date=None):
+    """
+    候補一覧から、実績CSV取込のステージング一覧（ui.production_import_staging_window）
     向けに1件選ばせる。select_plan_candidate()とは絞り込みの軸
     （kitting_list_no+lot_no vs lot_no+製品名）が異なるため別関数として
     新設したが、Treeview表示パターン（_show_candidate_list_dialog()）は共通で
     流用している。
 
+    candidates：models.kitting_plan.find_matching_plan_items()の戻り値のうち、
+    lot_noに属する現在アクティブな計画一覧（製品名の一致・不一致は問わない）。
+    matched：同じくfind_matching_plan_items()の戻り値のうち、正規化済み製品名
+    まで一致した計画一覧。
+
+    製品名（board_name）による絞り込み：以前はcandidates（lot_no一致のみ）を
+    そのまま表示しており、製品名による絞り込みが一切適用されていなかった
+    （調査により判明）。matchedを優先して表示するよう変更し、matchedが0件
+    （製品名が完全一致する候補が無い）の場合のみ、フォールバックとして
+    candidates（lot_no一致の全件）を表示し、その旨をダイアログの説明文に
+    注記する（誤って有効な候補まで絞り込みすぎてしまうことを避けるため）。
+
     候補が1件のみであっても、このダイアログを必ず経由させ、自動確定はしない
     （呼び出し元の方針：登録前に必ず人間の確認を挟む）。
 
-    戻り値：選択されたcandidatesの要素（辞書）。キャンセル時はNone。
+    report_date：CSVの払い出し日（"YYYY-MM-DD"形式を期待、ui.kitting_
+    production_entry._resolve_csv_report_date()と同じ形式）。指定・パース
+    可能な場合、候補一覧を各候補のplan_start_datetimeとの日数差が小さい順
+    （払い出し日に近いものが先頭）に並べ替える。省略・パース不能な場合は
+    ソートせず元の順序のまま表示する。
+
+    戻り値：選択されたcandidatesまたはmatchedの要素（辞書）。キャンセル時はNone。
     """
+    using_fallback = not matched
+    effective_candidates = candidates if using_fallback else matched
+    effective_candidates = _sort_candidates_by_report_date_closeness(effective_candidates, report_date)
+
     description = (
         f"ロットNo. {lot_no}（製品名: {product_name}）に該当する計画候補です。\n"
         "登録する計画を選択してください。"
     )
-    return _show_candidate_list_dialog(parent, "計画の選択", description, candidates)
+    if using_fallback:
+        description += (
+            "\n※ 製品名が完全一致する候補がありませんでした。"
+            "ロットNo.が一致する全ての候補を表示しています。"
+        )
+
+    return _show_candidate_list_dialog(parent, "計画の選択", description, effective_candidates)

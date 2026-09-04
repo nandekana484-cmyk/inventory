@@ -28,6 +28,30 @@ from ui.production_import_staging_window import ProductionImportStagingWindow
 from ui.loading_window import LoadingWindow
 
 
+def _resolve_csv_report_date(raw_value):
+    """
+    実績CSVステージング一覧経由の払い出し日（raw_value、COLUMN_MAP_PRODUCTIONの
+    report_date列からそのまま渡された未検証の文字列）を、register_daily_result()/
+    overwrite_daily_result()のreport_date引数（"YYYY-MM-DD"形式を期待）として
+    使える形に検証する。
+
+    値が無い（None・空欄）、または"YYYY-MM-DD"としてパースできない場合は
+    Noneを返す（呼び出し元はreport_date=Noneのまま渡すことになり、
+    register_daily_result()/overwrite_daily_result()側のデフォルト動作
+    （実行日を使う）にフォールバックする）。実際のCSVでの表記が未確認のため、
+    現時点では"YYYY-MM-DD"以外の形式（例："YYYY/MM/DD"）への変換は行わない
+    （誤った日付を採用するより、安全側でフォールバックする方針）。
+    """
+    if not raw_value:
+        return None
+    value = str(raw_value).strip()
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        return None
+    return value
+
+
 class KittingProductionEntryWindow(tk.Toplevel):
     # <<TreeviewSelect>>（矢印キーでも発火）のたびに毎回search_plan()（DBアクセス）を
     # 行うと、キー連打時に無駄な処理が積み重なるため、選択が止まってから
@@ -56,6 +80,11 @@ class KittingProductionEntryWindow(tk.Toplevel):
         # バック。一度に1件分のみ保持する（確認ダイアログはモーダルのため、
         # 転記から登録完了までの間に別の登録が割り込むことは通常無い想定）。
         self._pending_csv_row_removal = None
+        # 上記と同時にセットする、CSV行が持つ払い出し日（"YYYY-MM-DD"形式を期待）。
+        # _perform_registration()でregister_daily_result()/overwrite_daily_result()の
+        # report_dateとして使う（CSV経由でない通常の手動登録ではNoneのまま＝
+        # 従来通り実行日が使われる）。
+        self._pending_csv_report_date = None
 
         # 実績CSV取込（on_production_csv_import()）の非同期パース用。
         # ui.kitting_plan_import.KittingPlanImportWindow.on_start_import()と同じ
@@ -1042,14 +1071,16 @@ class KittingProductionEntryWindow(tk.Toplevel):
         そのため search_plan_by_kitting_no() が複数候補を返す＝候補選択ダイアログ
         （ui.plan_candidate_dialog）が必要になるケースも発生しない）。
 
-        実績CSVステージング一覧経由の登録待ち（self._pending_csv_row_removal）が
-        あれば、ここでクリアする：CSV行の候補選択直後は
-        _on_csv_staging_row_confirmed()がこの呼び出しの直後に改めてセットするため
-        影響が無い一方、CSVの選択を経ずに別の計画へ切り替えた場合
-        （計画一覧からの通常の行選択等）に、古いCSV行のremove_callbackが
-        無関係な登録で誤って呼ばれてしまう事故を防ぐ。
+        実績CSVステージング一覧経由の登録待ち（self._pending_csv_row_removal・
+        self._pending_csv_report_date）があれば、ここでクリアする：CSV行の
+        候補選択直後は_on_csv_staging_row_confirmed()がこの呼び出しの直後に
+        改めてセットするため影響が無い一方、CSVの選択を経ずに別の計画へ
+        切り替えた場合（計画一覧からの通常の行選択等）に、古いCSV行の
+        remove_callback・払い出し日が無関係な登録で誤って使われてしまう
+        事故を防ぐ。
         """
         self._pending_csv_row_removal = None
+        self._pending_csv_report_date = None
         plan, _candidates = search_plan_by_kitting_no(kitting_list_no, lot_no)
 
         if not plan:
@@ -1084,13 +1115,21 @@ class KittingProductionEntryWindow(tk.Toplevel):
         # 同一setup_file_noで面2が存在する場合、面1は完成品ではないため表示から
         # 除外する（models.kitting_plan.list_active_plan_items()の
         # 「2回目計画があれば1回目除外」ロジックと同じ考え方）。
+        #
+        # lot_file_actualsのキーは、services.production_service.
+        # calculate_lot_completion()の変更により(setup_file_no, production_side)の
+        # 2要素になった（以前は(setup_file_no, production_side, kitting_list_no)の
+        # 3要素で、file_no単位で複数バッチが同時アクティブな場合はバッチごとに
+        # 個別の行として表示していたが、file_no×面単位で実績を合算する方式に
+        # 変更されたことに伴い、特定の1バッチを名指しする意味が無くなったため
+        # 表示からkitting_list_noを外した）。
         second_side_setup_files = {
-            file_no for (file_no, side, _kitting_list_no) in plan["lot_file_actuals"]
+            file_no for (file_no, side) in plan["lot_file_actuals"]
             if str(side).strip() == "2"
         }
         file_actuals_text = "\n".join(
-            f"{file_no}（面{side} / {kitting_list_no}）: {qty:.0f}"
-            for (file_no, side, kitting_list_no), qty in plan["lot_file_actuals"].items()
+            f"{file_no}（面{side}）: {qty:.0f}"
+            for (file_no, side), qty in plan["lot_file_actuals"].items()
             if not (str(side).strip() == "1" and file_no in second_side_setup_files)
         )
         self.lbl_lot_file_actuals.config(text=file_actuals_text or "-")
@@ -1350,12 +1389,16 @@ class KittingProductionEntryWindow(tk.Toplevel):
         ダイアログ→登録、_start_registration()）にそのまま委ねる（ここでは
         登録処理を呼ばない）。remove_callbackは_perform_registration()の
         登録成功時に呼び出し、ステージング一覧から該当行を消す
-        （self._pending_csv_row_removalに保持しておく）。
+        （self._pending_csv_row_removalに保持しておく）。CSV行の払い出し日
+        （row["report_date"]）も同時にself._pending_csv_report_dateへ保持し、
+        _perform_registration()でregister_daily_result()/overwrite_daily_result()の
+        report_dateとして使う。
 
         キャンセル時は何もしない（ステージング一覧の行はそのまま残る）。
         """
         chosen = select_plan_candidate_by_lot(
-            self, row["lot_no"], row["product_name"], row["candidates"],
+            self, row["lot_no"], row["product_name"], row["candidates"], row["matched"],
+            row.get("report_date"),
         )
         if chosen is None:
             return
@@ -1364,6 +1407,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         self.entry_daily_qty.delete(0, tk.END)
         self.entry_daily_qty.insert(0, f"{row['daily_qty']:g}")
         self._pending_csv_row_removal = remove_callback
+        self._pending_csv_report_date = row.get("report_date")
         self.entry_daily_qty.focus_set()
 
     def _on_daily_qty_enter(self, event=None):
@@ -1684,6 +1728,13 @@ class KittingProductionEntryWindow(tk.Toplevel):
         例外ハンドリングは経由せず、existing_daily_qtyの有無で直接
         register_daily_result()/overwrite_daily_result()を呼び分ける。
 
+        report_date：実績CSVステージング一覧経由の登録（self._pending_csv_
+        report_date）であれば、CSV行の払い出し日を_resolve_csv_report_date()で
+        検証した上でreport_dateとして渡す（パース不能・未設定ならNoneのまま＝
+        register_daily_result()/overwrite_daily_result()側のデフォルト動作である
+        実行日にフォールバックする）。CSV経由でない通常の手動登録では
+        self._pending_csv_report_dateは常にNoneのため、従来通り実行日になる。
+
         登録完了後も同じ計画のまま画面が続く（次の計画を選び直すとは限らない）ため、
         最後に_load_current_daily_qty()・_setup_ng_side_ui()を再度呼び、実績記入欄・
         NG面1/面2欄を今回登録した最新の値でプリフィルし直す（呼ばないと、次に
@@ -1692,12 +1743,14 @@ class KittingProductionEntryWindow(tk.Toplevel):
         worker_id = self.current_worker.get("worker_id", "SYSTEM")
         kitting_no = self.current_plan["kitting_list_no"]
         lot_no = self.current_plan["lot_no"]
+        report_date = _resolve_csv_report_date(self._pending_csv_report_date)
+        self._pending_csv_report_date = None
 
         try:
             if preview["existing_daily_qty"] is not None:
-                new_cumulative = overwrite_daily_result(kitting_no, lot_no, daily_qty, worker_id)
+                new_cumulative = overwrite_daily_result(kitting_no, lot_no, daily_qty, worker_id, report_date=report_date)
             else:
-                new_cumulative = register_daily_result(kitting_no, lot_no, daily_qty, worker_id)
+                new_cumulative = register_daily_result(kitting_no, lot_no, daily_qty, worker_id, report_date=report_date)
         except Exception as e:
             messagebox.showerror("登録エラー", f"実績の登録に失敗しました：{e}", parent=self.winfo_toplevel())
             return

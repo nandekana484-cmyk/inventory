@@ -5,7 +5,7 @@ from tkinter import ttk, messagebox, filedialog
 
 from tkcalendar import DateEntry
 
-from services.production_service import build_monthly_report
+from services.production_service import build_monthly_report, calculate_lot_completion, build_wip_extraction_rows
 from ui.daily_report_window import (
     REPORT_HEADERS,
     _row_to_values,
@@ -26,6 +26,7 @@ class MonthlyReportWindow(tk.Toplevel):
         self.to_date = None
         self.report_rows = []
         self.inconsistency_warnings = []
+        self.order_qty_inconsistency_warnings = []
 
         self.title("月報出力")
         self.geometry("1020x560")
@@ -92,7 +93,58 @@ class MonthlyReportWindow(tk.Toplevel):
         for row in self.report_rows:
             self.tree.insert("", tk.END, values=_row_to_values(row))
 
+        self.order_qty_inconsistency_warnings = self._collect_order_qty_inconsistencies()
+
         self._show_inconsistency_warning_if_any()
+        self._show_order_qty_inconsistency_warning_if_any()
+
+    def _collect_order_qty_inconsistencies(self):
+        """
+        self.report_rows（集計済み月報データ）に含まれるdistinctなlot_noについて
+        services.production_service.calculate_lot_completion()を呼び、
+        order_qty_inconsistent=True（発注数がファイルNo間で一致していない、
+        調査により実DBで3件確認済み）と判定されたロットを収集する。
+
+        report_rowsのlot_noはproduction_daily由来（_build_report_rows()の
+        rec["lot_id"]）であり、集計対象期間に実績はあるが、その後計画自体が
+        削除・無効化された（is_active=0／delete_flag=1）lot_noが理論上あり得る。
+        list_plan_items_by_lot()はそのようなlot_noに対して0件を返し
+        calculate_lot_completion()がValueErrorを送出するため、その場合は
+        判定不能として静かにスキップする（実績はあるのに現存する計画が無い
+        ケースへの対応で、今回のスコープではこれ以上の扱いは行わない）。
+        """
+        lot_nos = sorted({row["lot_no"] for row in self.report_rows if row["lot_no"]})
+        warnings = []
+        for lot_no in lot_nos:
+            try:
+                info = calculate_lot_completion(lot_no)
+            except ValueError:
+                continue
+            if info["order_qty_inconsistent"]:
+                warnings.append({"lot_no": lot_no, "order_qty_values": info["order_qty_values"]})
+        return warnings
+
+    def _show_order_qty_inconsistency_warning_if_any(self):
+        """
+        _collect_order_qty_inconsistencies()で収集した、発注数（order_qty）が
+        ファイルNo間で一致していないロットを警告する。_show_inconsistency_
+        warning_if_any()（面1/面2の実績不整合警告）と同じパターン：一覧の表示
+        自体は変更せず、集計完了後に別途ダイアログで注意喚起するのみ。
+        """
+        if not self.order_qty_inconsistency_warnings:
+            return
+
+        lines = "\n".join(
+            f"・lot_no={w['lot_no']}（値: {', '.join(f'{v:.0f}' for v in w['order_qty_values'])}）"
+            for w in self.order_qty_inconsistency_warnings
+        )
+        messagebox.showwarning(
+            "発注数不一致の警告",
+            "以下のロットで発注数がファイルNo間で一致していません。"
+            "手作業での確認・修正が必要です。\n\n"
+            f"{lines}",
+            parent=self.winfo_toplevel(),
+        )
 
     def _show_inconsistency_warning_if_any(self):
         """
@@ -222,28 +274,30 @@ class MonthlyReportWindow(tk.Toplevel):
 
     def on_extract_wip(self):
         """
-        self.report_rows（既に集計済みの月報データ、services.production_service.
-        build_monthly_report()の戻り値）のうち、仕掛数量（surplus_qty）が0より
-        大きい行を抽出し、models.wip_board_snapshot.save_wip_snapshot()で
-        スナップショットとして保存する（後続の「仕掛展開」機能の入力データ用）。
+        self.report_rows（既に集計済みの月報データ）に含まれるdistinctなlot_noに
+        ついて、services.production_service.build_wip_extraction_rows()で
+        setup_file_no×面単位の仕掛数量（calculate_lot_completion()のfile_actuals
+        を土台にした合算後の値）を算出し、models.wip_board_snapshot.
+        save_wip_snapshot()でスナップショットとして保存する（後続の「仕掛展開」
+        機能の入力データ用）。
+
+        以前はself.report_rows自体（kitting_list_no＝バッチ単位）のsurplus_qtyを
+        そのまま抽出していたが、複数バッチを持つfile_noの仕掛数量が正しく合算
+        されない問題があったため、file_no単位の合算ロジック
+        （build_wip_extraction_rows()）に置き換えた。面1省略・代表バッチの選定
+        （plan_start_datetimeが最も新しいバッチを採用）もこちらに集約されている
+        （詳細はbuild_wip_extraction_rows()のdocstring参照）。
 
         save_wip_snapshot()はテーブル全体差し替え方式のため、押すたびに
         直前の抽出結果が今回の内容で完全に置き換わる（前回の集計期間で
         仕掛だった基板が、今回の期間の集計結果に含まれなければ残らない）。
-
-        面1省略について：同一(lot_no, setup_file_no)にアクティブな面2計画が
-        存在する場合の面1行は、そもそもself.report_rowsの時点で
-        services.production_service._build_report_rows()により除外済み
-        （面連動登録により本来面1・面2の実績は常に一致するはずで、面1単独の
-        仕掛数量として抽出する意味が無いため。詳細は_build_report_rows()の
-        docstring参照）。そのためここで改めて面1を除外するロジックは持たない
-        （self.report_rowsをそのままsurplus_qty > 0でフィルタするだけでよい）。
         """
         if not self.report_rows:
             messagebox.showwarning("警告", "先に集計を実行してください。", parent=self.winfo_toplevel())
             return
 
-        wip_rows = [row for row in self.report_rows if row["surplus_qty"] > 0]
+        lot_nos = sorted({row["lot_no"] for row in self.report_rows if row["lot_no"]})
+        wip_rows = build_wip_extraction_rows(lot_nos)
         save_wip_snapshot(wip_rows)
 
         messagebox.showinfo(

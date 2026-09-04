@@ -1,13 +1,20 @@
 # ui/wip_expansion_window.py
+import threading
+import queue
+
 import tkinter as tk
 from tkinter import ttk, messagebox
 
-from services.bom_service import BOMService
+from services.bom_service import get_shared_bom_service
 from models.wip_board_snapshot import list_wip_snapshot
 from models.wip_scrap_records import save_wip_scrap_records, list_wip_scrap_summary
 from ui.checkable_treeview import CheckableTreeview
+from ui.loading_window import LoadingWindow
 
-_bom_service = BOMService()
+# アプリ全体で共有する単一のBOMServiceインスタンス（services.bom_service.
+# get_shared_bom_service()参照）。ui.ng_input_window.pyと共有するため、
+# 先にどちらの画面を開いても共有フォルダのインデックス構築は1回で済む。
+_bom_service = get_shared_bom_service()
 
 
 class WipExpansionWindow(tk.Toplevel):
@@ -177,11 +184,69 @@ class WipExpansionWindow(tk.Toplevel):
         )
         return False
 
+    def _run_bom_expansion_async(self, work_fn, on_success):
+        """
+        BOMService.expand_wip_to_parts()（共有フォルダへのファイルアクセスを
+        伴い得るため実行時間が読めない）を非同期化する共通ヘルパー。
+        ui.kitting_plan_import.KittingPlanImportWindow.on_start_import()等で
+        確立済みのLoadingWindow＋threading.Thread(daemon=True)＋queue.Queue＋
+        self.after(200,...)ポーリングパターンをそのまま踏襲する
+        （ui.ng_input_window.NgInputWindow._run_bom_expansion_async()と同じ実装。
+        両画面それぞれが小規模なUI部品を個別に持つ既存の設計方針
+        （NG一覧・仕掛一覧のフィルタ・ソート実装が共通コンポーネント化されて
+        いないのと同じ考え方）に合わせ、共通モジュールへの切り出しは行わず
+        画面ごとに複製している）。
+
+        呼び出し元（_expand_row()）は、入力検証・実装ライン特定（既に
+        Treeview行またはexpand_by_identity()の呼び出し引数から確定済み）を
+        あらかじめ済ませた上で、BOM展開部分のみをwork_fnとして渡す。
+
+        on_success(parts)：展開成功時、UIスレッド上で呼ばれるコールバック。
+        FileNotFoundError/ValueErrorはここで捕捉し従来と同じ文言でエラー
+        ダイアログを表示、それ以外の例外はself.after()のコールバック内で
+        再送出しTkinterの通常の例外報告に委ねる（元のコードの挙動を維持）。
+        """
+        loading = LoadingWindow(self, message="BOM展開中です（共有フォルダへアクセスしています）…")
+        result_queue = queue.Queue()
+
+        def _work():
+            try:
+                result_queue.put((True, work_fn()))
+            except Exception as e:
+                result_queue.put((False, e))
+
+        threading.Thread(target=_work, daemon=True).start()
+
+        def _poll():
+            try:
+                success, payload = result_queue.get_nowait()
+            except queue.Empty:
+                self.after(200, _poll)
+                return
+
+            loading.destroy()
+
+            if not success:
+                if isinstance(payload, FileNotFoundError):
+                    messagebox.showerror("BOMエラー", f"BOM TSVが見つかりません：\n{payload}", parent=self.winfo_toplevel())
+                    return
+                if isinstance(payload, ValueError):
+                    messagebox.showerror("BOMエラー", f"BOM展開に失敗しました：\n{payload}", parent=self.winfo_toplevel())
+                    return
+                raise payload
+
+            on_success(payload)
+
+        self.after(200, _poll)
+
     def _expand_row(self, kitting_list_no, board_name, file_no, side_text, lot_no, mounting_line, surplus_qty_text):
         """
         on_wip_list_double_click()・expand_by_identity()共通の展開処理本体
         （値の取得元がTreeviewの行かexpand_by_identity()の検索結果かの違いを
         吸収し、以降のバリデーション・BOM展開ロジックを一本化する）。
+
+        入力検証まではUIスレッドで同期的に行い、実際のBOM展開（_bom_service.
+        expand_wip_to_parts()）のみを_run_bom_expansion_async()で非同期化する。
         """
         try:
             side = int(side_text)
@@ -211,36 +276,34 @@ class WipExpansionWindow(tk.Toplevel):
             "surplus_qty": surplus_qty,
         }
 
-        try:
-            parts = _bom_service.expand_wip_to_parts({
-                "setup_file_no": file_no,
-                "production_side": side,
-                "wip_qty": surplus_qty,
-                "mounting_line": mounting_line,
-                "lot_no": lot_no,
-            })
-        except FileNotFoundError as e:
-            messagebox.showerror("BOMエラー", f"BOM TSVが見つかりません：\n{e}", parent=self.winfo_toplevel())
-            return
-        except ValueError as e:
-            messagebox.showerror("BOMエラー", f"BOM展開に失敗しました：\n{e}", parent=self.winfo_toplevel())
-            return
+        wip_record = {
+            "setup_file_no": file_no,
+            "production_side": side,
+            "wip_qty": surplus_qty,
+            "mounting_line": mounting_line,
+            "lot_no": lot_no,
+        }
 
-        line_text = f" / 実装ライン: {mounting_line}" if mounting_line else ""
-        self.lbl_wip_info.config(
-            text=f"キッティングNo.: {kitting_list_no} / {file_no}（{board_name}） / "
-                 f"生産面: {side} / ロットNo: {lot_no or '-'}{line_text} / 仕掛数量: {surplus_qty:g}"
-        )
-
-        self.load_parts_tree(parts, surplus_qty)
-
-        if not parts:
-            messagebox.showwarning(
-                "警告",
-                f"file_no「{file_no}」・生産面{side}のBOMが登録されていない、または対象部品がありません。",
-                parent=self.winfo_toplevel(),
+        def on_success(parts):
+            line_text = f" / 実装ライン: {mounting_line}" if mounting_line else ""
+            self.lbl_wip_info.config(
+                text=f"キッティングNo.: {kitting_list_no} / {file_no}（{board_name}） / "
+                     f"生産面: {side} / ロットNo: {lot_no or '-'}{line_text} / 仕掛数量: {surplus_qty:g}"
             )
-        self.btn_confirm.config(state=tk.NORMAL if parts else tk.DISABLED)
+
+            self.load_parts_tree(parts, surplus_qty)
+
+            if not parts:
+                messagebox.showwarning(
+                    "警告",
+                    f"file_no「{file_no}」・生産面{side}のBOMが登録されていない、または対象部品がありません。",
+                    parent=self.winfo_toplevel(),
+                )
+            self.btn_confirm.config(state=tk.NORMAL if parts else tk.DISABLED)
+
+        self._run_bom_expansion_async(
+            lambda: _bom_service.expand_wip_to_parts(wip_record), on_success,
+        )
 
     def on_confirm(self):
         """

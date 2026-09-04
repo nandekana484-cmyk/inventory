@@ -487,3 +487,24 @@ class BOMService:
                 "item_type": item_type,
             })
         return result
+
+
+# アプリ全体で共有する単一のBOMServiceインスタンス。
+# 以前はui.ng_input_window.py・ui.wip_expansion_window.pyがそれぞれ独立して
+# モジュールレベルの_bom_service = BOMService()を持っていたため、どちらの画面を
+# 先に開くかによって、BOMService._index（BOMFileIndex、共有フォルダのインデックス。
+# インスタンスに紐づくキャッシュ）が画面ごとに別々に構築されていた
+# （共有フォルダの走査＝BOMFileIndex.build_index()が、両画面を開くたびに
+# 都度発生してしまう）。get_shared_bom_service()経由で1つのインスタンスを
+# 共有することで、アプリ内のどの画面がどんな順序で開かれても、インデックス構築は
+# 最初の1回だけで済む（2回目以降は既存インスタンスのキャッシュ済みインデックスを
+# そのまま使う）。
+_shared_bom_service: "BOMService" = None
+
+
+def get_shared_bom_service() -> "BOMService":
+    """アプリ全体で共有するBOMServiceの単一インスタンスを返す（無ければ生成する）。"""
+    global _shared_bom_service
+    if _shared_bom_service is None:
+        _shared_bom_service = BOMService()
+    return _shared_bom_service

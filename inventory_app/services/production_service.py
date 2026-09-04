@@ -422,32 +422,67 @@ def build_monthly_report(from_date: str, to_date: str):
     return _build_report_rows(records)
 
 
+def _compute_lot_completion(lot_no: str, plan_items: list, cumulative_by_pair: dict) -> dict:
+    """
+    calculate_lot_completion()・list_incomplete_lots()の共通ロジック。
+
+    plan_itemsは同一lot_noに属する計画行のリスト、cumulative_by_pairは
+    (kitting_list_no, lot_no) -> アプリ内累計 の辞書（呼び出し元が
+    get_app_cumulative_qty_bulk()で事前に一括取得したものをそのまま渡す。
+    calculate_lot_completion()は対象lot_no1件分のみ、list_incomplete_lots()は
+    全lot_no分をまとめて1回のバルク取得で済ませており、取得方法自体は
+    呼び出し元ごとに異なるためこの関数の責務には含めない）。
+
+    完成数は、同一lot_noに属する各setup_file_no × production_side（面）
+    単位で実績累計（daily_qtyのSUM）を合算した値のうち、最小値とする。
+    キーを(setup_file_no, production_side)の2要素にし、代入ではなく必ず
+    加算とする理由：同一file_no・同一面に対してkitting_list_noが異なる
+    複数のバッチ（例：実装予定日違いの別ロット）が同時にアクティブ
+    （is_active=1）な場合が実データで222件確認されているが、これを
+    「代入」で処理すると片方のバッチの実績がもう片方で上書きされて
+    しまう（データ消失）。file_no×面単位の合計として正しく取り込むには
+    必ず加算する必要がある。
+
+    order_qtyは、以前はplan_items[0]（順序不定のSELECT結果の先頭行）の値を
+    無条件に採用していたが、実DBで複数file_noを持つlot_no 301件中3件
+    （166248・516526・516626）でfile_no間のorder_qtyが不一致であることが
+    調査で判明した。distinctな値が1つならその値をそのまま採用し、複数ある
+    場合は従来通りplan_items[0]相当の値を代表として採用しつつ、
+    戻り値のorder_qty_inconsistent/order_qty_valuesで不一致を検知したことを
+    呼び出し元に伝える（月報側での警告表示に使う想定。日報側は今回スコープ外）。
+    """
+    order_qty_values = sorted({item["order_qty"] for item in plan_items})
+    order_qty_inconsistent = len(order_qty_values) > 1
+    order_qty = plan_items[0]["order_qty"] if order_qty_inconsistent else order_qty_values[0]
+
+    file_actuals = {}
+    for item in plan_items:
+        kitting_list_no = item["kitting_list_no"]
+        key = (item["setup_file_no"], item["production_side"])
+        file_actuals[key] = file_actuals.get(key, 0) + cumulative_by_pair[(kitting_list_no, lot_no)]
+
+    completed = min(file_actuals.values())
+    remaining = order_qty - completed
+
+    return {
+        "lot_no": lot_no,
+        "order_quantity": order_qty,
+        "order_qty_inconsistent": order_qty_inconsistent,
+        "order_qty_values": order_qty_values,
+        "completed_quantity": completed,
+        "remaining_quantity": remaining,
+        "file_actuals": file_actuals,
+    }
+
+
 def calculate_lot_completion(lot_no: str):
     """
-    lot_no 単位でロット完成数・未完成数を算出する。
-    完成数は、同一 lot_no に属する各 setup_file_no × production_side（面）×
-    kitting_list_no（バッチ）単位の実績累計（daily_qty の SUM）のうち
-    最小値とする。
-
-    以前は各バッチの余剰数（"surplus"、実績累計 − 完成数）も算出していたが、
-    呼び出し元（services.production_service.search_plan_by_kitting_no()経由の
-    ui.kitting_production_entry.py「余剰基板」表示）が削除され、他に参照箇所も
-    無いことを確認した上で、この算出自体を廃止した。
-
-    (setup_file_no, production_side) のみをキーにすると、同一file_no・
-    同一面に対して kitting_list_no が異なる複数のバッチ（例：実装予定日
-    違いの別ロット）が同時にアクティブ（is_active=1）な場合に、片方の
-    バッチの実績がもう片方で上書きされてしまう（実データで222件の
-    setup_file_no×production_side組み合わせに、この「同時複数アクティブ」
-    パターンが確認されている）。そのためキーは
-    (setup_file_no, production_side, kitting_list_no) のタプルとし、
-    バッチ単位で完全に分離して扱う。
+    lot_no 単位でロット完成数・未完成数を算出する。計算の詳細は
+    _compute_lot_completion()のdocstring参照。
     """
     plan_items = list_plan_items_by_lot(lot_no)
     if not plan_items:
         raise ValueError(f"ロットNo. {lot_no} の計画が見つかりません。")
-
-    order_qty = plan_items[0]["order_qty"]
 
     # get_app_cumulative_qty()を件数分ループ呼び出しする代わりに、対象の
     # (kitting_list_no, lot_no)の組を先に集めて1回（〜数回）のクエリでまとめて
@@ -460,29 +495,15 @@ def calculate_lot_completion(lot_no: str):
     kitting_list_no_lot_pairs = [(item["kitting_list_no"], lot_no) for item in plan_items]
     cumulative_by_pair = get_app_cumulative_qty_bulk(kitting_list_no_lot_pairs)
 
-    file_actuals = {}
-    for item in plan_items:
-        kitting_list_no = item["kitting_list_no"]
-        key = (item["setup_file_no"], item["production_side"], kitting_list_no)
-        file_actuals[key] = cumulative_by_pair[(kitting_list_no, lot_no)]
-
-    completed = min(file_actuals.values())
-    remaining = order_qty - completed
-
-    return {
-        "lot_no": lot_no,
-        "order_quantity": order_qty,
-        "completed_quantity": completed,
-        "remaining_quantity": remaining,
-        "file_actuals": file_actuals,
-    }
+    return _compute_lot_completion(lot_no, plan_items, cumulative_by_pair)
 
 
 def list_incomplete_lots():
     """
     distinctなlot_no全件について、ロット未完成数（lot_remaining_quantity、
-    calculate_lot_completion()と同じ計算式）を算出し、0より大きい（＝未完了）
-    ロットのみを一覧で返す（DB間コピー機能の「未完了lot_noの抽出」用）。
+    calculate_lot_completion()と同じ計算式、内部的にも_compute_lot_completion()を
+    共有している）を算出し、0より大きい（＝未完了）ロットのみを一覧で返す
+    （DB間コピー機能の「未完了lot_noの抽出」用）。
 
     calculate_lot_completion()をlot_no件数分ループ呼び出しするとN+1
     （list_plan_items_by_lot()のSELECTがlot_no件数分発生）になるため、
@@ -491,7 +512,7 @@ def list_incomplete_lots():
     全lot_no分の計画行をmodels.kitting_plan.list_plan_items_for_all_lots()で
     1回のSELECTにまとめて取得し、アプリ内累計もget_app_cumulative_qty_bulk()で
     1回（〜数回）のバルククエリにまとめて取得した上で、Python側でlot_noごとに
-    グルーピングして計算する。
+    グルーピングして_compute_lot_completion()に渡す。
 
     list_active_plan_items()は使わない：「1回目除外」ロジック（同一setup_file_no
     でproduction_side=2が存在する場合、対応するside=1を除外する）や完了済み
@@ -520,26 +541,118 @@ def list_incomplete_lots():
 
     results = []
     for lot_no, items in items_by_lot.items():
-        order_qty = items[0]["order_qty"]
+        info = _compute_lot_completion(lot_no, items, cumulative_by_pair)
 
-        file_actuals = {}
-        for item in items:
-            key = (item["setup_file_no"], item["production_side"], item["kitting_list_no"])
-            file_actuals[key] = cumulative_by_pair[(item["kitting_list_no"], lot_no)]
-
-        completed = min(file_actuals.values())
-        remaining = order_qty - completed
-
-        if remaining <= 0:
+        if info["remaining_quantity"] <= 0:
             continue
 
         results.append({
             "lot_no": lot_no,
             "kitting_list_nos": sorted({item["kitting_list_no"] for item in items}),
-            "order_quantity": order_qty,
-            "completed_quantity": completed,
-            "remaining_quantity": remaining,
+            "order_quantity": info["order_quantity"],
+            "completed_quantity": info["completed_quantity"],
+            "remaining_quantity": info["remaining_quantity"],
         })
 
     results.sort(key=lambda r: r["lot_no"])
     return results
+
+
+def _pick_representative_plan_item(items: list):
+    """
+    同一(setup_file_no, production_side)に属する複数バッチ（items）から、
+    仕掛スナップショットの代表として1件を選ぶ。plan_start_datetime
+    （"YYYY/MM/DD HH:MM:SS"形式）が最も新しいものを採用する（直近の
+    バッチほど、まだ手元に残っている仕掛の実体に近いと判断）。
+    全件パース不能・欠落の場合は、フォールバックとしてitemsの最後
+    （list_plan_items_by_lot()の取得順そのまま）を採用する。
+    """
+    def parse_dt(value):
+        try:
+            return datetime.strptime(str(value).strip(), "%Y/%m/%d %H:%M:%S")
+        except (TypeError, ValueError):
+            return None
+
+    parseable = [(parse_dt(item.get("plan_start_datetime")), item) for item in items]
+    parseable = [(dt, item) for dt, item in parseable if dt is not None]
+    if parseable:
+        return max(parseable, key=lambda pair: pair[0])[1]
+    return items[-1]
+
+
+def build_wip_extraction_rows(lot_nos: list) -> list:
+    """
+    指定されたlot_no一覧について、setup_file_no × production_side（面）単位の
+    仕掛数量（= calculate_lot_completion()のfile_actuals[key] - completed_quantity）
+    を算出し、models.wip_board_snapshot.save_wip_snapshot()にそのまま渡せる
+    行のリストを返す（ui.monthly_report_window.MonthlyReportWindow.on_extract_wip()
+    から呼ばれる）。
+
+    以前はself.report_rows（_build_report_rows()、kitting_list_no＝バッチ単位）の
+    surplus_qty（そのバッチのdaily_qty − ロット全体の最小値）をそのまま抽出して
+    いたが、この方式では複数バッチを持つfile_noの仕掛数量が正しく合算されない
+    問題があった（BOM_MIGRATION_NOTES.md/調査参照）。calculate_lot_completion()が
+    file_no×面単位で実績を合算する方式に変更されたことに伴い、仕掛数量の算出も
+    同じfile_actualsを土台にする。
+
+    面1省略（重要）：同一setup_file_noに面2の実績も存在する場合、面1は
+    ui.kitting_production_entry.py::search_plan()の「基板別実績」表示や
+    _build_report_rows()の面1省略ロジックと同じ考え方で除外する。面連動登録に
+    より面1・面2の実績は常に一致するはずのため、除外せずに両方を仕掛として
+    抽出すると、物理的には1枚の基板の仕掛が面1・面2それぞれの行として二重に
+    計上されてしまう。
+
+    正の仕掛数量を持つ(setup_file_no, production_side)の組ごとに、該当バッチの
+    うちplan_start_datetimeが最も新しいもの（_pick_representative_plan_item()）を
+    代表として選び、そのkitting_list_no・board_name・mounting_lineを使う
+    （wip_board_snapshotのスキーマは1行1kitting_list_noのまま変更しないため、
+    複数バッチを1行にまとめる以上、代表値を選ぶ必要がある）。
+
+    lot_noの計画が見つからない（既に削除・無効化された等）場合は、
+    calculate_lot_completion()がValueErrorを送出するため、その lot_no は
+    スキップする。
+    """
+    rows = []
+    for lot_no in lot_nos:
+        try:
+            info = calculate_lot_completion(lot_no)
+        except ValueError:
+            continue
+
+        completed = info["completed_quantity"]
+
+        items_by_key = {}
+        for item in list_plan_items_by_lot(lot_no):
+            key = (item["setup_file_no"], item["production_side"])
+            items_by_key.setdefault(key, []).append(item)
+
+        second_side_files = {
+            file_no for (file_no, side) in info["file_actuals"]
+            if str(side).strip() == "2"
+        }
+
+        for key, file_actual in info["file_actuals"].items():
+            file_no, side = key
+            if str(side).strip() == "1" and file_no in second_side_files:
+                continue
+
+            wip_qty = file_actual - completed
+            if wip_qty <= 0:
+                continue
+
+            candidates = items_by_key.get(key)
+            if not candidates:
+                continue
+            representative = _pick_representative_plan_item(candidates)
+
+            rows.append({
+                "kitting_list_no": representative["kitting_list_no"],
+                "file_no": representative["setup_file_no"],
+                "board_name": representative["board_name"],
+                "production_side": representative["production_side"],
+                "mounting_line": representative["mounting_line"],
+                "lot_no": lot_no,
+                "surplus_qty": wip_qty,
+            })
+
+    return rows

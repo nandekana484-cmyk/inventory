@@ -1,11 +1,13 @@
 # ui/ng_input_window.py
+import threading
+import queue
 from datetime import datetime
 
 import tkinter as tk
 from tkinter import ttk, messagebox
 
 from services.production_service import search_plan_by_kitting_no
-from services.bom_service import BOMService
+from services.bom_service import get_shared_bom_service
 from models.scrap_records import (
     list_scrap_summary_by_kitting_no,
     list_scrap_records_by_kitting_no,
@@ -14,8 +16,12 @@ from models.scrap_records import (
 from models.kitting_plan import find_plan_item_by_kitting_no
 from models.ng_declarations import get_ng_declaration, list_ng_declarations_latest
 from ui.checkable_treeview import CheckableTreeview
+from ui.loading_window import LoadingWindow
 
-_bom_service = BOMService()
+# アプリ全体で共有する単一のBOMServiceインスタンス（services.bom_service.
+# get_shared_bom_service()参照）。ui.wip_expansion_window.pyと共有するため、
+# 先にどちらの画面を開いても共有フォルダのインデックス構築は1回で済む。
+_bom_service = get_shared_bom_service()
 
 
 class NgInputWindow(tk.Toplevel):
@@ -365,6 +371,64 @@ class NgInputWindow(tk.Toplevel):
             return None
         return ng_qty
 
+    def _run_bom_expansion_async(self, work_fn, on_success):
+        """
+        BOMService.expand_scrap_to_parts()（共有フォルダへのファイルアクセスを
+        伴い得るため実行時間が読めない）を非同期化する共通ヘルパー。
+        ui.kitting_plan_import.KittingPlanImportWindow.on_start_import()等で
+        確立済みのLoadingWindow＋threading.Thread(daemon=True)＋queue.Queue＋
+        self.after(200,...)ポーリングパターンをそのまま踏襲する。
+
+        呼び出し元（_expand_from_kitting_no()・_expand_from_file_no()）は、
+        DB検索・入力検証・候補選択ダイアログ／実装ライン選択ダイアログ
+        （いずれもTkinterウィジェット操作を伴うためUIスレッドで完結させる
+        必要がある）をあらかじめ済ませた上で、BOM展開部分のみをwork_fn
+        （引数なしのcallable、成否に関わらず戻り値または例外で結果を返す）
+        として渡す。
+
+        on_success(parts)：展開成功時、UIスレッド上で呼ばれるコールバック
+        （CheckableTreeviewへの反映等はここで行う）。
+
+        FileNotFoundError/ValueError（BOMService側の既知のエラー、file_no
+        未整備・複数K行検出等）はここで捕捉し、従来と同じ文言のエラー
+        ダイアログを表示する。それ以外の予期しない例外はself.after()の
+        コールバック内で再送出し、Tkinterの通常の例外報告に委ねる
+        （元のコードも同様にFileNotFoundError/ValueError以外は捕捉して
+        いなかったため、挙動を変えていない）。
+        """
+        loading = LoadingWindow(self, message="BOM展開中です（共有フォルダへアクセスしています）…")
+        result_queue = queue.Queue()
+
+        def _work():
+            try:
+                result_queue.put((True, work_fn()))
+            except Exception as e:
+                result_queue.put((False, e))
+
+        threading.Thread(target=_work, daemon=True).start()
+
+        def _poll():
+            try:
+                success, payload = result_queue.get_nowait()
+            except queue.Empty:
+                self.after(200, _poll)
+                return
+
+            loading.destroy()
+
+            if not success:
+                if isinstance(payload, FileNotFoundError):
+                    messagebox.showerror("BOMエラー", f"BOM TSVが見つかりません：\n{payload}", parent=self.winfo_toplevel())
+                    return
+                if isinstance(payload, ValueError):
+                    messagebox.showerror("BOMエラー", f"BOM展開に失敗しました：\n{payload}", parent=self.winfo_toplevel())
+                    return
+                raise payload
+
+            on_success(payload)
+
+        self.after(200, _poll)
+
     def _expand_from_kitting_no(self, kitting_no, lot_no=None):
         """
         キッティングリストNo.検索（計画あり）での展開。
@@ -380,6 +444,10 @@ class NgInputWindow(tk.Toplevel):
         は元々、生産実績入力画面 ui.kitting_production_entry.KittingProductionEntryWindow
         と共用するために切り出したもの。同画面はキッティングリストNo.検索欄を廃止し
         計画一覧からの選択に一本化したため、現在この経路を使うのは本画面のみ）。
+
+        候補選択ダイアログまでの計画特定・入力検証はUIスレッドで同期的に行い、
+        実際のBOM展開（_bom_service.expand_scrap_to_parts()、共有フォルダへの
+        アクセスを伴い得る）のみを_run_bom_expansion_async()で非同期化する。
         """
         plan, candidates = search_plan_by_kitting_no(kitting_no, lot_no)
         if candidates is not None:
@@ -419,41 +487,39 @@ class NgInputWindow(tk.Toplevel):
                 f"NG数量（{ng_qty:g}）が計画数（{planned_qty:g}）を超えています。\n入力内容はそのまま登録できます。",
             parent=self.winfo_toplevel())
 
-        try:
-            parts = _bom_service.expand_scrap_to_parts({
-                "setup_file_no": file_no,
-                "production_side": side,
-                "ng_qty": ng_qty,
-                "lot_no": plan.get("lot_no"),
-                "mounting_line": plan.get("mounting_line"),
-            })
-        except FileNotFoundError as e:
-            messagebox.showerror("BOMエラー", f"BOM TSVが見つかりません：\n{e}", parent=self.winfo_toplevel())
-            return
-        except ValueError as e:
-            messagebox.showerror("BOMエラー", f"BOM展開に失敗しました：\n{e}", parent=self.winfo_toplevel())
-            return
-
-        self.current_plan = {
-            "kitting_list_no": kitting_no,
-            "file_no": file_no,
-            "side": side,
+        scrap_record = {
+            "setup_file_no": file_no,
+            "production_side": side,
             "ng_qty": ng_qty,
-            "is_unplanned": False,
             "lot_no": plan.get("lot_no"),
+            "mounting_line": plan.get("mounting_line"),
         }
-        self.lbl_plan_info.config(
-            text=f"file_no: {file_no} / 生産面: {side} / ロットNo: {plan.get('lot_no', '-')}"
+
+        def on_success(parts):
+            self.current_plan = {
+                "kitting_list_no": kitting_no,
+                "file_no": file_no,
+                "side": side,
+                "ng_qty": ng_qty,
+                "is_unplanned": False,
+                "lot_no": plan.get("lot_no"),
+            }
+            self.lbl_plan_info.config(
+                text=f"file_no: {file_no} / 生産面: {side} / ロットNo: {plan.get('lot_no', '-')}"
+            )
+
+            self.load_parts_tree(parts, ng_qty)
+
+            if not parts:
+                messagebox.showwarning(
+                    "警告",
+                    f"file_no「{file_no}」・生産面{side}のBOMが登録されていない、または対象部品がありません。",
+                parent=self.winfo_toplevel())
+            self.btn_register.config(state=tk.NORMAL if parts else tk.DISABLED)
+
+        self._run_bom_expansion_async(
+            lambda: _bom_service.expand_scrap_to_parts(scrap_record), on_success,
         )
-
-        self.load_parts_tree(parts, ng_qty)
-
-        if not parts:
-            messagebox.showwarning(
-                "警告",
-                f"file_no「{file_no}」・生産面{side}のBOMが登録されていない、または対象部品がありません。",
-            parent=self.winfo_toplevel())
-        self.btn_register.config(state=tk.NORMAL if parts else tk.DISABLED)
 
     def _select_mounting_line(self, lines):
         """
@@ -511,6 +577,13 @@ class NgInputWindow(tk.Toplevel):
         選択させる（1件のみの場合は選択UIを出さずそのまま使う。0件の場合は
         mounting_line=Noneのまま渡し、BOMService._calculate_bom()の
         デフォルト方針＝最初に見つかったライン1本分に委ねる）。
+
+        list_mounting_lines()・実装ライン選択ダイアログはUIスレッドで同期的に
+        行い（ダイアログ表示を伴うため）、実際のBOM展開（_bom_service.
+        expand_scrap_to_parts()）のみを_run_bom_expansion_async()で非同期化する
+        （list_mounting_lines()自体も共有フォルダのTSV読み込みを伴うが、今回の
+        対象はexpand_scrap_to_parts()/expand_wip_to_parts()のみのため、
+        list_mounting_lines()は従来通り同期のままとした）。
         """
         ng_qty = self._resolve_ng_qty(file_no, side, None)
         if ng_qty is None:
@@ -533,42 +606,40 @@ class NgInputWindow(tk.Toplevel):
             if mounting_line is None:
                 return
 
-        try:
-            parts = _bom_service.expand_scrap_to_parts({
-                "setup_file_no": file_no,
-                "production_side": side,
-                "ng_qty": ng_qty,
-                "lot_no": None,
-                "mounting_line": mounting_line,
-            })
-        except FileNotFoundError as e:
-            messagebox.showerror("BOMエラー", f"BOM TSVが見つかりません：\n{e}", parent=self.winfo_toplevel())
-            return
-        except ValueError as e:
-            messagebox.showerror("BOMエラー", f"BOM展開に失敗しました：\n{e}", parent=self.winfo_toplevel())
-            return
-
-        self.current_plan = {
-            "kitting_list_no": file_no,
-            "file_no": file_no,
-            "side": side,
+        scrap_record = {
+            "setup_file_no": file_no,
+            "production_side": side,
             "ng_qty": ng_qty,
-            "is_unplanned": True,
             "lot_no": None,
+            "mounting_line": mounting_line,
         }
-        line_text = f" / 実装ライン: {mounting_line}" if mounting_line else ""
-        self.lbl_plan_info.config(
-            text=f"file_no: {file_no} / 生産面: {side}{line_text} / （計画外登録）"
+
+        def on_success(parts):
+            self.current_plan = {
+                "kitting_list_no": file_no,
+                "file_no": file_no,
+                "side": side,
+                "ng_qty": ng_qty,
+                "is_unplanned": True,
+                "lot_no": None,
+            }
+            line_text = f" / 実装ライン: {mounting_line}" if mounting_line else ""
+            self.lbl_plan_info.config(
+                text=f"file_no: {file_no} / 生産面: {side}{line_text} / （計画外登録）"
+            )
+
+            self.load_parts_tree(parts, ng_qty)
+
+            if not parts:
+                messagebox.showwarning(
+                    "警告",
+                    f"file_no「{file_no}」・生産面{side}のBOMが登録されていない、または対象部品がありません。",
+                parent=self.winfo_toplevel())
+            self.btn_register.config(state=tk.NORMAL if parts else tk.DISABLED)
+
+        self._run_bom_expansion_async(
+            lambda: _bom_service.expand_scrap_to_parts(scrap_record), on_success,
         )
-
-        self.load_parts_tree(parts, ng_qty)
-
-        if not parts:
-            messagebox.showwarning(
-                "警告",
-                f"file_no「{file_no}」・生産面{side}のBOMが登録されていない、または対象部品がありません。",
-            parent=self.winfo_toplevel())
-        self.btn_register.config(state=tk.NORMAL if parts else tk.DISABLED)
 
     def load_parts_tree(self, parts, ng_qty):
         """

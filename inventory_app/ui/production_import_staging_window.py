@@ -125,6 +125,13 @@ class ProductionImportStagingWindow(tk.Toplevel):
         """
         登録不可（"no_candidates"＝該当lot_noの計画が見つからなかった）行を
         CSV出力する。該当行が1件も無い場合は出力せずメッセージのみ表示する。
+
+        出力成功後、該当行を一覧（self.tree・self._row_by_iid）からも削除する
+        （self._unregistrable_rows自体は保持したまま：ウインドウを閉じるまで
+        参照可能にしておく従来の方針は変えない）。削除しないと、CSVに出力済み
+        でも一覧上は「未登録」のまま残り続け、_on_close()の「まだ登録していない
+        項目があります」確認ダイアログが、実際には対応済み（CSV出力済み）で
+        あるにもかかわらず出続けてしまうため。
         """
         if not self._unregistrable_rows:
             messagebox.showinfo("登録不可リスト", "登録不可の行はありません。", parent=self)
@@ -154,6 +161,14 @@ class ProductionImportStagingWindow(tk.Toplevel):
         except Exception as e:
             messagebox.showerror("エラー", f"CSV出力に失敗しました：{e}", parent=self)
             return
+
+        iids_to_remove = [
+            iid for iid, row in self._row_by_iid.items()
+            if row.get("status") == "no_candidates"
+        ]
+        for iid in iids_to_remove:
+            self.tree.delete(iid)
+            del self._row_by_iid[iid]
 
         messagebox.showinfo("完了", f"CSVを保存しました：\n{save_path}", parent=self)
 

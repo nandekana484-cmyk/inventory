@@ -52,8 +52,9 @@ class MainWindow(tk.Tk):
         # ウィンドウの高さは詰め、横幅は上部のデータベース選択欄（前月引き継ぎ
         # チェックボックス等を含む）と左右2列のボタン群の両方が収まる幅に広げた
         # （winfo_reqwidth()実測値920前後に基づく）。
-        # 「データベース選択」領域が共有フォルダ用の行の追加で2段になった分、高さを広げた。
-        self.geometry("940x640")
+        # 共有フォルダ関連の2ボタンはヘッダー行の右上へ移動したため、
+        # 「データベース選択」領域は再び1段のみとなり、高さは元の940x600に戻す。
+        self.geometry("940x600")
 
         # メインメニューから開く画面の多重表示防止用：key -> 開いているToplevelインスタンス。
         # ウィンドウが閉じられたら _open_singleton_window() が設定した
@@ -68,10 +69,10 @@ class MainWindow(tk.Tk):
         self.attributes("-topmost", False)
 
         # データベース選択領域（最上部）
-        # 1段目：ローカルdb/フォルダからの選択・新規作成（既存）。
-        # 2段目：共有フォルダ（UNCパス等）上のDBを直接開く／新規作成（新規）。
-        # side=LEFTのパック済みウィジェットとside=TOPのウィジェットを同じ親に
-        # 混在させるとレイアウトが崩れるため、行ごとに専用のサブフレームに分けている。
+        # ローカルdb/フォルダからの選択・新規作成。共有フォルダ（UNCパス等）
+        # 上のDBを直接開く／新規作成する2ボタンは、ヘッダー行の右上へ移動した
+        # （db_select_row2として同居していたが、メインメニューの右上に独立して
+        # 配置する方針に変更したため）。
         db_select_frame = ttk.Labelframe(self, text="データベース選択", padding=10)
         db_select_frame.pack(fill=tk.X, padx=10, pady=(10, 0))
 
@@ -106,21 +107,6 @@ class MainWindow(tk.Tk):
         )
         self.btn_create_database.pack(side=tk.LEFT)
 
-        db_select_row2 = ttk.Frame(db_select_frame)
-        db_select_row2.pack(fill=tk.X, pady=(8, 0))
-
-        ttk.Label(db_select_row2, text="共有フォルダ：").pack(side=tk.LEFT)
-
-        self.btn_open_shared_database = ttk.Button(
-            db_select_row2, text="共有フォルダのDBを開く", command=self.on_open_shared_database,
-        )
-        self.btn_open_shared_database.pack(side=tk.LEFT, padx=(0, 10))
-
-        self.btn_create_shared_database = ttk.Button(
-            db_select_row2, text="共有フォルダに新規作成", command=self.on_create_shared_database,
-        )
-        self.btn_create_shared_database.pack(side=tk.LEFT)
-
         # on_create_database()の引き継ぎ処理（非同期）用
         self._create_db_result_queue = queue.Queue()
         self._create_db_loading_window = None
@@ -136,6 +122,22 @@ class MainWindow(tk.Tk):
             text=f"ログイン作業者: {worker_name} ({worker_role})",
             font=("Helvetica", 11, "bold")
         ).pack(side=tk.LEFT)
+
+        # 共有フォルダ（UNCパス等）上のDBを直接開く／新規作成する2ボタン。
+        # 以前は「データベース選択」領域内の2段目（db_select_row2）に置かれて
+        # いたが、メインメニューの右上に配置する方針に変更した。side=tk.RIGHTで
+        # ヘッダー行の右端へパックする（先に「新規作成」を、後から「開く」を
+        # packすることで、右端から見て「開く」が左・「新規作成」が右という
+        # 従来通りの左右順序になる）。
+        self.btn_create_shared_database = ttk.Button(
+            header_frame, text="共有フォルダに新規作成", command=self.on_create_shared_database,
+        )
+        self.btn_create_shared_database.pack(side=tk.RIGHT)
+
+        self.btn_open_shared_database = ttk.Button(
+            header_frame, text="共有フォルダのDBを開く", command=self.on_open_shared_database,
+        )
+        self.btn_open_shared_database.pack(side=tk.RIGHT, padx=(0, 10))
 
         # メニューボタン領域
         # 月次データ（config.DB_PATH切り替えの対象＝月ごとのDBフォルダに入っている
