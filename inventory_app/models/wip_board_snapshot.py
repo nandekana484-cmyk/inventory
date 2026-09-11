@@ -10,15 +10,7 @@ save_wip_snapshot() は「最後に抽出したデータのみを正とする」
 方式のため、呼び出しのたびにテーブル全体をクリアしてから渡された行を
 全て入れ直す（行単位のキーによる差分更新ではなく、テーブル全体の置き換え）。
 """
-import sqlite3
-
-import config
-
-
-def get_connection():
-    con = sqlite3.connect(config.DB_PATH)
-    con.row_factory = sqlite3.Row
-    return con
+from models.db_common import get_connection
 
 
 def init_wip_board_snapshot_table():

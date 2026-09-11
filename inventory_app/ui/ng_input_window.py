@@ -15,6 +15,9 @@ from models.scrap_records import (
 )
 from models.kitting_plan import find_plan_item_by_kitting_no
 from models.ng_declarations import get_ng_declaration, list_ng_declarations_latest
+from models.ng_exclusion_list import (
+    mark_ng_excluded, unmark_ng_excluded, list_ng_exclusions,
+)
 from ui.checkable_treeview import CheckableTreeview
 from ui.loading_window import LoadingWindow
 
@@ -60,6 +63,17 @@ class NgInputWindow(tk.Toplevel):
          行をダブルクリックすると、その計画（または計画外のfile_no＋生産面）が
          自動的に再展開される（on_ng_list_double_click()）
     """
+    # NG一覧（tree_ng_list）の列順。_fetch_ng_list_rows()が返すタプルの並びと
+    # 一致させる必要がある。クラス属性として公開し、_create_ng_list_widgets()と
+    # services.unprocessed_check_service.check_unprocessed_items()（在庫差異
+    # レポートを開く前の未処理項目チェック）の両方が、位置決め打ちではなく
+    # この定義を単一の情報源として参照できるようにしている。
+    NG_LIST_COLUMNS = (
+        "kitting_list_no", "lot_no", "board_name", "file_no", "side",
+        "is_unplanned", "status", "declared_ng_qty", "part_count",
+        "record_count", "last_report_date", "excluded",
+    )
+
     def __init__(self, parent, current_worker):
         super().__init__(parent)
         self.current_worker = current_worker
@@ -184,9 +198,7 @@ class NgInputWindow(tk.Toplevel):
         （絞り込みエリア→Treeview→水平/垂直スクロールバー→更新ボタン、のpack順）を
         NG一覧用に再実装したもの。
         """
-        cols_ng = ("kitting_list_no", "lot_no", "board_name", "file_no", "side",
-                   "is_unplanned", "status", "declared_ng_qty", "part_count",
-                   "record_count", "last_report_date")
+        cols_ng = self.NG_LIST_COLUMNS
         self._ng_col_index = {key: i for i, key in enumerate(cols_ng)}
 
         self._ng_filter_labels = {
@@ -201,6 +213,7 @@ class NgInputWindow(tk.Toplevel):
             "part_count": "部品種類数",
             "record_count": "レコード数",
             "last_report_date": "最終報告日",
+            "excluded": "対象外",
         }
 
         ng_filter_frame = ttk.LabelFrame(right_frame, text="絞り込み", padding=8)
@@ -220,6 +233,7 @@ class NgInputWindow(tk.Toplevel):
         self._add_ng_checkbox_filter_button(ng_filter_row1, "side")
         self._add_ng_checkbox_filter_button(ng_filter_row1, "is_unplanned")
         self._add_ng_checkbox_filter_button(ng_filter_row1, "status")
+        self._add_ng_checkbox_filter_button(ng_filter_row1, "excluded")
 
         self._add_ng_filter_entry(ng_filter_row2, "declared_ng_qty", self._ng_filter_labels["declared_ng_qty"], width=8)
         self._add_ng_filter_entry(ng_filter_row2, "part_count", self._ng_filter_labels["part_count"], width=8)
@@ -247,6 +261,7 @@ class NgInputWindow(tk.Toplevel):
         self.tree_ng_list.column("part_count", width=80, anchor=tk.E)
         self.tree_ng_list.column("record_count", width=80, anchor=tk.E)
         self.tree_ng_list.column("last_report_date", width=100, anchor=tk.W)
+        self.tree_ng_list.column("excluded", width=70, anchor=tk.CENTER)
 
         vsb_ng = ttk.Scrollbar(right_frame, orient="vertical", command=self.tree_ng_list.yview)
         self.tree_ng_list.configure(yscrollcommand=vsb_ng.set)
@@ -255,12 +270,20 @@ class NgInputWindow(tk.Toplevel):
         self.tree_ng_list.configure(xscrollcommand=hsb_ng.set)
 
         # pack順序：ui.kitting_production_entry.py の計画一覧と同じ理由により、
-        # 「更新」ボタン→水平スクロールバーの順でside=tk.BOTTOMにpackする
+        # ボタン行→水平スクロールバーの順でside=tk.BOTTOMにpackする
         # （Tkのpackはpackを呼んだ順にcavityを消費するため、ボタンを先に確保しないと
         # 水平スクロールバーがウィンドウ最下端を先に取ってしまい、ボタンとの間に
         # 割り込んで視覚的に切り離された配置になる）。
-        ttk.Button(right_frame, text="更新", command=self.load_ng_list).pack(
-            side=tk.BOTTOM, fill=tk.X, pady=(5, 0)
+        ng_action_frame = ttk.Frame(right_frame)
+        ng_action_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(5, 0))
+        ttk.Button(ng_action_frame, text="更新", command=self.load_ng_list).pack(
+            side=tk.LEFT, expand=True, fill=tk.X
+        )
+        ttk.Button(ng_action_frame, text="対象外にする", command=self.on_mark_ng_excluded).pack(
+            side=tk.LEFT, expand=True, fill=tk.X, padx=(5, 0)
+        )
+        ttk.Button(ng_action_frame, text="対象外解除", command=self.on_unmark_ng_excluded).pack(
+            side=tk.LEFT, expand=True, fill=tk.X, padx=(5, 0)
         )
         hsb_ng.pack(side=tk.BOTTOM, fill=tk.X)
         vsb_ng.pack(side=tk.RIGHT, fill=tk.Y)
@@ -307,6 +330,119 @@ class NgInputWindow(tk.Toplevel):
         else:
             self.entry_kitting_no.insert(0, kitting_list_no)
             self.on_expand(lot_no=lot_no)
+
+    def _get_selected_ng_row_identity(self):
+        """
+        NG一覧（tree_ng_list）で選択中の行から、models.ng_exclusion_listの
+        識別キー（kitting_list_no, side, lot_no）を取り出す。選択が無い場合は
+        警告を表示してNoneを返す。生産面が「面1」「面2」の形式でない場合も
+        （通常発生しない想定だが念のため）エラーを表示してNoneを返す。
+        """
+        sel = self.tree_ng_list.selection()
+        if not sel:
+            messagebox.showwarning("警告", "対象の行を選択してください。", parent=self.winfo_toplevel())
+            return None
+
+        values = self.tree_ng_list.item(sel[0], "values")
+        kitting_list_no = values[self._ng_col_index["kitting_list_no"]]
+        lot_no = values[self._ng_col_index["lot_no"]] or None
+        side_text = values[self._ng_col_index["side"]]
+
+        if side_text not in ("面1", "面2"):
+            messagebox.showerror("エラー", f"生産面を判別できません: {side_text!r}", parent=self.winfo_toplevel())
+            return None
+        side = int(side_text[-1])
+
+        return kitting_list_no, side, lot_no
+
+    def _prompt_ng_exclusion_reason(self):
+        """
+        対象外にする理由（任意入力）を尋ねる簡単なモーダルダイアログ。
+        OKで理由文字列（空欄ならNone）を返し、キャンセル（ウインドウを閉じる
+        場合も含む）時はFalseを返す（Noneは「理由未入力」を表すため、
+        キャンセルとの区別にFalseの値を用いる）。
+        """
+        result = {"confirmed": False, "reason": ""}
+
+        # selfが最小化状態だと、transient(self)したダイアログがstate()="withdrawn"
+        # のまま実際には表示されない（ui.plan_candidate_dialog._show_candidate_list_dialog()
+        # と同じ理由・同じ対策、UI_WORKFLOW_FIXES_NOTES.md参照）。
+        if self.state() == "iconic":
+            self.deiconify()
+
+        dialog = tk.Toplevel(self)
+        dialog.title("対象外にする理由（任意）")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ttk.Label(dialog, text="対象外にする理由があれば入力してください（空欄可）：").pack(padx=15, pady=(15, 5))
+        entry = ttk.Entry(dialog, width=40)
+        entry.pack(padx=15, pady=5)
+        entry.focus_set()
+
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.pack(pady=(5, 15))
+
+        def on_ok(event=None):
+            result["confirmed"] = True
+            result["reason"] = entry.get().strip()
+            dialog.destroy()
+
+        def on_cancel():
+            dialog.destroy()
+
+        ttk.Button(btn_frame, text="OK", command=on_ok).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="キャンセル", command=on_cancel).pack(side=tk.LEFT, padx=5)
+        dialog.bind("<Return>", on_ok)
+        dialog.protocol("WM_DELETE_WINDOW", on_cancel)
+
+        dialog.wait_window()
+        if not result["confirmed"]:
+            return False
+        return result["reason"] or None
+
+    def on_mark_ng_excluded(self):
+        """
+        NG一覧で選択中の行を「対象外」として登録する（models.ng_exclusion_list.
+        mark_ng_excluded()）。理由は_prompt_ng_exclusion_reason()で任意入力させる
+        （キャンセル時は何もしない）。登録後は一覧を再取得し、「対象外」列に
+        反映する。
+        """
+        identity = self._get_selected_ng_row_identity()
+        if identity is None:
+            return
+        kitting_list_no, side, lot_no = identity
+
+        reason = self._prompt_ng_exclusion_reason()
+        if reason is False:
+            return
+
+        worker_id = (self.current_worker or {}).get("worker_id", "SYSTEM")
+        mark_ng_excluded(kitting_list_no, side, lot_no, reason, worker_id)
+        self.load_ng_list()
+
+    def on_unmark_ng_excluded(self):
+        """
+        NG一覧で選択中の行の「対象外」指定を解除する
+        （models.ng_exclusion_list.unmark_ng_excluded()）。元々対象外でなかった
+        行に対して呼んでも何も起きない（unmark_ng_excluded()側で無害）ため、
+        事前の状態確認は行わない。
+        """
+        identity = self._get_selected_ng_row_identity()
+        if identity is None:
+            return
+        kitting_list_no, side, lot_no = identity
+
+        if not messagebox.askyesno(
+            "確認",
+            f"キッティングリストNo. {kitting_list_no}"
+            f"{f'（ロットNo. {lot_no}）' if lot_no else ''} の対象外指定を解除しますか？",
+            parent=self.winfo_toplevel(),
+        ):
+            return
+
+        unmark_ng_excluded(kitting_list_no, side, lot_no)
+        self.load_ng_list()
 
     def on_expand(self, lot_no=None):
         """
@@ -894,6 +1030,14 @@ class NgInputWindow(tk.Toplevel):
         使わない）。is_unplanned=1（計画外）の行は計画詳細が存在しないため
         基板名は空欄のままとする。
 
+        対象外マーク（models.ng_exclusion_list）：list_ng_exclusions()で全件を
+        取得し、(kitting_list_no, lot_no, production_side) キーで突き合わせて
+        「対象外」列を付与する。「未展開」の行が対象外にされた場合も、一覧からは
+        除外せず「対象外」列で区別表示する方針とした（一覧から消してしまうと、
+        対象外にした事実そのものが見えなくなり、解除操作の導線も失われるため。
+        フィルタ・チェックボックス絞り込みで「対象外」列を使って非表示にする
+        ことは可能）。
+
         戻り値：Treeviewへそのまま渡せる values タプルのリスト。
         """
         declarations = {
@@ -903,6 +1047,10 @@ class NgInputWindow(tk.Toplevel):
         expanded = {
             (s["kitting_list_no"], s["lot_no"] or "", s["production_side"]): s
             for s in list_scrap_summary_by_kitting_no()
+        }
+        excluded_keys = {
+            (e["kitting_list_no"], e["lot_no"] or "", e["production_side"])
+            for e in list_ng_exclusions()
         }
 
         rows = []
@@ -947,6 +1095,7 @@ class NgInputWindow(tk.Toplevel):
                 part_count_text,
                 record_count_text,
                 last_report_date,
+                "対象外" if key in excluded_keys else "",
             ))
 
         return rows

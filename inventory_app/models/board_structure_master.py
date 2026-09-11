@@ -13,15 +13,7 @@ models/parts_attributes.py と同じ「CSVをマスタとした差分同期」�
 import re
 import unicodedata
 
-import sqlite3
-
-import config
-
-
-def get_connection():
-    con = sqlite3.connect(config.DB_PATH)
-    con.row_factory = sqlite3.Row
-    return con
+from models.db_common import get_connection
 
 
 def normalize_board_name(name):

@@ -22,6 +22,10 @@
 | D-6 | 実績・NG申告は「日付問わず1計画（kitting_list_no, lot_no）1レコード、常に上書き」で統一する（同じロットの別日生産は別のkitting_list_noとして立てる業務運用のため） | PRODUCTION_NG_ENHANCEMENTS_NOTES.md §6 |
 | D-7 | 実績CSV取込には`import_production_csv()`（即時登録、後方互換のため維持）と`parse_production_csv_for_staging()`＋`ProductionImportStagingWindow`（ステージング方式、現在の標準フロー）の2系統が**意図的に併存**している。片方が巻き戻った結果ではない | UI_WORKFLOW_FIXES_NOTES.md §3 グループH（H-2） |
 | D-8 | 面2が存在する場合、面1は一覧表示（基板別実績・日次実績履歴・日報・月報・仕掛数量抽出）から省略し面2のみ表示する統一ルール。ただし面1の実績が面2を上回る状態（`ActualCorrectionWindow`の片面修正等が原因）は**本来あってはならない不整合**であり、除外した上で別途警告する（黙って消さない） | UI_WORKFLOW_FIXES_NOTES.md §3 グループI（I-3〜I-5） |
+| D-9 | `services/unprocessed_check_service.py`は、NG一覧・仕掛一覧の未処理判定ロジックを複製せず、`ui.ng_input_window.NgInputWindow`・`ui.wip_expansion_window.WipExpansionWindow`の該当staticmethodをそのままimportして再利用している。通常避けるべき「services層がui層に依存する」方向の依存関係だが、ロジック複製によるドリフト（`calculate_lot_completion()`と`list_incomplete_lots()`の食い違いが過去に発生した例と同種の問題）を避けるための**意図的な例外**であり、「壊れている」設計ではない | PRODUCTION_NG_ENHANCEMENTS_NOTES.md §11 |
+| D-10 | 共有フォルダ上でのSQLite運用改善は、WALモードへの変更ではなく接続タイムアウト延長（30秒）＋`get_connection()`共通化のみを採用する。WALモードはSMB上で補助ファイル（-wal・-shm）へのロックが正しく機能せず、通常のジャーナルモードより状況を悪化させ得るため見送り、実運用で問題が出た場合に改めて検討する | UI_WORKFLOW_FIXES_NOTES.md グループU |
+| D-11 | ロックファイル（`.lock`）が破損している（内容を読み取れない）場合、フェイルオープン（無条件に次の利用者が取得可能）ではなくフェイルクローズ（`LockFileCorruptedError`を送出し、ユーザーが明示的に確認した場合のみ`force=True`で上書き取得）を採用する。共有DBの整合性を扱うシステムでは、同時書き込み中の見逃しの方が実害が大きいため | UI_WORKFLOW_FIXES_NOTES.md グループV |
+| D-12 | ロックファイルの誤削除（手動削除）への耐性向上（追記型履歴ログ等によるヒューリスティック検知）は見送り、現状維持（ファイルが存在しない＝ロック無しとして取得可能）とする。履歴ログ自体も同じ共有フォルダ上のファイルであり、書き込み競合・肥大化という別の問題を生むため | UI_WORKFLOW_FIXES_NOTES.md グループV |
 
 ---
 

@@ -10,15 +10,7 @@ ui.wip_expansion_window で、services.bom_service.BOMService.expand_wip_to_part
 qty列は消費数量（qty_per_product × 対象仕掛数量）であり、部品ごとに員数が
 異なるため仕掛数量そのものではない点はscrap_records.ng_qtyと同じ注意が必要。
 """
-import sqlite3
-
-import config
-
-
-def get_connection():
-    con = sqlite3.connect(config.DB_PATH)
-    con.row_factory = sqlite3.Row
-    return con
+from models.db_common import get_connection
 
 
 def init_wip_scrap_records_table():

@@ -8,6 +8,9 @@ from tkinter import ttk, messagebox
 from services.bom_service import get_shared_bom_service
 from models.wip_board_snapshot import list_wip_snapshot
 from models.wip_scrap_records import save_wip_scrap_records, list_wip_scrap_summary
+from models.wip_exclusion_list import (
+    mark_wip_excluded, unmark_wip_excluded, list_wip_exclusions,
+)
 from ui.checkable_treeview import CheckableTreeview
 from ui.loading_window import LoadingWindow
 
@@ -40,6 +43,17 @@ class WipExpansionWindow(tk.Toplevel):
          表示。デフォルト全選択状態（閲覧用のため、チェックの意味自体は無いが、
          NG入力画面と見た目を揃えるため踏襲した）
     """
+    # 仕掛一覧（tree_wip_list）の列順。_fetch_wip_list_rows()が返すタプルの並びと
+    # 一致させる必要がある。クラス属性として公開し、_create_wip_list_widgets()と
+    # services.unprocessed_check_service.check_unprocessed_items()（在庫差異
+    # レポートを開く前の未処理項目チェック）の両方が、位置決め打ちではなく
+    # この定義を単一の情報源として参照できるようにしている
+    # （ui.ng_input_window.NgInputWindow.NG_LIST_COLUMNSと同じ考え方）。
+    WIP_LIST_COLUMNS = (
+        "kitting_list_no", "board_name", "file_no", "side", "lot_no",
+        "mounting_line", "surplus_qty", "status", "created_at", "excluded",
+    )
+
     def __init__(self, parent, current_worker=None):
         super().__init__(parent)
         self.current_worker = current_worker
@@ -183,6 +197,117 @@ class WipExpansionWindow(tk.Toplevel):
             parent=self.winfo_toplevel(),
         )
         return False
+
+    def _get_selected_wip_row_identity(self):
+        """
+        仕掛一覧（tree_wip_list）で選択中の行から、models.wip_exclusion_listの
+        識別キー（kitting_list_no, lot_no, file_no, side）を取り出す
+        （ui.ng_input_window.NgInputWindow._get_selected_ng_row_identity()と
+        同じパターン）。選択が無い場合は警告を表示してNoneを返す。
+        """
+        sel = self.tree_wip_list.selection()
+        if not sel:
+            messagebox.showwarning("警告", "対象の行を選択してください。", parent=self.winfo_toplevel())
+            return None
+
+        values = self.tree_wip_list.item(sel[0], "values")
+        kitting_list_no = values[self._wip_col_index["kitting_list_no"]]
+        lot_no = values[self._wip_col_index["lot_no"]] or None
+        file_no = values[self._wip_col_index["file_no"]]
+        side_text = values[self._wip_col_index["side"]]
+
+        try:
+            side = int(side_text)
+        except (TypeError, ValueError):
+            messagebox.showerror("エラー", f"生産面を判別できません: {side_text!r}", parent=self.winfo_toplevel())
+            return None
+
+        return kitting_list_no, lot_no, file_no, side
+
+    def _prompt_wip_exclusion_reason(self):
+        """
+        対象外にする理由（任意入力）を尋ねる簡単なモーダルダイアログ
+        （ui.ng_input_window.NgInputWindow._prompt_ng_exclusion_reason()と同じ
+        実装）。OKで理由文字列（空欄ならNone）を返し、キャンセル時はFalseを返す。
+        """
+        result = {"confirmed": False, "reason": ""}
+
+        # selfが最小化状態だと、transient(self)したダイアログがstate()="withdrawn"
+        # のまま実際には表示されない（ui.plan_candidate_dialog._show_candidate_list_dialog()
+        # と同じ理由・同じ対策、UI_WORKFLOW_FIXES_NOTES.md参照）。
+        if self.state() == "iconic":
+            self.deiconify()
+
+        dialog = tk.Toplevel(self)
+        dialog.title("対象外にする理由（任意）")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ttk.Label(dialog, text="対象外にする理由があれば入力してください（空欄可）：").pack(padx=15, pady=(15, 5))
+        entry = ttk.Entry(dialog, width=40)
+        entry.pack(padx=15, pady=5)
+        entry.focus_set()
+
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.pack(pady=(5, 15))
+
+        def on_ok(event=None):
+            result["confirmed"] = True
+            result["reason"] = entry.get().strip()
+            dialog.destroy()
+
+        def on_cancel():
+            dialog.destroy()
+
+        ttk.Button(btn_frame, text="OK", command=on_ok).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="キャンセル", command=on_cancel).pack(side=tk.LEFT, padx=5)
+        dialog.bind("<Return>", on_ok)
+        dialog.protocol("WM_DELETE_WINDOW", on_cancel)
+
+        dialog.wait_window()
+        if not result["confirmed"]:
+            return False
+        return result["reason"] or None
+
+    def on_mark_wip_excluded(self):
+        """
+        仕掛一覧で選択中の行を「対象外」として登録する（models.wip_exclusion_list.
+        mark_wip_excluded()）。理由は_prompt_wip_exclusion_reason()で任意入力させる
+        （キャンセル時は何もしない）。登録後は一覧を再取得し、「対象外」列に反映する。
+        """
+        identity = self._get_selected_wip_row_identity()
+        if identity is None:
+            return
+        kitting_list_no, lot_no, file_no, side = identity
+
+        reason = self._prompt_wip_exclusion_reason()
+        if reason is False:
+            return
+
+        worker_id = (self.current_worker or {}).get("worker_id", "SYSTEM")
+        mark_wip_excluded(kitting_list_no, lot_no, file_no, side, reason, worker_id)
+        self.load_wip_list()
+
+    def on_unmark_wip_excluded(self):
+        """
+        仕掛一覧で選択中の行の「対象外」指定を解除する
+        （models.wip_exclusion_list.unmark_wip_excluded()）。
+        """
+        identity = self._get_selected_wip_row_identity()
+        if identity is None:
+            return
+        kitting_list_no, lot_no, file_no, side = identity
+
+        if not messagebox.askyesno(
+            "確認",
+            f"キッティングリストNo. {kitting_list_no}"
+            f"{f'（ロットNo. {lot_no}）' if lot_no else ''} の対象外指定を解除しますか？",
+            parent=self.winfo_toplevel(),
+        ):
+            return
+
+        unmark_wip_excluded(kitting_list_no, lot_no, file_no, side)
+        self.load_wip_list()
 
     def _run_bom_expansion_async(self, work_fn, on_success):
         """
@@ -379,8 +504,7 @@ class WipExpansionWindow(tk.Toplevel):
         （絞り込みエリア→Treeview→水平/垂直スクロールバー→更新ボタン、のpack順）を
         WIP一覧用に再実装したもの。
         """
-        cols_wip = ("kitting_list_no", "board_name", "file_no", "side", "lot_no",
-                    "mounting_line", "surplus_qty", "status", "created_at")
+        cols_wip = self.WIP_LIST_COLUMNS
         self._wip_col_index = {key: i for i, key in enumerate(cols_wip)}
 
         self._wip_filter_labels = {
@@ -393,6 +517,7 @@ class WipExpansionWindow(tk.Toplevel):
             "surplus_qty": "仕掛数量",
             "status": "状態",
             "created_at": "抽出日時",
+            "excluded": "対象外",
         }
 
         wip_filter_frame = ttk.LabelFrame(right_frame, text="絞り込み", padding=8)
@@ -412,6 +537,7 @@ class WipExpansionWindow(tk.Toplevel):
         self._add_wip_checkbox_filter_button(wip_filter_row1, "lot_no")
         self._add_wip_checkbox_filter_button(wip_filter_row1, "mounting_line")
         self._add_wip_checkbox_filter_button(wip_filter_row1, "status")
+        self._add_wip_checkbox_filter_button(wip_filter_row1, "excluded")
 
         self._add_wip_filter_entry(wip_filter_row2, "surplus_qty", self._wip_filter_labels["surplus_qty"], width=8)
         self._add_wip_filter_entry(wip_filter_row2, "created_at", self._wip_filter_labels["created_at"], width=16)
@@ -435,6 +561,7 @@ class WipExpansionWindow(tk.Toplevel):
         self.tree_wip_list.column("surplus_qty", width=90, anchor=tk.E)
         self.tree_wip_list.column("status", width=90, anchor=tk.CENTER)
         self.tree_wip_list.column("created_at", width=140, anchor=tk.W)
+        self.tree_wip_list.column("excluded", width=70, anchor=tk.CENTER)
 
         vsb_wip = ttk.Scrollbar(right_frame, orient="vertical", command=self.tree_wip_list.yview)
         self.tree_wip_list.configure(yscrollcommand=vsb_wip.set)
@@ -443,9 +570,17 @@ class WipExpansionWindow(tk.Toplevel):
         self.tree_wip_list.configure(xscrollcommand=hsb_wip.set)
 
         # pack順序：ui.ng_input_window.py のNG一覧と同じ理由により、
-        # 「更新」ボタン→水平スクロールバーの順でside=tk.BOTTOMにpackする。
-        ttk.Button(right_frame, text="更新", command=self.load_wip_list).pack(
-            side=tk.BOTTOM, fill=tk.X, pady=(5, 0)
+        # ボタン行→水平スクロールバーの順でside=tk.BOTTOMにpackする。
+        wip_action_frame = ttk.Frame(right_frame)
+        wip_action_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(5, 0))
+        ttk.Button(wip_action_frame, text="更新", command=self.load_wip_list).pack(
+            side=tk.LEFT, expand=True, fill=tk.X
+        )
+        ttk.Button(wip_action_frame, text="対象外にする", command=self.on_mark_wip_excluded).pack(
+            side=tk.LEFT, expand=True, fill=tk.X, padx=(5, 0)
+        )
+        ttk.Button(wip_action_frame, text="対象外解除", command=self.on_unmark_wip_excluded).pack(
+            side=tk.LEFT, expand=True, fill=tk.X, padx=(5, 0)
         )
         hsb_wip.pack(side=tk.BOTTOM, fill=tk.X)
         vsb_wip.pack(side=tk.RIGHT, fill=tk.Y)
@@ -602,16 +737,27 @@ class WipExpansionWindow(tk.Toplevel):
         キー比較時、wip_board_snapshot.production_sideはTEXT列・
         wip_scrap_records.production_sideはINTEGER列と型が異なるため、
         str()で揃えてから比較する。
+
+        対象外マーク（models.wip_exclusion_list）：list_wip_exclusions()で全件を
+        取得し、(kitting_list_no, lot_no, file_no, production_side) キーで
+        突き合わせて「対象外」列を付与する。ui.ng_input_window._fetch_ng_list_rows()
+        と同じ方針で、対象外にした行も一覧からは除外せず「対象外」列で区別表示する
+        （一覧から消すと対象外にした事実・解除の導線が失われるため）。
         """
         confirmed_keys = {
             (s["kitting_list_no"], s["lot_no"] or "", str(s["production_side"]))
             for s in list_wip_scrap_summary()
+        }
+        excluded_keys = {
+            (e["kitting_list_no"], e["lot_no"] or "", e["file_no"], str(e["production_side"]))
+            for e in list_wip_exclusions()
         }
 
         rows = []
         for row in list_wip_snapshot():
             key = (row["kitting_list_no"], row["lot_no"] or "", str(row["production_side"]))
             status = "確定済み" if key in confirmed_keys else "未確定"
+            exclusion_key = (row["kitting_list_no"], row["lot_no"] or "", row["file_no"], str(row["production_side"]))
             rows.append((
                 row["kitting_list_no"],
                 row["board_name"],
@@ -622,6 +768,7 @@ class WipExpansionWindow(tk.Toplevel):
                 f"{row['surplus_qty']:g}",
                 status,
                 row["created_at"] or "",
+                "対象外" if exclusion_key in excluded_keys else "",
             ))
         return rows
 

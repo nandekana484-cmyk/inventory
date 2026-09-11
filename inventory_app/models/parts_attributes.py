@@ -6,16 +6,8 @@
 BOM TSVの係数が0かつRフラグがある行の qty 計算に丁取り数（teitori）を使う
 （qty = 部品員数 ÷ 丁取り数）。
 """
-import sqlite3
-
-import config
 from models.bom_master import invalidate_bom_master_by_part_no
-
-
-def get_connection():
-    con = sqlite3.connect(config.DB_PATH)
-    con.row_factory = sqlite3.Row
-    return con
+from models.db_common import get_connection
 
 
 def init_parts_attributes_table():

@@ -2,14 +2,8 @@ import os
 import sqlite3
 from datetime import datetime
 
-import config
+from models.db_common import get_connection
 from models.production import get_app_cumulative_qty_bulk
-
-
-def get_connection():
-    con = sqlite3.connect(config.DB_PATH)
-    con.row_factory = sqlite3.Row
-    return con
 
 
 def init_kitting_plan_tables():

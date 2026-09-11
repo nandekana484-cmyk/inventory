@@ -1,10 +1,13 @@
 # ui/inventory_input_window.py
 import csv
+import threading
+import queue
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
 from models.inventory import list_inventory, upsert_inventory, upsert_inventory_stock, delete_inventory
+from ui.loading_window import LoadingWindow
 
 # エンコーディング自動判定の候補（この順で試す）
 _ENCODINGS_TO_TRY = ["utf-8-sig", "utf-8", "cp932"]
@@ -143,7 +146,8 @@ class InventoryInputWindow(tk.Toplevel):
 
         ttk.Button(btn_frame, text="追加 / 更新", command=self.on_upsert).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="削除", command=self.on_delete).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="CSVインポート", command=self.on_csv_import).pack(side=tk.LEFT, padx=5)
+        self.btn_csv_import = ttk.Button(btn_frame, text="CSVインポート", command=self.on_csv_import)
+        self.btn_csv_import.pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="閉じる", command=self.destroy).pack(side=tk.RIGHT, padx=5)
 
         self.load_inventory()
@@ -206,24 +210,56 @@ class InventoryInputWindow(tk.Toplevel):
         """
         在庫CSV（96コード・部品種別・部品支給区分・棚種別・在庫数・マスタCHK使用数等の13列）を
         取り込み、models.inventory.upsert_inventory_stock() へ保存する。
+
+        ファイル選択（filedialog）はUIスレッドで同期的に行い、実際のCSV読み込み・
+        DB書き込み（_import_inventory_csv()、DB・ファイルアクセスのみでTkinterに
+        触れない）のみを別スレッドで実行する。ui.kitting_plan_import.
+        KittingPlanImportWindow.on_start_import()で確立済みのLoadingWindow＋
+        threading.Thread(daemon=True)＋queue.Queue＋self.after(200,...)ポーリング
+        パターンをそのまま踏襲する。
         """
         file_path = filedialog.askopenfilename(filetypes=[("CSV files", "*.csv"), ("All files", "*.*")], parent=self.winfo_toplevel())
         if not file_path:
             return
 
-        try:
-            result = _import_inventory_csv(file_path)
-        except ValueError as e:
-            messagebox.showerror("エラー", f"在庫CSV取込中にエラーが発生しました：\n{e}", parent=self.winfo_toplevel())
-            return
+        self.btn_csv_import.config(state=tk.DISABLED)
+        loading = LoadingWindow(self, message="在庫CSVを取り込んでいます…")
+        result_queue = queue.Queue()
 
-        self.load_inventory()
+        def _work():
+            try:
+                result_queue.put((True, _import_inventory_csv(file_path)))
+            except Exception as e:
+                result_queue.put((False, e))
 
-        msg = f"成功件数：{result['imported']}件\n警告件数：{len(result['warnings'])}件"
-        warnings = result["warnings"]
-        if warnings:
-            shown = "\n".join(warnings[:10])
-            more = f"\n...ほか{len(warnings) - 10}件" if len(warnings) > 10 else ""
-            msg += f"\n\n{shown}{more}"
+        threading.Thread(target=_work, daemon=True).start()
 
-        messagebox.showinfo("在庫CSV取込結果", msg, parent=self.winfo_toplevel())
+        def _poll():
+            try:
+                success, payload = result_queue.get_nowait()
+            except queue.Empty:
+                self.after(200, _poll)
+                return
+
+            loading.destroy()
+            self.btn_csv_import.config(state=tk.NORMAL)
+
+            if not success:
+                if isinstance(payload, ValueError):
+                    messagebox.showerror("エラー", f"在庫CSV取込中にエラーが発生しました：\n{payload}", parent=self.winfo_toplevel())
+                    return
+                raise payload
+
+            result = payload
+            self.load_inventory()
+
+            msg = f"成功件数：{result['imported']}件\n警告件数：{len(result['warnings'])}件"
+            warnings = result["warnings"]
+            if warnings:
+                shown = "\n".join(warnings[:10])
+                more = f"\n...ほか{len(warnings) - 10}件" if len(warnings) > 10 else ""
+                msg += f"\n\n{shown}{more}"
+
+            messagebox.showinfo("在庫CSV取込結果", msg, parent=self.winfo_toplevel())
+
+        self.after(200, _poll)

@@ -15,15 +15,7 @@ lot_noについて：実DBで同一kitting_list_noが複数の異なるlot_noに
 ケースが478件確認されているため、lot_no列を追加した（db/migration_010）。計画外
 （is_unplanned=1）の申告はlot_noを持たない（NULLのまま）。
 """
-import sqlite3
-
-import config
-
-
-def get_connection():
-    con = sqlite3.connect(config.DB_PATH)
-    con.row_factory = sqlite3.Row
-    return con
+from models.db_common import get_connection
 
 
 def init_ng_declarations_table():

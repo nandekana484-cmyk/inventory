@@ -1,5 +1,7 @@
 # ui/parts_attributes_import_window.py
 import csv
+import threading
+import queue
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -7,6 +9,7 @@ from tkinter import ttk, messagebox, filedialog
 from models.parts_attributes import (
     list_parts_attributes, upsert_parts_attributes, delete_parts_attributes_not_in,
 )
+from ui.loading_window import LoadingWindow
 
 # エンコーディング自動判定の候補（この順で試す）
 _ENCODINGS_TO_TRY = ["utf-8-sig", "utf-8", "cp932"]
@@ -156,7 +159,8 @@ class PartsAttributesImportWindow(tk.Toplevel):
         self.lbl_csv_path = ttk.Label(select_frame, text="（未選択）", foreground="blue")
         self.lbl_csv_path.pack(side=tk.LEFT, padx=5)
 
-        ttk.Button(select_frame, text="インポート実行", command=self.on_import_execute).pack(side=tk.LEFT, padx=15)
+        self.btn_import = ttk.Button(select_frame, text="インポート実行", command=self.on_import_execute)
+        self.btn_import.pack(side=tk.LEFT, padx=15)
 
         tree_frame = ttk.Frame(self, padding=10)
         tree_frame.pack(expand=True, fill=tk.BOTH)
@@ -208,23 +212,56 @@ class PartsAttributesImportWindow(tk.Toplevel):
         self.lbl_csv_path.config(text=file_path)
 
     def on_import_execute(self):
+        """
+        CSV読み込み・DB書き込み（_import_parts_attributes_csv()、DB・ファイル
+        アクセスのみでTkinterに触れない）を別スレッドで実行し、UIスレッドを
+        ブロックしないようにする。ui.kitting_plan_import.KittingPlanImportWindow.
+        on_start_import()で確立済みのLoadingWindow＋threading.Thread(daemon=True)＋
+        queue.Queue＋self.after(200,...)ポーリングパターンをそのまま踏襲する。
+        """
         if not self.selected_csv_path:
             messagebox.showwarning("警告", "CSVファイルを選択してください。", parent=self.winfo_toplevel())
             return
 
-        try:
-            result = _import_parts_attributes_csv(self.selected_csv_path)
-        except ValueError as e:
-            messagebox.showerror("エラー", f"部品属性CSV取込中にエラーが発生しました：\n{e}", parent=self.winfo_toplevel())
-            return
+        self.btn_import.config(state=tk.DISABLED)
+        loading = LoadingWindow(self, message="部品属性CSVを取り込んでいます…")
+        result_queue = queue.Queue()
+        file_path = self.selected_csv_path
 
-        self.load_parts_attributes()
+        def _work():
+            try:
+                result_queue.put((True, _import_parts_attributes_csv(file_path)))
+            except Exception as e:
+                result_queue.put((False, e))
 
-        msg = f"成功件数：{result['imported']}件\n警告件数：{len(result['warnings'])}件\n削除件数：{result.get('deleted', 0)}件"
-        warnings = result["warnings"]
-        if warnings:
-            shown = "\n".join(warnings[:10])
-            more = f"\n...ほか{len(warnings) - 10}件" if len(warnings) > 10 else ""
-            msg += f"\n\n{shown}{more}"
+        threading.Thread(target=_work, daemon=True).start()
 
-        messagebox.showinfo("部品属性CSV取込結果", msg, parent=self.winfo_toplevel())
+        def _poll():
+            try:
+                success, payload = result_queue.get_nowait()
+            except queue.Empty:
+                self.after(200, _poll)
+                return
+
+            loading.destroy()
+            self.btn_import.config(state=tk.NORMAL)
+
+            if not success:
+                if isinstance(payload, ValueError):
+                    messagebox.showerror("エラー", f"部品属性CSV取込中にエラーが発生しました：\n{payload}", parent=self.winfo_toplevel())
+                    return
+                raise payload
+
+            result = payload
+            self.load_parts_attributes()
+
+            msg = f"成功件数：{result['imported']}件\n警告件数：{len(result['warnings'])}件\n削除件数：{result.get('deleted', 0)}件"
+            warnings = result["warnings"]
+            if warnings:
+                shown = "\n".join(warnings[:10])
+                more = f"\n...ほか{len(warnings) - 10}件" if len(warnings) > 10 else ""
+                msg += f"\n\n{shown}{more}"
+
+            messagebox.showinfo("部品属性CSV取込結果", msg, parent=self.winfo_toplevel())
+
+        self.after(200, _poll)

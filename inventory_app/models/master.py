@@ -1,10 +1,4 @@
-﻿import sqlite3
-import config
-
-def get_connection():
-    con = sqlite3.connect(config.DB_PATH)
-    con.row_factory = sqlite3.Row
-    return con
+﻿from models.db_common import get_connection
 
 # --- 部品マスタ (parts) ---
 def get_all_parts():

@@ -1,8 +1,12 @@
 # ui/master_import_window.py
+import threading
+import queue
+
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
 from services.master_import_service import import_parts_csv
+from ui.loading_window import LoadingWindow
 
 
 class MasterImportWindow(tk.Toplevel):
@@ -46,7 +50,8 @@ class _BaseImportTab(ttk.Frame):
         self.lbl_csv_path = ttk.Label(select_frame, text="（未選択）", foreground="blue")
         self.lbl_csv_path.pack(side=tk.LEFT, padx=5)
 
-        ttk.Button(select_frame, text="インポート実行", command=self.on_import_execute).pack(side=tk.LEFT, padx=15)
+        self.btn_import = ttk.Button(select_frame, text="インポート実行", command=self.on_import_execute)
+        self.btn_import.pack(side=tk.LEFT, padx=15)
 
         tree_frame = ttk.Frame(self)
         tree_frame.pack(expand=True, fill=tk.BOTH)
@@ -75,26 +80,62 @@ class _BaseImportTab(ttk.Frame):
         raise NotImplementedError
 
     def on_import_execute(self):
+        """
+        run_import()（サブクラスがimport_parts_csv()等を呼ぶ、DB・ファイル
+        アクセスのみでTkinterに触れない）を別スレッドで実行し、UIスレッドを
+        ブロックしないようにする。ui.kitting_plan_import.KittingPlanImportWindow.
+        on_start_import()で確立済みのLoadingWindow＋threading.Thread(daemon=True)＋
+        queue.Queue＋self.after(200,...)ポーリングパターンをそのまま踏襲する。
+
+        _BaseImportTabの共通実装のため、ここを直すだけで現在の部品マスタ
+        インポートタブだけでなく、将来追加される全てのタブにも自動的に反映される。
+        """
         if not self.selected_csv_path:
             messagebox.showwarning("警告", "CSVファイルを選択してください。", parent=self.winfo_toplevel())
             return
 
-        try:
-            result = self.run_import()
-        except Exception as e:
-            messagebox.showerror("エラー", f"インポート処理中にエラーが発生しました：\n{e}", parent=self.winfo_toplevel())
-            return
+        self.btn_import.config(state=tk.DISABLED)
+        loading = LoadingWindow(self, message="CSVを取り込んでいます…")
+        result_queue = queue.Queue()
 
-        self.load_preview(result["rows"])
+        def _work():
+            try:
+                result_queue.put((True, self.run_import()))
+            except Exception as e:
+                result_queue.put((False, e))
 
-        msg = f"取込件数：{result['imported']}件"
-        warnings = result["warnings"]
-        if warnings:
-            shown = "\n".join(warnings[:10])
-            more = f"\n...ほか{len(warnings) - 10}件" if len(warnings) > 10 else ""
-            msg += f"\n\n警告（{len(warnings)}件）：\n{shown}{more}"
+        threading.Thread(target=_work, daemon=True).start()
 
-        messagebox.showinfo("インポート結果", msg, parent=self.winfo_toplevel())
+        def _poll():
+            try:
+                success, payload = result_queue.get_nowait()
+            except queue.Empty:
+                self.after(200, _poll)
+                return
+
+            loading.destroy()
+            self.btn_import.config(state=tk.NORMAL)
+
+            if not success:
+                # 元の実装もExceptionを広く捕捉していたため（列名ゆらぎ等、
+                # 様々な理由でrun_import()が失敗し得るため）、挙動を変えず
+                # 同じ文言でエラーダイアログを表示する。
+                messagebox.showerror("エラー", f"インポート処理中にエラーが発生しました：\n{payload}", parent=self.winfo_toplevel())
+                return
+
+            result = payload
+            self.load_preview(result["rows"])
+
+            msg = f"取込件数：{result['imported']}件"
+            warnings = result["warnings"]
+            if warnings:
+                shown = "\n".join(warnings[:10])
+                more = f"\n...ほか{len(warnings) - 10}件" if len(warnings) > 10 else ""
+                msg += f"\n\n警告（{len(warnings)}件）：\n{shown}{more}"
+
+            messagebox.showinfo("インポート結果", msg, parent=self.winfo_toplevel())
+
+        self.after(200, _poll)
 
 
 class PartsImportTab(_BaseImportTab):

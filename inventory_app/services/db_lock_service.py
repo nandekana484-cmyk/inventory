@@ -11,6 +11,21 @@ DBファイルと同じフォルダに `<DBファイル名>.lock` というJSON�
 「一定時間ハートビートが更新されなければ自動解除」という仕様のため、厳密な
 （TOCTOU競合を完全に排除した）排他制御ではない点に注意。1つのDBを複数PCが
 同時に開こうとする瞬間が完全に重ならない、という運用上の前提に立った簡易実装。
+
+書き込みの原子性について：ロックファイルへの書き込み（acquire_lock()・
+release_lock()の削除を除く・update_heartbeat()）は、いずれも一時ファイル
+（`<ロックファイル>.tmp`）へ書き込んでから`os.replace()`で本ファイルへ
+原子的に置き換える（_write_lock_atomic()参照）。直接本ファイルへ
+open()+書き込みする方式だと、書き込み途中でのプロセス強制終了・共有フォルダの
+瞬断により、ファイルが半端な内容のまま残る（壊れる）リスクがあるため。
+
+破損検知について：_read_lock()は、ロックファイルが存在するのに内容を正しく
+読み取れない場合（JSON不正・OSError）、Noneを返さずLockFileCorruptedErrorを
+送出する（「ロックが無い」＝取得可能、と誤認しないための「フェイルクローズ」
+設計）。ファイル自体が存在しない場合（初回利用・誤削除等）は、この関数の
+責務としては区別できないため、従来通り「ロック無し」としてNoneを返す
+（正当な初回利用のケースと誤削除のケースを見分ける手段が無いため。
+既存の運用を変えないための現状維持）。
 """
 import json
 import os
@@ -28,20 +43,66 @@ LOCK_STALE_SECONDS = 30 * 60  # 30分
 _owned_tokens = {}
 
 
+class LockFileCorruptedError(Exception):
+    """ロックファイルが存在するが、内容を正しく読み取れない（壊れている）ことを示す。"""
+
+
 def _lock_path(db_path: str) -> str:
     return db_path + ".lock"
 
 
 def _read_lock(db_path: str):
-    """ロックファイルの中身を辞書で返す。存在しない・壊れている場合はNone。"""
+    """
+    ロックファイルの中身を辞書で返す。
+
+    ファイルが存在しない場合はNone（「ロック無し」＝正当な状態）。
+    ファイルは存在するが内容を正しく読み取れない場合（JSON不正・OSError）は
+    LockFileCorruptedErrorを送出する（Noneを返す「フェイルオープン」にすると、
+    破損＝「ロック無し」と誤認して誰でも取得できてしまうため）。
+    """
     path = _lock_path(db_path)
     if not os.path.exists(path):
         return None
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except (OSError, ValueError):
-        return None
+    except (OSError, ValueError) as e:
+        raise LockFileCorruptedError(
+            f"ロックファイルの内容を読み取れません: {path}"
+        ) from e
+
+
+def _write_lock_atomic(db_path: str, info: dict) -> None:
+    """
+    ロックファイルへの原子的な書き込み。同じディレクトリ内の一時ファイル
+    （`<ロックファイル>.tmp`）へ書き込み・flush・fsyncした上で、os.replace()で
+    本ファイルへ置き換える。os.replace()はPOSIX・Windowsいずれでも単一の
+    原子的操作であるため、この置き換えの最中にプロセスが強制終了しても、
+    本ファイルは「置き換え前の古い内容のまま」か「置き換え後の新しい内容」の
+    いずれかであり、中途半端な内容になることはない。
+    """
+    lock_path = _lock_path(db_path)
+    lock_dir = os.path.dirname(lock_path)
+    if lock_dir:
+        os.makedirs(lock_dir, exist_ok=True)
+
+    tmp_path = lock_path + ".tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(info, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, lock_path)
+    except Exception:
+        # 一時ファイルへの書き込み・os.replace()自体が失敗した場合、ゴミとして
+        # 残った一時ファイルを可能な範囲で片付ける（本ファイルは触っていないため
+        # 無事なまま）。削除自体に失敗しても（別プロセスが触っている等）、
+        # 元の例外を優先してそのまま送出する。
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def _is_stale(info: dict) -> bool:
@@ -54,18 +115,28 @@ def _is_stale(info: dict) -> bool:
     return (datetime.now() - last_updated).total_seconds() >= LOCK_STALE_SECONDS
 
 
-def acquire_lock(db_path: str, worker_name: str, pc_name: str) -> bool:
+def acquire_lock(db_path: str, worker_name: str, pc_name: str, force: bool = False) -> bool:
     """
     db_path用のロックファイルの取得を試みる。
 
-    取得できる条件：
+    取得できる条件（force=Falseの通常時）：
       - ロックファイルが存在しない、または
       - 存在するが最終更新時刻からLOCK_STALE_SECONDS以上経過している（自動解除対象）。
     それ以外（他者が有効なロックを保持中）はFalseを返す。
+
+    ロックファイルが存在するが内容を読み取れない（壊れている）場合、
+    force=FalseならLockFileCorruptedErrorをそのまま送出する（自動では解除・
+    上書きしない。呼び出し元は、他の利用者が本当に使用中でないかをユーザーに
+    確認させた上で、force=Trueで再度呼び出すこと）。
+
+    force=Trueの場合、既存ロックの有効・無効・破損の有無を一切確認せず、
+    無条件に新しいロックで上書きする（「使用中でないことを確認した上での
+    強制取得」という明示的なユーザー操作専用。自動リトライ等から呼ばないこと）。
     """
-    existing = _read_lock(db_path)
-    if existing is not None and not _is_stale(existing):
-        return False
+    if not force:
+        existing = _read_lock(db_path)
+        if existing is not None and not _is_stale(existing):
+            return False
 
     token = uuid.uuid4().hex
     now = datetime.now().isoformat()
@@ -77,12 +148,7 @@ def acquire_lock(db_path: str, worker_name: str, pc_name: str) -> bool:
         "token": token,
     }
 
-    lock_dir = os.path.dirname(db_path)
-    if lock_dir:
-        os.makedirs(lock_dir, exist_ok=True)
-
-    with open(_lock_path(db_path), "w", encoding="utf-8") as f:
-        json.dump(new_info, f, ensure_ascii=False, indent=2)
+    _write_lock_atomic(db_path, new_info)
 
     _owned_tokens[db_path] = token
     return True
@@ -96,12 +162,22 @@ def release_lock(db_path: str) -> None:
     記録されたトークンとロックファイルの中身が一致する場合）のみ削除する。
     既に他者が上書き・再取得している場合や、そもそも自分が取得していない
     場合は何もしない。
+
+    ロックファイルが壊れていて読み取れない場合（LockFileCorruptedError）も、
+    自分のトークンと一致するか確認できない以上、安全側に倒して削除しない
+    （壊れたファイルの後始末はユーザーの明示操作＝次回acquire_lock(force=True)
+    に委ねる）。
     """
     token = _owned_tokens.get(db_path)
     if token is None:
         return
 
-    current = _read_lock(db_path)
+    try:
+        current = _read_lock(db_path)
+    except LockFileCorruptedError:
+        _owned_tokens.pop(db_path, None)
+        return
+
     if current is not None and current.get("token") == token:
         try:
             os.remove(_lock_path(db_path))
@@ -116,19 +192,25 @@ def update_heartbeat(db_path: str) -> None:
     自分が保持しているロックの最終更新時刻を現在時刻に更新する（生存確認）。
 
     自分が取得したロックでなくなっている場合（他者が既に上書きした等）は
-    何もしない。
+    何もしない。ロックファイルが壊れていて読み取れない場合
+    （LockFileCorruptedError）も同様に何もしない（バックグラウンドの定期処理
+    のため、ここではユーザーに確認を求めず静かに諦める。次回のハートビートや、
+    ユーザーによる明示的な再取得操作に委ねる）。
     """
     token = _owned_tokens.get(db_path)
     if token is None:
         return
 
-    current = _read_lock(db_path)
+    try:
+        current = _read_lock(db_path)
+    except LockFileCorruptedError:
+        return
+
     if current is None or current.get("token") != token:
         return
 
     current["last_updated"] = datetime.now().isoformat()
-    with open(_lock_path(db_path), "w", encoding="utf-8") as f:
-        json.dump(current, f, ensure_ascii=False, indent=2)
+    _write_lock_atomic(db_path, current)
 
 
 def get_lock_info(db_path: str):
@@ -137,9 +219,14 @@ def get_lock_info(db_path: str):
     辞書で返す。ロックファイルが無い・壊れている場合はNone。
 
     acquire_lock()が失敗した際に「誰が使用中か」をユーザーに表示する用途。
-    内部管理用のtokenは含めない。
+    内部管理用のtokenは含めない。壊れている場合にNoneを返す（例外を送出しない）
+    のは、この関数自体は「表示できる情報が無い」ことを伝えるための補助関数であり、
+    破損の検知・ユーザーへの警告はacquire_lock()側の責務とするため。
     """
-    info = _read_lock(db_path)
+    try:
+        info = _read_lock(db_path)
+    except LockFileCorruptedError:
+        return None
     if info is None:
         return None
     return {

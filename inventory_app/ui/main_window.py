@@ -7,7 +7,9 @@ from tkinter import ttk, messagebox, filedialog
 import config
 from db.init_db import init_database_at
 from models.kitting_plan import init_kitting_plan_tables
-from services.db_lock_service import acquire_lock, release_lock, update_heartbeat, get_lock_info
+from services.db_lock_service import (
+    acquire_lock, release_lock, update_heartbeat, get_lock_info, LockFileCorruptedError,
+)
 from ui.master_management import MasterManagementWindow
 from ui.kitting_plan_import import KittingPlanImportWindow
 from ui.kitting_production_entry import KittingProductionEntryWindow
@@ -22,6 +24,7 @@ from ui.board_structure_import_window import BoardStructureImportWindow
 from ui.wip_expansion_window import WipExpansionWindow
 from ui.worker_management_window import WorkerManagementWindow
 from services.db_migration_carryover import carry_over_incomplete_lots
+from services.unprocessed_check_service import check_unprocessed_items
 
 
 class MainWindow(tk.Tk):
@@ -36,7 +39,7 @@ class MainWindow(tk.Tk):
         # 使用中とみなしてここで起動を中断する（以降のUI構築は行わない）。
         # LoginWindow側は self.winfo_exists() を見てから mainloop() を呼ぶ想定
         # （destroy済みのTkルートでmainloop()を呼ばないようにするため）。
-        if not acquire_lock(config.DB_PATH, self._worker_name, self._pc_name):
+        if not self._acquire_lock_with_corruption_handling(config.DB_PATH):
             messagebox.showerror(
                 "データベース使用中",
                 "このデータベースは他の利用者が使用中のため起動できません。\n\n"
@@ -255,6 +258,35 @@ class MainWindow(tk.Tk):
         # LOCK_STALE_SECONDS（30分）以上更新が無いロックとして自動解除されるのを防ぐ。
         self.after(300000, self._heartbeat)
 
+    def _acquire_lock_with_corruption_handling(self, db_path: str) -> bool:
+        """
+        services.db_lock_service.acquire_lock()のラッパー。
+
+        ロックファイルが壊れていて読み取れない場合（LockFileCorruptedError）、
+        自動では解除・上書きしない。「他の利用者が本当に使用中でないか確認した
+        上で、強制的にロックを取得するか」をユーザーに確認するダイアログを表示し、
+        「はい」が選ばれた場合のみforce=Trueで再取得する（誤って他者の使用中の
+        ロックを奪わないよう、確認なしの自動上書きは行わない）。
+
+        戻り値：取得できたか。他者が有効なロックを保持中で取得できない
+        （破損とは無関係の）通常の失敗はFalseを返す。呼び出し元は従来通り、
+        Falseの場合にget_lock_info()で使用者情報を表示すればよい。
+        """
+        try:
+            return acquire_lock(db_path, self._worker_name, self._pc_name)
+        except LockFileCorruptedError:
+            force = messagebox.askyesno(
+                "ロックファイル異常",
+                "ロックファイルの状態が不正です（内容を正しく読み取れません）。\n"
+                "他の利用者が本当に使用中でないか、必ず確認してから続行してください。\n\n"
+                "使用中でないことを確認した上で、強制的にロックを取得しますか？",
+                icon="warning",
+                parent=self.winfo_toplevel(),
+            )
+            if not force:
+                return False
+            return acquire_lock(db_path, self._worker_name, self._pc_name, force=True)
+
     @staticmethod
     def _format_lock_info(info) -> str:
         if not info:
@@ -425,6 +457,42 @@ class MainWindow(tk.Tk):
         )
 
     def open_inventory_diff(self):
+        """
+        在庫差異レポートを開く前に、NG一覧（ui.ng_input_window）・仕掛一覧
+        （ui.wip_expansion_window）に未処理（未展開/未確定、かつ対象外指定
+        されていない）項目が残っていないか確認する
+        （services.unprocessed_check_service.check_unprocessed_items()）。
+
+        1件以上あれば確認ダイアログを表示する。強制ブロックはせず、あくまで
+        注意喚起として実装する（「はい」を選べば従来通りレポートを開ける）。
+        「いいえ」の場合はレポートを開かず、どちらの画面で確認すべきかを
+        案内するメッセージを表示する。
+        """
+        result = check_unprocessed_items()
+        ng_count = result["ng_unprocessed_count"]
+        wip_count = result["wip_unprocessed_count"]
+
+        if ng_count or wip_count:
+            lines = []
+            if ng_count:
+                lines.append(f"・NG一覧に未展開のNG報告が{ng_count}件")
+            if wip_count:
+                lines.append(f"・仕掛一覧に未確定の仕掛が{wip_count}件")
+
+            if not messagebox.askyesno(
+                "未処理項目の確認",
+                "\n".join(lines) + "あります。\n"
+                "対応するか、対象外に指定してから作成してください。\n"
+                "それでも作成しますか？",
+                parent=self,
+            ):
+                messagebox.showinfo(
+                    "在庫差異レポート",
+                    "NG一覧・仕掛一覧で未処理項目を確認してから、改めて作成してください。",
+                    parent=self,
+                )
+                return
+
         self._open_singleton_window("inventory_diff", lambda: InventoryDiffWindow(self))
 
     def open_master_import(self):
@@ -499,7 +567,7 @@ class MainWindow(tk.Tk):
         失敗時（他者が有効なロックを保持中）はエラーダイアログで使用者情報を
         表示してFalseを返す。呼び出し元はこれ以上処理を進めないこと。
         """
-        if not acquire_lock(new_path, self._worker_name, self._pc_name):
+        if not self._acquire_lock_with_corruption_handling(new_path):
             messagebox.showerror(
                 error_title,
                 "このデータベースは他の利用者が使用中です。\n\n"
@@ -633,7 +701,7 @@ class MainWindow(tk.Tk):
         # 新DBは直前にinit_database_at()で作成したばかりのフォルダのため、通常は
         # ロック取得に失敗することはないが、念のため他パスと同様に確認する
         # （万一失敗した場合、新DBファイル自体は作成済みだが未使用のまま残る）。
-        if not acquire_lock(new_db_path, self._worker_name, self._pc_name):
+        if not self._acquire_lock_with_corruption_handling(new_db_path):
             messagebox.showerror(
                 "作成不可",
                 "新しいデータベースは既に他の利用者が使用中です。\n\n"
@@ -693,12 +761,18 @@ class MainWindow(tk.Tk):
         if success:
             summary = payload["summary"]
             folder_name = payload["folder"]
+            failed_lot_nos = summary.get("failed_lot_nos") or []
+            skipped_lot_nos = summary.get("skipped_lot_nos") or []
+
             msg = (
                 "新しいデータベースを作成しました。\n"
                 f"未完了ロット {summary['lots_copied']}件・"
                 f"計画行 {summary['kitting_plan_items_copied']}件・"
                 f"実績 {summary['production_daily_copied']}件を引き継ぎました。"
             )
+
+            if skipped_lot_nos:
+                msg += f"\n（前回までに引き継ぎ済みのため {len(skipped_lot_nos)}件をスキップしました）"
 
             duplicate_warnings = summary.get("duplicate_lot_warnings") or []
             if duplicate_warnings:
@@ -719,7 +793,21 @@ class MainWindow(tk.Tk):
                     "混同されていないか確認してください。\n" + "\n".join(lines) + more
                 )
 
-            messagebox.showinfo("完了", msg, parent=self.winfo_toplevel())
+            if failed_lot_nos:
+                lines = [
+                    f"・{f['lot_no']}：{f['error']}"
+                    for f in failed_lot_nos[:10]
+                ]
+                more = f"\n...ほか{len(failed_lot_nos) - 10}件" if len(failed_lot_nos) > 10 else ""
+                msg += (
+                    f"\n\n※ 一部のロットの引き継ぎに失敗しました（{len(failed_lot_nos)}件）。\n"
+                    + "\n".join(lines) + more
+                    + "\n\nもう一度「前月から未完了分を引き継ぐ」を実行すると、"
+                    "既に成功した分はスキップされ、失敗した分だけ再試行されます。"
+                )
+                messagebox.showwarning("一部失敗", msg, parent=self.winfo_toplevel())
+            else:
+                messagebox.showinfo("完了", msg, parent=self.winfo_toplevel())
         else:
             # payload（失敗時）は例外メッセージ文字列のため、フォルダ名は
             # 入力欄からそのまま取る（クリアはこの後まとめて行う）。

@@ -5,16 +5,9 @@ BOM基盤用のDBアクセス層。
 共有フォルダのTSVから計算したBOM（file_no・面・96コード単位の構成数）を
 月（data_ym）単位でキャッシュ保存し、以降は再計算せずDBから取得できるようにする。
 """
-import sqlite3
 from datetime import datetime
 
-import config
-
-
-def get_connection():
-    con = sqlite3.connect(config.DB_PATH)
-    con.row_factory = sqlite3.Row
-    return con
+from models.db_common import get_connection
 
 
 def init_bom_master_table():

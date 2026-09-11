@@ -1,12 +1,5 @@
 # models/theoretical_inventory.py
-import sqlite3
-import config
-
-
-def get_connection():
-    con = sqlite3.connect(config.DB_PATH)
-    con.row_factory = sqlite3.Row
-    return con
+from models.db_common import get_connection
 
 
 def init_theoretical_inventory_table():

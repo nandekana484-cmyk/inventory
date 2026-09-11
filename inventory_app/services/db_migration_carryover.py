@@ -33,7 +33,9 @@ from models.kitting_plan import (
     get_connection as get_plan_connection, create_plan_batch, create_plan_version,
     init_kitting_plan_tables,
 )
-from models.production import get_connection as get_production_connection, replace_daily_result
+from models.production import (
+    get_connection as get_production_connection, replace_daily_result, init_production_table,
+)
 from services.production_service import list_incomplete_lots
 
 # plan_start_datetimeの実データ形式（"YYYY/MM/DD HH:MM:SS"、スラッシュ区切り＋時刻付き。
@@ -166,6 +168,63 @@ def _check_lot_no_duplicate(lot_no: str, old_plan_start_datetimes: list) -> dict
     return None
 
 
+def _lot_already_migrated(lot_no: str, plan_items: list, production_rows: list) -> bool:
+    """
+    新DB側（書き込み先）に、このlot_noの計画・実績が前回の実行で既に完全に
+    コピー済みかどうかを判定する。carry_over_incomplete_lots()の再実行時に、
+    前回既に成功したlotを二重に処理しない（版だけが無駄に積み重なる、
+    または再コピーで時間を浪費する）ためのスキップ判定に使う。
+
+    「完全にコピー済み」の判定基準（いずれも満たす場合のみTrue）：
+      - 旧DB側の対象kitting_list_no全てについて、新DB側に同じkitting_list_no・
+        lot_noの組み合わせでアクティブな計画行（is_active=1）が存在すること。
+      - production_daily側でコピー対象だった各kitting_list_noについても、
+        新DB側に同じkitting_list_no・lot_noの実績行が存在すること。
+    いずれか1つでも欠けていれば「未完了（前回途中で失敗した）」とみなしFalseを返す
+    （呼び出し元は続きから処理させる。create_plan_version()はkitting_list_no・
+    lot_no単位で旧バージョンを無効化してから新バージョンを追加する設計のため、
+    既に存在する項目を再度処理しても二重登録＝複数アクティブ行にはならないが、
+    無駄なバージョン増加・再コピーを避けるため、完全に完了しているlotは
+    このチェックで事前にスキップする）。
+
+    plan_itemsが空（該当lotに計画行が無い異常系）の場合は、判定材料が無いため
+    安全側に倒してFalse（スキップしない＝通常通り処理させる）を返す。
+    """
+    if not plan_items:
+        return False
+
+    # 新DBがまだ一度もcreate_plan_batch()等を呼ばれていない真っさらな状態だと
+    # kitting_plan_items／production_dailyテーブル自体が存在しないため、
+    # _fetch_existing_plan_start_datetimes_for_lot()と同様に事前に存在を保証する。
+    init_kitting_plan_tables()
+    init_production_table()
+
+    with get_plan_connection() as con:
+        for item in plan_items:
+            row = con.execute("""
+                SELECT 1 FROM kitting_plan_items
+                WHERE kitting_list_no = ? AND COALESCE(lot_no, '') = ?
+                  AND COALESCE(is_active, 1) = 1
+                LIMIT 1
+            """, (item["kitting_list_no"], lot_no)).fetchone()
+            if row is None:
+                return False
+
+    if production_rows:
+        expected_kitting_list_nos = {row["kitting_list_no"] for row in production_rows}
+        with get_production_connection() as con:
+            for kitting_list_no in expected_kitting_list_nos:
+                row = con.execute("""
+                    SELECT 1 FROM production_daily
+                    WHERE kitting_list_no = ? AND COALESCE(lot_id, '') = COALESCE(?, '')
+                    LIMIT 1
+                """, (kitting_list_no, lot_no)).fetchone()
+                if row is None:
+                    return False
+
+    return True
+
+
 def _fetch_production_daily_for_lot(lot_no: str, kitting_list_nos: list) -> list:
     """
     指定lot_noに属するkitting_list_no一覧（list_incomplete_lots()の
@@ -234,11 +293,36 @@ def carry_over_incomplete_lots(old_db_path: str, new_db_path: str, imported_by: 
     scrap_records・ng_declarations・wip_board_snapshotはコピーしない
     （モジュールdocstring参照）。
 
+    途中でのエラー・再実行について：
+    lot_noごとの書き込み処理は個別にtry/exceptで捕捉する。あるlot_noの処理中に
+    例外が発生した場合、その例外を外へ伝播させず（呼び出し元にトレースバックの
+    ままアプリを止めさせず）、"failed_lot_nos"に記録した上で、以降の未処理lot
+    （まだ着手していないもの）も「前段の失敗により未処理」として同じく
+    "failed_lot_nos"に記録し、そこで処理を打ち切る（同じ失敗が続く可能性が高い
+    状況で残りのlotを闇雲に試行し続けても無意味なため）。それまでに成功していた
+    lot_noは"lot_nos"にそのまま残り、ロールバックはしない（新DB側は既に
+    commit済みのため）。
+
+    本関数を同じ引数（old_db_path・new_db_path）でもう一度呼び直せば、
+    "続きから"処理できる：各lot_noについて、新DB側に計画・実績が既に完全に
+    コピー済みであれば_lot_already_migrated()がTrueを返し、"skipped_lot_nos"に
+    記録してそのlotの書き込み処理自体をスキップする（二重登録を避ける。
+    create_plan_version()自体もkitting_list_no・lot_no単位で旧バージョンを
+    無効化してから新バージョンを追加する設計のため、仮にスキップせず再処理
+    しても複数のアクティブ行が並立することはないが、無駄なバージョン増加・
+    再コピーを避けるためにここで事前にスキップする）。前回失敗した/未着手だった
+    lotは通常通り処理される。
+
     戻り値：{
-        "lots_copied": int,                  # コピーしたlot_no件数
-        "kitting_plan_items_copied": int,    # コピーしたkitting_plan_items行数
-        "production_daily_copied": int,      # コピーしたproduction_daily行数
-        "lot_nos": [lot_no, ...],            # コピーしたlot_noの一覧
+        "lots_copied": int,                  # 今回の呼び出しで新規にコピーしたlot_no件数
+        "kitting_plan_items_copied": int,    # 今回コピーしたkitting_plan_items行数
+        "production_daily_copied": int,      # 今回コピーしたproduction_daily行数
+        "lot_nos": [lot_no, ...],            # 今回新規にコピーしたlot_noの一覧
+        "skipped_lot_nos": [lot_no, ...],    # 前回までに完了済みのためスキップしたlot_no
+        "failed_lot_nos": [                   # 失敗した（前段の失敗で未処理になったものを含む）lot_no
+            {"lot_no": str, "error": str},
+            ...
+        ],
         "duplicate_lot_warnings": [           # ロットNo重複の疑いがあったlot_no一覧
             {"lot_no": str, "reason": "suspected_duplicate" | "undetermined",
              "old_plan_start_datetime": str または None,
@@ -267,39 +351,55 @@ def carry_over_incomplete_lots(old_db_path: str, new_db_path: str, imported_by: 
         "kitting_plan_items_copied": 0,
         "production_daily_copied": 0,
         "lot_nos": [],
+        "skipped_lot_nos": [],
+        "failed_lot_nos": [],
         "duplicate_lot_warnings": [],
     }
 
     source_label = f"carry_over:{os.path.basename(os.path.dirname(old_db_path)) or old_db_path}"
 
-    for lot, plan_items, production_rows in lots_data:
-        # create_plan_version()で新DBへ書き込む前に、新DB側の既存状態に対して
-        # ロットNo重複チェックを行う（このlot自身の書き込みで状態が変わる前に
-        # 確認する必要があるため、create_plan_batch()より前で行う）。
-        old_plan_start_datetimes = [item.get("plan_start_datetime") for item in plan_items]
-        duplicate_check = _check_lot_no_duplicate(lot["lot_no"], old_plan_start_datetimes)
-        if duplicate_check is not None:
-            summary["duplicate_lot_warnings"].append({"lot_no": lot["lot_no"], **duplicate_check})
+    for idx, (lot, plan_items, production_rows) in enumerate(lots_data):
+        lot_no = lot["lot_no"]
+        try:
+            if _lot_already_migrated(lot_no, plan_items, production_rows):
+                summary["skipped_lot_nos"].append(lot_no)
+                continue
 
-        batch_id = create_plan_batch(source_label, imported_by, len(plan_items))
+            # create_plan_version()で新DBへ書き込む前に、新DB側の既存状態に対して
+            # ロットNo重複チェックを行う（このlot自身の書き込みで状態が変わる前に
+            # 確認する必要があるため、create_plan_batch()より前で行う）。
+            old_plan_start_datetimes = [item.get("plan_start_datetime") for item in plan_items]
+            duplicate_check = _check_lot_no_duplicate(lot_no, old_plan_start_datetimes)
+            if duplicate_check is not None:
+                summary["duplicate_lot_warnings"].append({"lot_no": lot_no, **duplicate_check})
 
-        kitting_list_no_to_new_plan_item_id = {}
-        for item in plan_items:
-            new_plan_item_id = create_plan_version(
-                batch_id, item["kitting_list_no"], dict(item), created_by=item.get("created_by"),
-            )
-            kitting_list_no_to_new_plan_item_id[item["kitting_list_no"]] = new_plan_item_id
-            summary["kitting_plan_items_copied"] += 1
+            batch_id = create_plan_batch(source_label, imported_by, len(plan_items))
 
-        for row in production_rows:
-            new_plan_item_id = kitting_list_no_to_new_plan_item_id.get(row["kitting_list_no"])
-            replace_daily_result(
-                new_plan_item_id, row["kitting_list_no"], row["lot_id"], row["group_id"],
-                row["report_date"], row["daily_qty"], row["worker_id"],
-            )
-            summary["production_daily_copied"] += 1
+            kitting_list_no_to_new_plan_item_id = {}
+            for item in plan_items:
+                new_plan_item_id = create_plan_version(
+                    batch_id, item["kitting_list_no"], dict(item), created_by=item.get("created_by"),
+                )
+                kitting_list_no_to_new_plan_item_id[item["kitting_list_no"]] = new_plan_item_id
+                summary["kitting_plan_items_copied"] += 1
 
-        summary["lots_copied"] += 1
-        summary["lot_nos"].append(lot["lot_no"])
+            for row in production_rows:
+                new_plan_item_id = kitting_list_no_to_new_plan_item_id.get(row["kitting_list_no"])
+                replace_daily_result(
+                    new_plan_item_id, row["kitting_list_no"], row["lot_id"], row["group_id"],
+                    row["report_date"], row["daily_qty"], row["worker_id"],
+                )
+                summary["production_daily_copied"] += 1
+
+            summary["lots_copied"] += 1
+            summary["lot_nos"].append(lot_no)
+        except Exception as e:
+            summary["failed_lot_nos"].append({"lot_no": lot_no, "error": str(e)})
+            for remaining_lot, _remaining_items, _remaining_rows in lots_data[idx + 1:]:
+                summary["failed_lot_nos"].append({
+                    "lot_no": remaining_lot["lot_no"],
+                    "error": "前段のロットの失敗により未処理のまま処理を打ち切りました。",
+                })
+            break
 
     return summary
