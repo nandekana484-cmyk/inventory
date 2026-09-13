@@ -48,6 +48,19 @@ def list_inventory():
         return [dict(row) for row in cur.fetchall()]
 
 
+def list_inventory_part_nos() -> set:
+    """
+    inventory_stockに登録されている96コード（part_no）の一覧を集合で返す。
+    part_noはテーブルのPRIMARY KEYのため元々重複が無く、改めてDISTINCTする
+    必要はない。services.pdf_ocr_service.match_against_inventory()が、
+    PDFから抽出した96コードとの照合に使う。
+    """
+    init_inventory_stock_table()
+    with get_connection() as con:
+        cur = con.execute("SELECT part_no FROM inventory_stock")
+        return {row["part_no"] for row in cur.fetchall()}
+
+
 def get_inventory(part_no: str):
     """指定 part_no の在庫情報を取得する。存在しなければ None を返す。"""
     init_inventory_stock_table()

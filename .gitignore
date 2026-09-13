@@ -22,5 +22,8 @@ venv/
 # Node（もし存在する場合）
 node_modules/
 
+# Tesseract OCR言語データ（開発環境ごとに個別インストール、容量が大きくGit管理しない）
+inventory_app/tessdata_local/
+
 # Python ソースコードはすべて追跡対象
 !*.py

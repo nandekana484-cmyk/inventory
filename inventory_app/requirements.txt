@@ -19,3 +19,15 @@ python-dotenv>=1.0.0
 
 # ビルド・配布
 pyinstaller>=5.13.0
+
+# PDF読み取り・OCR（PDF→CSV変換機能）
+# 実行にはOS側にTesseract OCR本体（日本語データjpn.traineddata含む）と
+# Poppler（pdftoppm等）が別途インストールされている必要がある。
+# config.py の TESSERACT_CMD・TESSDATA_DIR・POPPLER_PATH参照。
+pdfplumber>=0.11.0
+pytesseract>=0.3.10
+pdf2image>=1.17.0
+
+# OCR前処理（画像の傾き補正・コントラスト強調・ノイズ除去）
+# GUI機能（imshow等）は使わないため、依存の軽いheadless版を採用。
+opencv-python-headless>=4.9.0

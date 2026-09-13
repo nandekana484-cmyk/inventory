@@ -203,6 +203,17 @@ class MainWindow(tk.Tk):
         )
         btn_inventory_diff.pack(fill=tk.X, pady=5)
 
+        # PDFから読み取った96コード一覧をinventory_stockと照合し、当部署の
+        # 部品だけを抽出する機能。既存の月次データ項目（1〜7）は番号が既に
+        # ドキュメント・利用者に定着しているため、割り込ませて振り直すのではなく
+        # 末尾に追加する形にした（在庫値入力・在庫値出力と同じinventory_stockを
+        # 扱う点では関連が深いが、月をまたいで使い回すマスタ的な性質ではなく
+        # 都度のPDF取込という運用データのため、共通マスタ側ではなくこちらに配置）。
+        btn_pdf_ocr_import = ttk.Button(
+            monthly_frame, text="8. PDF読み取り（在庫照合）", command=self.open_pdf_ocr_import
+        )
+        btn_pdf_ocr_import.pack(fill=tk.X, pady=5)
+
         ttk.Label(master_frame, text="共通マスタ", font=("Helvetica", 11, "bold")).pack(anchor=tk.W, pady=(0, 5))
 
         btn_board_structure_import = ttk.Button(
@@ -246,6 +257,7 @@ class MainWindow(tk.Tk):
             self.btn_open_shared_database, self.btn_create_shared_database,
             btn_kitting_import, btn_kitting_production, btn_inventory_input,
             btn_theoretical_import, btn_inventory_diff, btn_ng_input, btn_wip_expansion,
+            btn_pdf_ocr_import,
             btn_master, btn_master_import, btn_parts_attributes_import,
             btn_worker_management, btn_board_structure_import, btn_logout,
         ]
@@ -503,6 +515,11 @@ class MainWindow(tk.Tk):
 
     def open_wip_expansion(self):
         self._open_singleton_window("wip_expansion", lambda: WipExpansionWindow(self, self.current_worker))
+
+    def open_pdf_ocr_import(self):
+        """循環import回避のため、ここで都度importする。"""
+        from ui.pdf_ocr_import_window import PdfOcrImportWindow
+        self._open_singleton_window("pdf_ocr_import", lambda: PdfOcrImportWindow(self))
 
     def open_parts_attributes_import(self):
         self._open_singleton_window(
