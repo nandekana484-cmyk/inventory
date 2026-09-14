@@ -119,25 +119,72 @@ def replace_scrap_records(kitting_list_no: str, file_no: str, side: int, records
         con.commit()
 
 
-def list_scrap_records_by_kitting_no(kitting_list_no: str, lot_no: str = None) -> list:
+def list_scrap_records_by_kitting_no(kitting_list_no: str, lot_no: str = None,
+                                       production_side: int = None) -> list:
     """
-    指定キッティングリストNo.・lot_noのNG実績履歴を取得する。lot_noは常に条件に
-    含める（COALESCE(...,'')比較のため、計画外＝lot_no=Noneの場合はlot_no=NULLの
-    レコードのみが対象になる。「lot_no未指定で全件」という抜け道は用意しない）。
+    指定キッティングリストNo.・lot_no（・省略可のproduction_side）のNG実績履歴を
+    96コード単位の明細行（idを含む、個別行の修正・削除の対象特定用）として取得する。
+    lot_noは常に条件に含める（COALESCE(...,'')比較のため、計画外＝lot_no=Noneの
+    場合はlot_no=NULLのレコードのみが対象になる。「lot_no未指定で全件」という抜け道は
+    用意しない）。
 
     ui.ng_input_window.on_register() が、置き換え対象となる既存レコードの有無・件数を
     確認する（上書き確認ダイアログを出すかどうかの判定）ために使う。lot_noを渡さないと
     別ロットの既存レコードまで「既存あり」として拾ってしまい、実際には削除されない
     レコードに基づいて確認ダイアログを出してしまう。
+
+    production_side：省略時（None）は従来通り両面分をまとめて返す（on_register()の
+    既存呼び出しへの影響を避けるため、追加時にデフォルト値をNoneとした）。値を渡すと
+    その面のみに絞り込む（1件の行を個別に修正・削除する画面等、面単位で明細を
+    特定したい呼び出し元向け）。
     """
     init_scrap_records_table()
     with get_connection() as con:
-        cur = con.execute("""
-            SELECT * FROM scrap_records
-            WHERE kitting_list_no = ? AND COALESCE(lot_no, '') = COALESCE(?, '')
-            ORDER BY report_date, id
-        """, (kitting_list_no, lot_no))
+        if production_side is None:
+            cur = con.execute("""
+                SELECT * FROM scrap_records
+                WHERE kitting_list_no = ? AND COALESCE(lot_no, '') = COALESCE(?, '')
+                ORDER BY report_date, id
+            """, (kitting_list_no, lot_no))
+        else:
+            cur = con.execute("""
+                SELECT * FROM scrap_records
+                WHERE kitting_list_no = ? AND COALESCE(lot_no, '') = COALESCE(?, '')
+                  AND production_side = ?
+                ORDER BY report_date, id
+            """, (kitting_list_no, lot_no, production_side))
         return [dict(row) for row in cur.fetchall()]
+
+
+def update_scrap_record(id: int, qty: float):
+    """
+    scrap_records 1件（id指定）のng_qty（消費数量）のみを修正する。
+    models.production.update_daily_production()（ui.kitting_production_entry.
+    ActualCorrectionWindow が使う、単一行を主キー指定で直接UPDATEする関数）と
+    同じ設計・同じ単純さ（対象行の存在確認は行わず、該当idが無ければ0件更新のまま
+    何も起きない。呼び出し元が一覧から選択した既存行のidを渡す前提のため）。
+
+    グループ単位の洗い替えであるreplace_scrap_records()とは独立した経路。
+    replace_scrap_records()は「kitting_list_no・lot_no・production_side」単位で
+    対象行を全削除してから再登録するため、そのグループに対してreplace_scrap_records()
+    が後から呼ばれると、本関数でのid単位の修正は（同じ行のidごと）消えて上書きされる
+    点に注意（NG入力画面から同じ計画を再展開・再登録した場合等）。
+    """
+    init_scrap_records_table()
+    with get_connection() as con:
+        con.execute("UPDATE scrap_records SET ng_qty = ? WHERE id = ?", (qty, id))
+        con.commit()
+
+
+def delete_scrap_record(id: int):
+    """
+    scrap_records 1件（id指定）を削除する。update_scrap_record()と同じく
+    models.production.delete_daily_production()と同じ設計・同じ単純さ。
+    """
+    init_scrap_records_table()
+    with get_connection() as con:
+        con.execute("DELETE FROM scrap_records WHERE id = ?", (id,))
+        con.commit()
 
 
 def list_scrap_summary_by_kitting_no() -> list:

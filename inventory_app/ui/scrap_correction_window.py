@@ -1,0 +1,145 @@
+# ui/scrap_correction_window.py
+import tkinter as tk
+from tkinter import ttk, messagebox
+
+from models.scrap_records import (
+    list_scrap_records_by_kitting_no, update_scrap_record, delete_scrap_record,
+)
+
+
+class ScrapCorrectionWindow(tk.Toplevel):
+    """
+    NG（仕損）実績（models.scrap_records）を96コード単位の明細行で個別に
+    修正・削除するためのウィンドウ。
+
+    ui.kitting_production_entry.ActualCorrectionWindow（production_dailyの
+    個別修正画面）と同じ設計・同じ構造を踏襲する：対象の明細一覧をTreeviewで
+    表示→行を選択→数量修正または削除→即座にUPDATE/DELETE（models.scrap_records.
+    update_scrap_record()/delete_scrap_record()、いずれも対象行の存在確認をしない
+    単純な主キー指定UPDATE/DELETE）。
+
+    ui.ng_input_window.NgInputWindow のNG一覧から、選択中の行
+    （kitting_list_no・lot_no・production_side）を指定して開く。
+
+    注意：scrap_recordsは、NG入力画面の「展開」→「仕損登録」操作
+    （replace_scrap_records()）により、対象kitting_list_no・lot_no・
+    production_side単位で全削除→再登録される「洗い替え」の対象でもある。
+    そのため本画面での個別修正・削除は、対象の計画が再展開・再登録されると
+    （新しいidの行に置き換わり）失われる。この注意を画面上に常時表示する。
+    """
+    def __init__(self, parent, kitting_list_no, lot_no=None, production_side=None, on_updated=None):
+        super().__init__(parent)
+        self.kitting_list_no = kitting_list_no
+        self.lot_no = lot_no
+        self.production_side = production_side
+        self.on_updated = on_updated
+
+        self.title(f"NG実績修正（{kitting_list_no}）")
+        self.geometry("520x460")
+
+        ttk.Label(
+            self,
+            text="注意：この画面での修正は、対象の計画が再展開・再登録されると失われる可能性があります。",
+            foreground="red", wraplength=480, justify=tk.LEFT,
+        ).pack(fill=tk.X, padx=15, pady=(15, 0))
+
+        hist_frame = ttk.LabelFrame(self, text="NG実績明細（96コード単位）", padding=10)
+        hist_frame.pack(expand=True, fill=tk.BOTH, padx=15, pady=(10, 5))
+
+        cols = ("part_no", "ng_qty", "production_side", "report_date")
+        self.tree = ttk.Treeview(hist_frame, columns=cols, show="headings")
+        self.tree.heading("part_no", text="96コード")
+        self.tree.heading("ng_qty", text="消費数量")
+        self.tree.heading("production_side", text="面")
+        self.tree.heading("report_date", text="計上日")
+        self.tree.column("part_no", width=170, anchor=tk.W)
+        self.tree.column("ng_qty", width=90, anchor=tk.E)
+        self.tree.column("production_side", width=50, anchor=tk.CENTER)
+        self.tree.column("report_date", width=100, anchor=tk.W)
+        self.tree.pack(expand=True, fill=tk.BOTH)
+        self.tree.bind("<<TreeviewSelect>>", self.on_select_record)
+
+        edit_frame = ttk.LabelFrame(self, text="選択した明細の修正", padding=10)
+        edit_frame.pack(fill=tk.X, padx=15, pady=(5, 15))
+
+        ttk.Label(edit_frame, text="消費数量：").pack(side=tk.LEFT, padx=5)
+        self.entry_edit_qty = ttk.Entry(edit_frame, width=10)
+        self.entry_edit_qty.pack(side=tk.LEFT, padx=5)
+
+        self.btn_update = ttk.Button(edit_frame, text="修正", command=self.on_update,
+                                      state=tk.DISABLED)
+        self.btn_update.pack(side=tk.LEFT, padx=5)
+
+        self.btn_delete = ttk.Button(edit_frame, text="削除", command=self.on_delete,
+                                      state=tk.DISABLED)
+        self.btn_delete.pack(side=tk.LEFT, padx=5)
+
+        self.load_records()
+
+    def load_records(self):
+        """
+        対象kitting_list_no・lot_no（・指定があればproduction_side）の明細行を
+        再取得してTreeviewへ反映する。id列をそのままTreeviewのiidとして使う
+        （ActualCorrectionWindow.load_history()がprod_log_idをiidにするのと同じ
+        パターン）ことで、on_update()/on_delete()が選択行のidをそのまま
+        int(sel[0])で取り出せる。
+        """
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        for rec in list_scrap_records_by_kitting_no(
+            self.kitting_list_no, self.lot_no, self.production_side,
+        ):
+            self.tree.insert("", tk.END, iid=str(rec["id"]), values=(
+                rec["part_no"], f"{rec['ng_qty']:g}", rec["production_side"], rec["report_date"],
+            ))
+        self.entry_edit_qty.delete(0, tk.END)
+        self.btn_update.config(state=tk.DISABLED)
+        self.btn_delete.config(state=tk.DISABLED)
+
+    def on_select_record(self, event):
+        sel = self.tree.selection()
+        if not sel:
+            self.btn_update.config(state=tk.DISABLED)
+            self.btn_delete.config(state=tk.DISABLED)
+            return
+        values = self.tree.item(sel[0], "values")
+        self.entry_edit_qty.delete(0, tk.END)
+        self.entry_edit_qty.insert(0, values[1])
+        self.btn_update.config(state=tk.NORMAL)
+        self.btn_delete.config(state=tk.NORMAL)
+
+    def on_update(self):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        record_id = int(sel[0])
+
+        try:
+            qty = float(self.entry_edit_qty.get().strip())
+        except ValueError:
+            messagebox.showwarning("入力エラー", "消費数量には数値を入力してください。", parent=self.winfo_toplevel())
+            return
+
+        update_scrap_record(record_id, qty)
+        self._after_change()
+        messagebox.showinfo("修正完了", "NG実績を修正しました。", parent=self.winfo_toplevel())
+
+    def on_delete(self):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        record_id = int(sel[0])
+
+        if not messagebox.askyesno(
+            "確認", "選択したNG実績を削除します。よろしいですか？", parent=self.winfo_toplevel(),
+        ):
+            return
+
+        delete_scrap_record(record_id)
+        self._after_change()
+        messagebox.showinfo("削除完了", "NG実績を削除しました。", parent=self.winfo_toplevel())
+
+    def _after_change(self):
+        self.load_records()
+        if self.on_updated:
+            self.on_updated()

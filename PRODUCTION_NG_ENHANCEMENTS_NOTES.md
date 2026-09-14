@@ -185,7 +185,8 @@ NG連動計算式:**面1保存値 = 面1欄入力値 + 面2欄入力値、面2�
 
 ## 6. 未対応・将来の検討事項
 
-- `scrap_records`向けの1行単位の修正・削除機能(`update_scrap_record()`/`delete_scrap_record()`)は実装していない(ユーザー決定により、kitting_list_no単位の洗い替え(`replace_scrap_records()`)で運用する方針としたため)。
+- ~~`scrap_records`向けの1行単位の修正・削除機能(`update_scrap_record()`/`delete_scrap_record()`)は実装していない(ユーザー決定により、kitting_list_no単位の洗い替え(`replace_scrap_records()`)で運用する方針としたため)。~~ → **方針転換し実装済み（2026-09-15、§13参照）**。`scrap_records`・`wip_scrap_records`双方に1行単位のUPDATE/DELETE関数と、専用の個別修正画面（`ScrapCorrectionWindow`/`WipScrapCorrectionWindow`）を追加した。グループ単位の洗い替え（`replace_scrap_records()`/`save_wip_scrap_records()`）自体は廃止しておらず、両者は共存する（個別修正は再展開・再登録で上書きされ得る点に注意、§13参照）。
+- **NG一覧の一括展開・登録機能** → **完了（2026-09-14、§12参照）**。仕掛展開画面への同様の機能は、この記録時点で**未実装**（コード確認済み：`models/wip_scrap_records.py`・`ui/wip_expansion_window.py`のいずれにも一括処理に相当する関数・ボタンは存在しない。次回セッションでの実装候補）。
 - NG一覧のフィルタ・ソート機能は、計画一覧のロジックをコピー&適応した実装であり、共通コンポーネントとしては切り出していない(将来、両者の挙動を同時に変更する必要がある場合は両方修正が必要な点に注意)。
 - `find_opposite_side_plan()`の複数候補時「最も近いplan_start_datetimeを自動選択」は、業務上本当に正しい組み合わせを保証するものではない(日時が近いというだけの推測)。誤った組み合わせになるケースがないか、実運用で注意が必要。
 - **ロード画面（`LoadingWindow`＋非同期パターン）の追加** → **完了（2026-09-11）**。CSV/TSV読み込み処理における非同期ロード画面の有無を9画面調査した結果発見された未対応箇所（NG入力画面・仕掛展開画面、各種CSVインポート5画面）は、いずれも対応が完了した。詳細は`UI_WORKFLOW_FIXES_NOTES.md`グループR参照。
@@ -293,3 +294,47 @@ NG用・仕掛用で**2テーブルに分ける**方針を採用した（ユー�
 あわせて、列の並び順を位置決め打ちにしないよう、`NgInputWindow.NG_LIST_COLUMNS`・`WipExpansionWindow.WIP_LIST_COLUMNS`というクラス属性を新設し、各画面の一覧構築コードと本サービスの両方がこれを単一の情報源として参照する設計にした。
 
 **この`services`→`ui`依存は、意図的な例外としてこのまま維持してよい設計判断である（`CANONICAL_DESIGN_DECISIONS.md` D-9参照）。**
+
+---
+
+## 12. NG一覧の一括展開・登録機能（新機能）
+
+### 背景
+既存のNG一覧は「1件ずつダブルクリックして展開・登録」する設計だった。在庫差異レポート（`query_scrap_totals()`/`query_wip_totals()`）による96コード単位の集計は、既に登録されている`scrap_records`/`wip_scrap_records`のデータのみを対象とするため、全項目が手動で個別登録されて初めて正しい集計になる、という制約があった。この手動作業を一括処理化したいという要望から着手した。
+
+### 確定した設計
+「対象外を除く未展開の項目を、確認ステップなしで一括展開・登録する」方針（ユーザー決定）。既存の「対象外」マーク機能（§10）が、まさにこの一括処理の事前フィルタとして機能する設計になっている。
+
+| # | 対象ファイル | 実施内容 | 判定 |
+|---|---|---|---|
+| AP-1 | `ui/ng_input_window.py` | NG一覧に「一括展開・登録」ボタンを追加 | **反映済み** |
+| AP-2 | `ui/ng_input_window.py` | `_get_bulk_expand_targets()`（新規）：生データ（`list_ng_declarations_latest()`・`list_scrap_summary_by_kitting_no()`・`list_ng_exclusions()`）を直接突き合わせ、「未展開（申告はあるが展開集計が無い）かつ対象外でない」行のみを抽出。表示用に整形済みの`_all_ng_rows`（"面1"等の文字列）ではなく生の`production_side`・`ng_qty`を使う | **反映済み** |
+| AP-3 | `ui/ng_input_window.py` | `_bulk_expand_and_register_one()`（新規）：既存の`_expand_from_kitting_no()`/`_expand_from_file_no()`と同じ計画解決・`expand_scrap_to_parts()`呼び出しロジックを踏襲。チェック確認のステップは行わず、展開された全部品を`replace_scrap_records()`でそのまま登録する | **反映済み** |
+| AP-4 | `ui/ng_input_window.py` | `_run_bulk_expand_worker()`（新規）：対象行を1件ずつtry/exceptで保護し、1件のエラーで処理全体を止めず他の行の処理を継続する（既存のCSV取込系機能と同じ「1行の異常が他行に影響しない」設計）。成功件数・失敗件数・エラー内容を完了時に表示 | **反映済み** |
+| AP-5 | `ui/ng_input_window.py` | `on_bulk_expand_register()`：既存の非同期パターン（`LoadingWindow`＋`threading.Thread(daemon=True)`＋`queue.Queue`＋`self.after(200,...)`ポーリング）を適用。処理完了後、NG一覧を再取得し状態（未展開→展開済み）を反映する | **反映済み** |
+
+**重要な設計判断**：計画候補が複数ある場合（`search_plan_by_kitting_no()`がcandidatesを返す）・実装ラインが複数ある場合（`list_mounting_lines()`が2件以上返す）、バックグラウンドスレッドからは選択ダイアログを表示できないため、**その行だけエラーとして扱う**（無理な自動選択はしない、安全側の設計）。
+
+**仕掛展開画面への同様の機能**：この記録時点では**未実装**（次のステップとして予定されていたが、着手には至っていない。実装する場合は`models/wip_scrap_records.py`・`ui/wip_expansion_window.py`に本節と同じ設計で追加することになる）。
+
+### 実装中に発見された重要な問題（検証手法自体のリスク）
+これまで慣行としていた「全パッケージimportループチェック」（`pkgutil.walk_packages`で`ui`/`models`/`services`配下を含む作業ディレクトリ全体を対象にimportし、正しくimportできるか確認する手法）が、作業ディレクトリ直下の`check_*.py`・`delete_failed_batches.py`・`delete_test_batches.py`等の単発メンテナンススクリプトまで無差別にimportし、**実DBに対してモジュールトップレベルの処理を走らせてしまう**リスクを抱えていたことが判明した。今回は対象0件で実害は無かったが、`delete_*`という名前のスクリプトが存在する以上、偶然実害が無かっただけというリスクであった。**以降、`ui`/`models`/`services`/`config`に限定したスコープ付きimportチェックに切り替えた**（この安全化の詳細・今後の運用指針は`CANONICAL_DESIGN_DECISIONS.md`§5に記載。このプロジェクトの検証手法そのものの安全性向上として重要なため、単なる本機能の実装メモに留めず正典側にも記録した）。
+
+---
+
+## 13. scrap_records・wip_scrap_recordsの個別行修正画面（新機能）
+
+### 発見された不足
+一括展開・仕損NG展開のいずれの経路でも、`scrap_records`/`wip_scrap_records`は**グループ単位（kitting_list_no・lot_no・production_side）での全削除→再登録**という設計（delete-then-insert）のみで、**96コード単位で保存済みデータを見て、個別に1件だけ修正・削除する画面が存在しない**ことが調査で判明した。`production_daily`にはこれに相当する`ActualCorrectionWindow`（個別行のUPDATE/DELETE）があるが、NG・仕掛側には対応する画面が無かった（本ファイル旧§6にも「ユーザー決定により未実装」と記録されていたが、今回方針が変わり実装した。該当記述は§6側で更新済み）。
+
+### 実装
+| # | 対象ファイル | 実施内容 | 判定 |
+|---|---|---|---|
+| AQ-1 | `models/scrap_records.py` | `update_scrap_record(id, qty)`・`delete_scrap_record(id)`（新規、いずれも`models.production.update_daily_production()`/`delete_daily_production()`と同じ設計・同じ単純さ）。`list_scrap_records_by_kitting_no()`に`production_side`引数を追加（省略時はNoneで従来通り両面分、既存呼び出し元への後方互換を維持） | **反映済み** |
+| AQ-2 | `models/wip_scrap_records.py` | 同様に`update_wip_scrap_record()`・`delete_wip_scrap_record()`・`list_wip_scrap_records_by_kitting_no()`（新規、以前の実装時に見送られていたもの）を追加 | **反映済み** |
+| AQ-3 | `ui/scrap_correction_window.py`（新規） | `ScrapCorrectionWindow`：`ActualCorrectionWindow`と同じ設計思想（明細一覧→選択→数量修正または削除→即座にUPDATE/DELETE） | **反映済み** |
+| AQ-4 | `ui/wip_scrap_correction_window.py`（新規） | `WipScrapCorrectionWindow`：同上のWIP版 | **反映済み** |
+| AQ-5 | `ui/ng_input_window.py`, `ui/wip_expansion_window.py` | NG一覧・仕掛一覧それぞれに「実績修正」ボタンを追加し、対応する個別修正画面（選択行の`kitting_list_no`・`lot_no`・`production_side`を渡す）を開ける導線を追加 | **反映済み** |
+
+### 重要な設計上の注意点（既存の設計方針と整合）
+個別修正画面での修正は、**その計画が後日NG入力画面/仕掛展開画面で再展開・再登録される（グループ単位の洗い替えが走る）と、消えてしまう**。これは「後からの展開・登録を正として上書きする」という既存の設計方針（§3グループN3、`CANONICAL_DESIGN_DECISIONS.md` D-6等）と整合する挙動であり、想定外の不整合ではないが、個別修正画面を使う人には予想外に映る可能性があるため、**両画面に「この画面での修正は、対象の計画が再展開・再登録されると失われる可能性があります」という注意書きを常時表示**することにした。実際にこの想定通りの挙動（個別修正→再展開で上書きされて消える）を検証済み。

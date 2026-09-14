@@ -20,6 +20,7 @@ from models.ng_exclusion_list import (
 )
 from ui.checkable_treeview import CheckableTreeview
 from ui.loading_window import LoadingWindow
+from ui.scrap_correction_window import ScrapCorrectionWindow
 
 # アプリ全体で共有する単一のBOMServiceインスタンス（services.bom_service.
 # get_shared_bom_service()参照）。ui.wip_expansion_window.pyと共有するため、
@@ -285,6 +286,12 @@ class NgInputWindow(tk.Toplevel):
         ttk.Button(ng_action_frame, text="対象外解除", command=self.on_unmark_ng_excluded).pack(
             side=tk.LEFT, expand=True, fill=tk.X, padx=(5, 0)
         )
+        ttk.Button(ng_action_frame, text="一括展開・登録", command=self.on_bulk_expand_register).pack(
+            side=tk.LEFT, expand=True, fill=tk.X, padx=(5, 0)
+        )
+        ttk.Button(ng_action_frame, text="実績修正", command=self.on_open_scrap_correction).pack(
+            side=tk.LEFT, expand=True, fill=tk.X, padx=(5, 0)
+        )
         hsb_ng.pack(side=tk.BOTTOM, fill=tk.X)
         vsb_ng.pack(side=tk.RIGHT, fill=tk.Y)
         self.tree_ng_list.pack(expand=True, fill=tk.BOTH)
@@ -443,6 +450,28 @@ class NgInputWindow(tk.Toplevel):
 
         unmark_ng_excluded(kitting_list_no, side, lot_no)
         self.load_ng_list()
+
+    def on_open_scrap_correction(self):
+        """
+        NG一覧で選択中の行のscrap_records明細（96コード単位）を、個別に
+        修正・削除できるui.scrap_correction_window.ScrapCorrectionWindowで開く。
+        _get_selected_ng_row_identity()で選択行から(kitting_list_no, side, lot_no)を
+        取得し、そのままproduction_side指定として渡す（同一kitting_list_no・lot_no
+        でも面ごとにscrap_recordsのグループが分かれているため、選択行の面だけに
+        絞り込んだ明細を表示する）。
+
+        on_updated=self.load_ng_listにより、修正画面で数量修正・削除を行うたびに
+        NG一覧側のpart_count/record_count/NG数量等の集計表示も即座に更新される。
+        """
+        identity = self._get_selected_ng_row_identity()
+        if identity is None:
+            return
+        kitting_list_no, side, lot_no = identity
+
+        ScrapCorrectionWindow(
+            self, kitting_list_no=kitting_list_no, lot_no=lot_no, production_side=side,
+            on_updated=self.load_ng_list,
+        )
 
     def on_expand(self, lot_no=None):
         """
@@ -859,6 +888,234 @@ class NgInputWindow(tk.Toplevel):
 
         # 登録内容を右ペインのNG一覧へ即時反映する
         self.load_ng_list()
+
+    def _get_bulk_expand_targets(self):
+        """
+        「一括展開・登録」の対象行（status="未展開" かつ 対象外でない）を抽出する。
+
+        _fetch_ng_list_rows()と同じ判定ロジック（申告はあるがscrap_records集計が
+        無い＝未展開）を使うが、Treeview表示用に整形済みの文字列（"面1"等）ではなく
+        production_side（int）・ng_qty（float）を生のまま使いたいため、
+        list_ng_declarations_latest()等の戻り値を直接参照する
+        （self._all_ng_rowsは表示用に整形済みのため、ここでは使わない）。
+
+        戻り値：list_ng_declarations_latest()の要素（{"kitting_list_no", "file_no",
+        "production_side", "lot_no", "ng_qty", "report_date", "is_unplanned"}）の
+        うち対象のもののリスト。
+        """
+        declarations = {
+            (d["kitting_list_no"], d["lot_no"] or "", d["production_side"]): d
+            for d in list_ng_declarations_latest()
+        }
+        expanded_keys = {
+            (s["kitting_list_no"], s["lot_no"] or "", s["production_side"])
+            for s in list_scrap_summary_by_kitting_no()
+        }
+        excluded_keys = {
+            (e["kitting_list_no"], e["lot_no"] or "", e["production_side"])
+            for e in list_ng_exclusions()
+        }
+
+        return [
+            declaration
+            for key, declaration in declarations.items()
+            if key not in expanded_keys and key not in excluded_keys
+        ]
+
+    def _bulk_expand_and_register_one(self, target, report_date):
+        """
+        一括展開・登録の対象1行分を処理する（バックグラウンドスレッドから
+        呼ばれるため、Tkinterウィジェットには一切触れない）。
+
+        _expand_from_kitting_no()・_expand_from_file_no()と同じ計画解決・BOM展開
+        ロジックを踏襲するが、以下の点が異なる：
+          - 候補が複数ある場合（計画あり：search_plan_by_kitting_no()がcandidatesを
+            返す／計画外：list_mounting_lines()が2件以上返す）、バックグラウンド
+            スレッドからは選択ダイアログを表示できないため、その行はエラーとして
+            扱い（呼び出し元でcatchされる）、他の行の処理は継続する。
+          - チェック確認のステップは行わず、展開された全部品をそのまま
+            replace_scrap_records()で登録する（対象は「未展開」＝既存の
+            scrap_recordsが無い行のみのため、実質的に新規追加になる。
+            on_register()の上書き確認ダイアログも、対象がバックグラウンド処理
+            であることも踏まえて出さない）。
+        """
+        kitting_list_no = target["kitting_list_no"]
+        lot_no = target["lot_no"]
+        is_unplanned = bool(target["is_unplanned"])
+        ng_qty = target["ng_qty"]
+
+        if is_unplanned:
+            file_no = target["file_no"]
+            side = int(target["production_side"])
+
+            lines = _bom_service.list_mounting_lines(file_no, side)
+            mounting_line = None
+            if len(lines) == 1:
+                mounting_line = lines[0]
+            elif len(lines) >= 2:
+                raise ValueError(
+                    f"複数の実装ライン候補（{', '.join(lines)}）が存在するため、"
+                    "一括処理では自動選択できません。個別に展開・登録してください。"
+                )
+
+            scrap_record = {
+                "setup_file_no": file_no,
+                "production_side": side,
+                "ng_qty": ng_qty,
+                "lot_no": None,
+                "mounting_line": mounting_line,
+            }
+        else:
+            plan, candidates = search_plan_by_kitting_no(kitting_list_no, lot_no)
+            if candidates is not None:
+                raise ValueError(
+                    "複数の計画候補が見つかったため、一括処理では自動選択できません。"
+                    "個別に展開・登録してください。"
+                )
+            if not plan:
+                raise ValueError(f"キッティングリストNo. {kitting_list_no} の計画が見つかりません。")
+
+            file_no = plan["setup_file_no"]
+            try:
+                side = int(plan["production_side"])
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"生産面（production_side）を数値として解釈できません: {plan['production_side']!r}"
+                )
+
+            scrap_record = {
+                "setup_file_no": file_no,
+                "production_side": side,
+                "ng_qty": ng_qty,
+                "lot_no": plan.get("lot_no"),
+                "mounting_line": plan.get("mounting_line"),
+            }
+
+        parts = _bom_service.expand_scrap_to_parts(scrap_record)
+        if not parts:
+            raise ValueError(f"file_no「{file_no}」・生産面{side}のBOMが登録されていない、または対象部品がありません。")
+
+        records = [{"part_no": part["part_no"], "ng_qty": part["qty"]} for part in parts]
+        replace_scrap_records(
+            kitting_list_no, file_no, side, records, report_date,
+            lot_no=lot_no, is_unplanned=is_unplanned,
+        )
+
+    def _run_bulk_expand_worker(self, targets, report_date):
+        """
+        対象行を1件ずつ処理し、1件のエラーで処理全体を止めず他の行の処理を継続する
+        （services.production_import_service.import_production_csv()等、既存の
+        CSV取込系機能と同じ「1行の異常が他行に影響しない」設計）。
+
+        戻り値：{"total", "success_count", "failures"}。failuresは
+        [{"label": "表示用の行の識別子", "error": "エラーメッセージ"}, ...]。
+        """
+        success_count = 0
+        failures = []
+        for target in targets:
+            side = target["production_side"]
+            label = f"キッティングリストNo. {target['kitting_list_no']}"
+            if target["lot_no"]:
+                label += f"（ロットNo. {target['lot_no']}）"
+            label += f" / 面{side}"
+            try:
+                self._bulk_expand_and_register_one(target, report_date)
+                success_count += 1
+            except Exception as e:
+                failures.append({"label": label, "error": str(e)})
+
+        return {"total": len(targets), "success_count": success_count, "failures": failures}
+
+    def _show_bulk_expand_result(self, result):
+        total = result["total"]
+        success_count = result["success_count"]
+        failures = result["failures"]
+        failure_count = len(failures)
+
+        lines = [f"対象: {total}件", f"成功: {success_count}件", f"失敗: {failure_count}件"]
+        if failures:
+            max_show = 20
+            lines.append("")
+            lines.append("【エラー内容】")
+            for f in failures[:max_show]:
+                lines.append(f"・{f['label']}\n  {f['error']}")
+            if failure_count > max_show:
+                lines.append(f"…ほか{failure_count - max_show}件")
+
+        message = "\n".join(lines)
+        if failure_count:
+            messagebox.showwarning("一括展開・登録 完了", message, parent=self.winfo_toplevel())
+        else:
+            messagebox.showinfo("一括展開・登録 完了", message, parent=self.winfo_toplevel())
+
+    def on_bulk_expand_register(self):
+        """
+        NG一覧の「未展開」かつ「対象外」でない行をすべて一括で展開・登録する
+        （対象外を除く未展開項目の一括処理。個別のチェック確認ステップは行わず、
+        展開された全部品をそのまま登録する）。
+
+        BOM展開・DB登録は件数によっては時間がかかり得るため、既存の非同期パターン
+        （LoadingWindow＋threading.Thread(daemon=True)＋queue.Queue＋
+        self.after(200,...)ポーリング）を適用する。_run_bom_expansion_async()を
+        そのまま使わないのは、あちらが単一work_fn／単一on_successの1件専用設計
+        であるのに対し、こちらは行ごとの成功・失敗を個別に追跡し、1件のエラーで
+        全体を止めずに処理を継続する必要があるため。
+
+        ui.kitting_plan_import.KittingPlanImportWindow._run_import_in_thread()と
+        同様、ワーカースレッド内で予期しない例外が発生した場合も
+        （_run_bulk_expand_worker()自体のバグ等、行単位のtry/exceptで捕捉し
+        きれない想定外の事態）、キューへ(False, エラー内容)を渡してUIスレッド側で
+        エラーダイアログを表示する（アプリごと落ちることを防ぐ）。
+        """
+        targets = self._get_bulk_expand_targets()
+        if not targets:
+            messagebox.showinfo(
+                "一括展開・登録", "対象となる未展開項目（対象外を除く）がありません。",
+                parent=self.winfo_toplevel(),
+            )
+            return
+
+        if not messagebox.askyesno(
+            "確認",
+            f"未展開（対象外を除く）の{len(targets)}件を一括展開・登録します。よろしいですか？",
+            parent=self.winfo_toplevel(),
+        ):
+            return
+
+        report_date = datetime.now().strftime("%Y-%m-%d")
+        loading = LoadingWindow(self, message=f"一括展開・登録中です（{len(targets)}件）…")
+        result_queue = queue.Queue()
+
+        def _work():
+            try:
+                result_queue.put((True, self._run_bulk_expand_worker(targets, report_date)))
+            except Exception as e:
+                import traceback
+                result_queue.put((False, f"{e}\n{traceback.format_exc()}"))
+
+        threading.Thread(target=_work, daemon=True).start()
+
+        def _poll():
+            try:
+                success, payload = result_queue.get_nowait()
+            except queue.Empty:
+                self.after(200, _poll)
+                return
+
+            loading.destroy()
+
+            if not success:
+                messagebox.showerror(
+                    "一括展開・登録エラー", f"予期しないエラーが発生しました。\n\n{payload}",
+                    parent=self.winfo_toplevel(),
+                )
+                return
+
+            self._show_bulk_expand_result(payload)
+            # 状態（未展開→展開済み）を反映するため、NG一覧を再取得する
+            self.load_ng_list()
+
+        self.after(200, _poll)
 
     # ------------------------------------------------------------------
     # NG一覧（右ペイン）

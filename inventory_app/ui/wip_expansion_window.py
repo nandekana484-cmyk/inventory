@@ -13,6 +13,7 @@ from models.wip_exclusion_list import (
 )
 from ui.checkable_treeview import CheckableTreeview
 from ui.loading_window import LoadingWindow
+from ui.wip_scrap_correction_window import WipScrapCorrectionWindow
 
 # アプリ全体で共有する単一のBOMServiceインスタンス（services.bom_service.
 # get_shared_bom_service()参照）。ui.ng_input_window.pyと共有するため、
@@ -309,6 +310,30 @@ class WipExpansionWindow(tk.Toplevel):
         unmark_wip_excluded(kitting_list_no, lot_no, file_no, side)
         self.load_wip_list()
 
+    def on_open_wip_scrap_correction(self):
+        """
+        仕掛一覧で選択中の行のwip_scrap_records明細（96コード単位）を、個別に
+        修正・削除できるui.wip_scrap_correction_window.WipScrapCorrectionWindowで
+        開く（ui.ng_input_window.NgInputWindow.on_open_scrap_correction()と同じ
+        パターン）。_get_selected_wip_row_identity()で選択行から
+        (kitting_list_no, lot_no, file_no, side)を取得し、sideをproduction_side
+        指定としてそのまま渡す（同一kitting_list_no・lot_noでも面ごとに
+        wip_scrap_recordsのグループが分かれているため、選択行の面だけに絞り込んだ
+        明細を表示する）。
+
+        on_updated=self.load_wip_listにより、修正画面で数量修正・削除を行うたびに
+        仕掛一覧側の状態表示も即座に更新される。
+        """
+        identity = self._get_selected_wip_row_identity()
+        if identity is None:
+            return
+        kitting_list_no, lot_no, file_no, side = identity
+
+        WipScrapCorrectionWindow(
+            self, kitting_list_no=kitting_list_no, lot_no=lot_no, production_side=side,
+            on_updated=self.load_wip_list,
+        )
+
     def _run_bom_expansion_async(self, work_fn, on_success):
         """
         BOMService.expand_wip_to_parts()（共有フォルダへのファイルアクセスを
@@ -580,6 +605,9 @@ class WipExpansionWindow(tk.Toplevel):
             side=tk.LEFT, expand=True, fill=tk.X, padx=(5, 0)
         )
         ttk.Button(wip_action_frame, text="対象外解除", command=self.on_unmark_wip_excluded).pack(
+            side=tk.LEFT, expand=True, fill=tk.X, padx=(5, 0)
+        )
+        ttk.Button(wip_action_frame, text="実績修正", command=self.on_open_wip_scrap_correction).pack(
             side=tk.LEFT, expand=True, fill=tk.X, padx=(5, 0)
         )
         hsb_wip.pack(side=tk.BOTTOM, fill=tk.X)

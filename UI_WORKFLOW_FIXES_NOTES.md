@@ -413,6 +413,31 @@ if actual_qty >= order_qty:
 
 ---
 
+### グループW：.exe化に向けたパス解決・データ領域の分離（重要な事前対応）
+
+**背景**：「.exe化は機能確定前でもできるか」「再インストール（verUP）時にDBを共有・保持できるか」という質問から調査した結果、**今のまま.exe化すると、再インストールのたびにDBが消える（またはそもそも見えなくなる）可能性が高い**ことが判明した。
+
+**発見された原因**：
+- `config.py`の`BASE_DIR`が`__file__`基準。PyInstallerの`onefile`形式では、実行時に一時展開フォルダ（`sys._MEIPASS`）を指してしまい、プロセス終了後に消える。
+- アプリのデータ（DB・ログ・設定・OCR言語データ）が、アプリ本体と同じ`BASE_DIR`配下に同居しており、再インストール時にインストーラーがまとめて削除するリスクがある（Windows標準の作法は、この種のユーザーデータを`%LOCALAPPDATA%`等に置くこと）。
+- 「現在選択中のDBパス」（共有フォルダ運用時）がどこにも永続化されておらず、次回起動時に必ずローカルのデフォルトDBにリセットされる（.exe化とは独立した既存の運用上の負担）。
+
+| # | 対象ファイル | 実施内容 | 判定 |
+|---|---|---|---|
+| W-1 | `config.py` | `sys.frozen`判定（`IS_FROZEN`）を追加。.exe化時は`sys.executable`基準、開発環境は従来通り`__file__`基準に分岐 | **反映済み**（`IS_FROZEN = getattr(sys, "frozen", False)`を確認） |
+| W-2 | `config.py` | `APP_DATA_DIR`を新設。開発環境では`APP_DATA_DIR = BASE_DIR`（従来と同一挙動）、.exe化時は`%LOCALAPPDATA%\InventoryApp`（`LOCALAPPDATA`取得失敗時はBASE_DIRへフォールバック）。`DB_PATH`・`LOG_DIR`・`EXPORT_DIR`・`IMPORT_DIR`・`TESSDATA_DIR`の基準をBASE_DIRからAPP_DATA_DIRに変更 | **反映済み** |
+| W-3 | `ui/main_window.py` | `_load_db_folders()`・`on_switch_database()`・`on_create_database()`の3箇所が`config.BASE_DIR`を直接参照していたため、`config.APP_DATA_DIR`に統一（**実装時に気づいた重要な追加対応**。放置すると.exe化後に「ローカルDB切り替え機能が動かない」という新規バグになるところだった） | **反映済み**（3箇所とも`config.APP_DATA_DIR`参照を確認） |
+| W-4 | `services/app_settings_service.py`（新規） | 選択中DBパスの永続化：`save_last_db_path()`/`load_last_db_path()`を実装。`config.APP_DATA_DIR/app_settings.json`に`{"last_db_path": "..."}`形式で保存。`config.set_db_path()`が呼ばれるたびに自動永続化（循環import回避のため`set_db_path()`内で遅延import）。`ui/main_window.py.__init__()`が起動時に前回パスへ自動復元、パスが実在しない場合はデフォルトへフォールバックし警告表示 | **反映済み**（`_restore_last_db_failed_path`による起動後の警告表示、`config.set_db_path()`内の遅延importを確認） |
+
+**検証の要点**：
+- `sys.frozen`モック＋`importlib.reload()`で実際にフリーズ環境をシミュレートし、`BASE_DIR`・`APP_DATA_DIR`・`DB_PATH`等5項目が正しく`%LOCALAPPDATA%`配下に計算されることを確認。
+- `BASE_DIR`と`APP_DATA_DIR`を意図的に分離した状態で、`BASE_DIR`側に「おとり（デコイ）フォルダ」を置いて混入しないことを確認する**ネガティブチェック**を実施し、W-3の3箇所全てが`BASE_DIR`を一切参照しなくなったことを実証。
+- 共有フォルダDBを開いた状態でアプリを終了→再起動すると、自動的に前回のDBに再接続されることを確認。
+
+**留意点**：本グループは「.exe化の事前準備（パス解決・データ領域分離）」のみであり、実際のPyInstallerビルド（`.spec`ファイル作成、Tesseract OCR本体の同梱方法決定）はまだ着手していない（引き続き§4参照）。
+
+---
+
 ## 4. 未対応・将来の検討事項
 
 - 項目14（実績履歴からのクリックで計画呼び出し）：未実装
@@ -424,7 +449,7 @@ if actual_qty >= order_qty:
 - **バックアップ機能**（グループQ関連）：共有フォルダ運用・ロック機構・「対象外」マーク・在庫差異レポート連携が一通り完成したタイミングで着手を検討したが、具体的な方針が未決定のまま引き続き保留であることが再確認された（2026-09-11）。着手する際は以下2点を先に決定する必要がある：
   - **タイミング**：月次DB切替時に自動／手動ボタン／定期自動、のいずれにするか。
   - **保存先**：共有フォルダ内の別フォルダのみとするか、ローカルPCとの併用にするか。
-- **.exe化**（グループQ関連）：共有フォルダ運用の最終目標（PC各台にインストール）として言及されたのみで、具体的な着手はまだ。`requirements.txt`に`pyinstaller`が依存関係として記載されているのみで、`.spec`ファイル等のビルド設定は存在しない（別途調査済み）。**PDF OCR機能（`PDF_OCR_FEATURE_NOTES.md`参照）を導入する場合、Tesseract OCR本体（OS側の外部実行ファイル、pytesseractは同梱しない）を各PCの.exeに同梱するか個別インストールしてもらうかの方針も、この.exe化のタイミングで合わせて決定する必要がある。**
+- ~~**.exe化**（グループQ関連）：共有フォルダ運用の最終目標（PC各台にインストール）として言及されたのみで、具体的な着手はまだ~~ → **パス解決・データ領域分離の事前対応は完了（グループW参照）**。`BASE_DIR`/`APP_DATA_DIR`の分離、選択中DBパスの永続化（`services/app_settings_service.py`）まで実施済み。ただし実際のPyInstallerビルド本体（`.spec`ファイル作成、`requirements.txt`に`pyinstaller`が依存関係として記載されているのみでビルド設定は未着手）はまだ。**PDF OCR機能（`PDF_OCR_FEATURE_NOTES.md`参照）を導入する場合、Tesseract OCR本体（OS側の外部実行ファイル、pytesseractは同梱しない）を各PCの.exeに同梱するか個別インストールしてもらうかの方針も、この.exe化のタイミングで合わせて決定する必要がある。**
 - ~~ロード画面（`LoadingWindow`＋非同期パターン）未対応の画面、および「対象外」マークの仕組み（NG一覧・仕掛一覧）については、`PRODUCTION_NG_ENHANCEMENTS_NOTES.md` §6にまとめて記載した（グループQ・AC（本ファイル・同ファイル参照）に関連する未完了タスクのため、そちらもあわせて参照すること）。~~ → 2026-09-11、両方とも完了。ロード画面追加は本ファイルのグループR、「対象外」マークの仕組み・在庫差異レポートのゲート機能は`PRODUCTION_NG_ENHANCEMENTS_NOTES.md`§10・§11を参照。
 - ~~carry_over_incomplete_lots()のアトミック性（複数DBファイルをまたぐため単一トランザクションを持たない問題）~~ → 2026-09-11、進捗の可視化のみ対応完了（グループT参照）。真のロット単位・複数DBファイルをまたぐアトミック性はSQLite標準機能では実現困難なため、今回はスコープ外とすることが決定した。
 - ~~DB接続の堅牢性（タイムアウト延長・get_connection()共通化）~~ → 2026-09-11、完了（グループU参照）。journal_mode（WALモード）は今回見送り、実運用で問題が出た場合に再検討する。

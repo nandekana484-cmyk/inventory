@@ -25,6 +25,7 @@ from ui.wip_expansion_window import WipExpansionWindow
 from ui.worker_management_window import WorkerManagementWindow
 from services.db_migration_carryover import carry_over_incomplete_lots
 from services.unprocessed_check_service import check_unprocessed_items
+from services.app_settings_service import load_last_db_path
 
 
 class MainWindow(tk.Tk):
@@ -34,6 +35,23 @@ class MainWindow(tk.Tk):
         self._pc_name = socket.gethostname()
         self._worker_name = current_worker.get("name", "unknown")
         self._lock_acquired = False
+        # 前回終了時のDBパス復元に失敗した場合、__init__()の最後（UI構築完了後）
+        # にユーザーへ通知するためのフラグ。ここで先に案内すると、まだウィンドウの
+        # 体裁が整っていない状態でダイアログが割り込むため、あえて最後に回す。
+        self._restore_last_db_failed_path = None
+
+        # 起動時、前回選択されていたDBパス（永続化済み）があればそちらへ切り替える。
+        # 無い場合（初回起動・設定ファイル削除等）は、従来通りconfig.DB_PATH
+        # （モジュール読み込み時点のデフォルト＝APP_DATA_DIR配下のローカルDB）を
+        # そのまま使う。記憶されていたパスが現在は存在しない（ファイル削除・
+        # 共有フォルダが利用不可等）場合は、デフォルトのまま起動を続け、
+        # UI構築完了後にその旨を通知する。
+        last_db_path = load_last_db_path()
+        if last_db_path and last_db_path != config.DB_PATH:
+            if os.path.exists(last_db_path):
+                config.set_db_path(last_db_path)
+            else:
+                self._restore_last_db_failed_path = last_db_path
 
         # 起動時点のconfig.DB_PATHに対してロックを取得できなければ、他PC・他ユーザーが
         # 使用中とみなしてここで起動を中断する（以降のUI構築は行わない）。
@@ -269,6 +287,15 @@ class MainWindow(tk.Tk):
         # 5分間隔でロックファイルの最終更新時刻を更新し（生存確認）、
         # LOCK_STALE_SECONDS（30分）以上更新が無いロックとして自動解除されるのを防ぐ。
         self.after(300000, self._heartbeat)
+
+        if self._restore_last_db_failed_path:
+            messagebox.showwarning(
+                "データベース接続の復元に失敗",
+                "前回使用していたデータベースが見つかりませんでした：\n"
+                f"{self._restore_last_db_failed_path}\n\n"
+                "デフォルトのローカルデータベースに接続しました。",
+                parent=self,
+            )
 
     def _acquire_lock_with_corruption_handling(self, db_path: str) -> bool:
         """
@@ -561,7 +588,7 @@ class MainWindow(tk.Tk):
         LoginWindow().mainloop()
 
     def _load_db_folders(self):
-        db_root = os.path.join(config.BASE_DIR, "db")
+        db_root = os.path.join(config.APP_DATA_DIR, "db")
         folders = []
         if os.path.isdir(db_root):
             folders = sorted(
@@ -604,7 +631,7 @@ class MainWindow(tk.Tk):
             messagebox.showwarning("警告", "切り替え先のフォルダを選択してください。", parent=self.winfo_toplevel())
             return
 
-        new_path = os.path.join(config.BASE_DIR, "db", folder, "inventory.db")
+        new_path = os.path.join(config.APP_DATA_DIR, "db", folder, "inventory.db")
         if new_path == config.DB_PATH:
             messagebox.showinfo("情報", "既にこのデータベースを使用中です。", parent=self.winfo_toplevel())
             return
@@ -695,7 +722,7 @@ class MainWindow(tk.Tk):
             messagebox.showwarning("警告", "作成するフォルダ名を入力してください。", parent=self.winfo_toplevel())
             return
 
-        new_db_path = os.path.join(config.BASE_DIR, "db", folder, "inventory.db")
+        new_db_path = os.path.join(config.APP_DATA_DIR, "db", folder, "inventory.db")
         if os.path.exists(new_db_path):
             messagebox.showwarning("警告", f"フォルダ「{folder}」のデータベースは既に存在します。", parent=self.winfo_toplevel())
             return

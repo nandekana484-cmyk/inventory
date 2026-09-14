@@ -25,5 +25,8 @@ node_modules/
 # Tesseract OCR言語データ（開発環境ごとに個別インストール、容量が大きくGit管理しない）
 inventory_app/tessdata_local/
 
+# アプリ永続設定（選択中DBパス等、実行環境ごとに異なる実行時生成ファイル）
+inventory_app/app_settings.json
+
 # Python ソースコードはすべて追跡対象
 !*.py

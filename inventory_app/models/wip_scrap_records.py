@@ -68,6 +68,69 @@ def save_wip_scrap_records(kitting_list_no: str, file_no: str, side: int, record
         con.commit()
 
 
+def list_wip_scrap_records_by_kitting_no(kitting_list_no: str, lot_no: str = None,
+                                           production_side: int = None) -> list:
+    """
+    指定kitting_list_no・lot_no（・省略可のproduction_side）の仕掛展開結果を
+    96コード単位の明細行（idを含む、個別行の修正・削除の対象特定用）として取得する。
+    models.scrap_records.list_scrap_records_by_kitting_no() と同じ設計
+    （以前の実装時、当時はscrap_records側にのみ必要だったため見送られていた
+    WIP版を、個別行の修正・削除機能追加にあわせて新設した）。
+
+    lot_noは常に条件に含める（COALESCE(...,'')比較のため、計画外＝lot_no=Noneの
+    場合はlot_no=NULLのレコードのみが対象になる）。production_sideは省略時（None）は
+    条件に含めない（両面分をまとめて返す）。
+
+    wip_scrap_recordsはscrap_recordsのreport_dateに相当する列を持たないため
+    （query_wip_totals_range()と同じ理由）、created_atで並び替える。
+    """
+    init_wip_scrap_records_table()
+    with get_connection() as con:
+        if production_side is None:
+            cur = con.execute("""
+                SELECT * FROM wip_scrap_records
+                WHERE kitting_list_no = ? AND COALESCE(lot_no, '') = COALESCE(?, '')
+                ORDER BY created_at, id
+            """, (kitting_list_no, lot_no))
+        else:
+            cur = con.execute("""
+                SELECT * FROM wip_scrap_records
+                WHERE kitting_list_no = ? AND COALESCE(lot_no, '') = COALESCE(?, '')
+                  AND production_side = ?
+                ORDER BY created_at, id
+            """, (kitting_list_no, lot_no, production_side))
+        return [dict(row) for row in cur.fetchall()]
+
+
+def update_wip_scrap_record(id: int, qty: float):
+    """
+    wip_scrap_records 1件（id指定）のqty（消費数量）のみを修正する。
+    models.scrap_records.update_scrap_record()と同じ設計・同じ単純さ（対象行の
+    存在確認は行わず、該当idが無ければ0件更新のまま何も起きない）。
+
+    グループ単位の洗い替えであるsave_wip_scrap_records()とは独立した経路。
+    save_wip_scrap_records()は「kitting_list_no・lot_no・production_side」単位で
+    対象行を全削除してから再登録するため、そのグループに対してsave_wip_scrap_records()
+    が後から呼ばれると、本関数でのid単位の修正は（同じ行のidごと）消えて上書きされる
+    点に注意（仕掛展開画面から同じ基板を再展開・再確定した場合等）。
+    """
+    init_wip_scrap_records_table()
+    with get_connection() as con:
+        con.execute("UPDATE wip_scrap_records SET qty = ? WHERE id = ?", (qty, id))
+        con.commit()
+
+
+def delete_wip_scrap_record(id: int):
+    """
+    wip_scrap_records 1件（id指定）を削除する。update_wip_scrap_record()と同じく
+    models.scrap_records.delete_scrap_record()と同じ設計・同じ単純さ。
+    """
+    init_wip_scrap_records_table()
+    with get_connection() as con:
+        con.execute("DELETE FROM wip_scrap_records WHERE id = ?", (id,))
+        con.commit()
+
+
 def list_wip_scrap_summary() -> list:
     """
     kitting_list_no・lot_no・production_side単位で仕掛展開結果（確定登録済み分）を
