@@ -518,6 +518,208 @@ class WipExpansionWindow(tk.Toplevel):
                 checked=True,
             )
 
+    def _get_bulk_wip_expand_targets(self):
+        """
+        「一括展開・登録」の対象行（未確定 かつ 対象外でない）を抽出する
+        （ui.ng_input_window.NgInputWindow._get_bulk_expand_targets()と同じ考え方）。
+
+        _fetch_wip_list_rows()と同じ判定ロジック（wip_board_snapshotにあるが
+        wip_scrap_records集計が無い＝未確定）を使うが、Treeview表示用に整形済みの
+        文字列（"面1"相当の生産面等）ではなくproduction_side（int）・
+        surplus_qty（float）を生のまま使いたいため、list_wip_snapshot()等の
+        戻り値を直接参照する（self._all_wip_rowsは表示用に整形済みのため、
+        ここでは使わない）。
+
+        list_wip_snapshot()はキー（kitting_list_no, lot_no, production_side）の
+        一意性がDBスキーマ上保証されていない（wip_board_snapshotはテーブル全体
+        差し替え方式のスナップショットのため）ため、_fetch_wip_list_rows()と
+        同様にdictへ丸めず、リストをそのまま走査する。
+
+        戻り値：list_wip_snapshot()の要素（{"kitting_list_no", "file_no",
+        "board_name", "production_side", "mounting_line", "lot_no",
+        "surplus_qty", "created_at"}）のうち対象のもののリスト。
+        """
+        confirmed_keys = {
+            (s["kitting_list_no"], s["lot_no"] or "", str(s["production_side"]))
+            for s in list_wip_scrap_summary()
+        }
+        excluded_keys = {
+            (e["kitting_list_no"], e["lot_no"] or "", e["file_no"], str(e["production_side"]))
+            for e in list_wip_exclusions()
+        }
+
+        targets = []
+        for row in list_wip_snapshot():
+            key = (row["kitting_list_no"], row["lot_no"] or "", str(row["production_side"]))
+            if key in confirmed_keys:
+                continue
+            exclusion_key = (
+                row["kitting_list_no"], row["lot_no"] or "", row["file_no"], str(row["production_side"]),
+            )
+            if exclusion_key in excluded_keys:
+                continue
+            targets.append(row)
+        return targets
+
+    def _bulk_expand_and_register_one_wip(self, target):
+        """
+        一括展開・登録の対象1行分を処理する（バックグラウンドスレッドから
+        呼ばれるため、Tkinterウィジェットには一切触れない）。
+        ui.ng_input_window.NgInputWindow._bulk_expand_and_register_one()と
+        同じ考え方だが、wip_board_snapshotの行は既にfile_no・生産面・lot_no・
+        mounting_line・仕掛数量を保持しているため、NG入力画面のような
+        「kitting_list_noから計画を検索し、複数候補があれば曖昧」という
+        ステップ自体が存在しない（計画あり／計画外の区別も無い）。
+
+        「実装ラインが複数ある場合はその行だけエラーとして扱う」という制約のみ
+        該当し得る：スナップショットのmounting_lineが空欄（未確定）の行に限り、
+        BOMService.list_mounting_lines()でTSV上の実装ライン候補を確認し、
+        複数あればバックグラウンドからは選択できないためエラーとする
+        （ui.ng_input_window.NgInputWindow._expand_from_file_no()の
+        計画外パターンと同じロジック。1件ならそのまま採用、0件ならNoneのまま
+        BOMService._calculate_bom()のデフォルト方針に委ねる）。
+        """
+        kitting_list_no = target["kitting_list_no"]
+        file_no = target["file_no"]
+        lot_no = target["lot_no"]
+        side = int(target["production_side"])
+        mounting_line = target["mounting_line"]
+        surplus_qty = target["surplus_qty"]
+
+        if not mounting_line:
+            lines = _bom_service.list_mounting_lines(file_no, side)
+            if len(lines) == 1:
+                mounting_line = lines[0]
+            elif len(lines) >= 2:
+                raise ValueError(
+                    f"複数の実装ライン候補（{', '.join(lines)}）が存在するため、"
+                    "一括処理では自動選択できません。個別に展開・登録してください。"
+                )
+
+        wip_record = {
+            "setup_file_no": file_no,
+            "production_side": side,
+            "wip_qty": surplus_qty,
+            "mounting_line": mounting_line,
+            "lot_no": lot_no,
+        }
+
+        parts = _bom_service.expand_wip_to_parts(wip_record)
+        if not parts:
+            raise ValueError(f"file_no「{file_no}」・生産面{side}のBOMが登録されていない、または対象部品がありません。")
+
+        records = [{"part_no": part["part_no"], "qty": part["qty"]} for part in parts]
+        save_wip_scrap_records(kitting_list_no, file_no, side, records, lot_no=lot_no, mounting_line=mounting_line)
+
+    def _run_bulk_wip_expand_worker(self, targets):
+        """
+        対象行を1件ずつ処理し、1件のエラーで処理全体を止めず他の行の処理を継続する
+        （ui.ng_input_window.NgInputWindow._run_bulk_expand_worker()と同じ設計）。
+
+        戻り値：{"total", "success_count", "failures"}。failuresは
+        [{"label": "表示用の行の識別子", "error": "エラーメッセージ"}, ...]。
+        """
+        success_count = 0
+        failures = []
+        for target in targets:
+            side = target["production_side"]
+            label = f"キッティングリストNo. {target['kitting_list_no']}"
+            if target["lot_no"]:
+                label += f"（ロットNo. {target['lot_no']}）"
+            label += f" / 面{side}"
+            try:
+                self._bulk_expand_and_register_one_wip(target)
+                success_count += 1
+            except Exception as e:
+                failures.append({"label": label, "error": str(e)})
+
+        return {"total": len(targets), "success_count": success_count, "failures": failures}
+
+    def _show_bulk_wip_expand_result(self, result):
+        total = result["total"]
+        success_count = result["success_count"]
+        failures = result["failures"]
+        failure_count = len(failures)
+
+        lines = [f"対象: {total}件", f"成功: {success_count}件", f"失敗: {failure_count}件"]
+        if failures:
+            max_show = 20
+            lines.append("")
+            lines.append("【エラー内容】")
+            for f in failures[:max_show]:
+                lines.append(f"・{f['label']}\n  {f['error']}")
+            if failure_count > max_show:
+                lines.append(f"…ほか{failure_count - max_show}件")
+
+        message = "\n".join(lines)
+        if failure_count:
+            messagebox.showwarning("一括展開・登録 完了", message, parent=self.winfo_toplevel())
+        else:
+            messagebox.showinfo("一括展開・登録 完了", message, parent=self.winfo_toplevel())
+
+    def on_bulk_expand_register(self):
+        """
+        仕掛一覧の「未確定」かつ「対象外」でない行をすべて一括で展開・登録する
+        （ui.ng_input_window.NgInputWindow.on_bulk_expand_register()と同じ考え方。
+        対象外を除く未確定項目の一括処理。個別のチェック確認ステップは行わず、
+        展開された全部品をそのまま登録する）。
+
+        BOM展開・DB登録は件数によっては時間がかかり得るため、既存の非同期パターン
+        （LoadingWindow＋threading.Thread(daemon=True)＋queue.Queue＋
+        self.after(200,...)ポーリング）を適用する。_run_bom_expansion_async()を
+        そのまま使わないのは、あちらが単一work_fn／単一on_successの1件専用設計
+        であるのに対し、こちらは行ごとの成功・失敗を個別に追跡し、1件のエラーで
+        全体を止めずに処理を継続する必要があるため（NG入力画面と同じ理由）。
+        """
+        targets = self._get_bulk_wip_expand_targets()
+        if not targets:
+            messagebox.showinfo(
+                "一括展開・登録", "対象となる未確定項目（対象外を除く）がありません。",
+                parent=self.winfo_toplevel(),
+            )
+            return
+
+        if not messagebox.askyesno(
+            "確認",
+            f"未確定（対象外を除く）の{len(targets)}件を一括展開・登録します。よろしいですか？",
+            parent=self.winfo_toplevel(),
+        ):
+            return
+
+        loading = LoadingWindow(self, message=f"一括展開・登録中です（{len(targets)}件）…")
+        result_queue = queue.Queue()
+
+        def _work():
+            try:
+                result_queue.put((True, self._run_bulk_wip_expand_worker(targets)))
+            except Exception as e:
+                import traceback
+                result_queue.put((False, f"{e}\n{traceback.format_exc()}"))
+
+        threading.Thread(target=_work, daemon=True).start()
+
+        def _poll():
+            try:
+                success, payload = result_queue.get_nowait()
+            except queue.Empty:
+                self.after(200, _poll)
+                return
+
+            loading.destroy()
+
+            if not success:
+                messagebox.showerror(
+                    "一括展開・登録エラー", f"予期しないエラーが発生しました。\n\n{payload}",
+                    parent=self.winfo_toplevel(),
+                )
+                return
+
+            self._show_bulk_wip_expand_result(payload)
+            # 状態（未確定→確定済み）を反映するため、仕掛一覧を再取得する
+            self.load_wip_list()
+
+        self.after(200, _poll)
+
     # ------------------------------------------------------------------
     # 仕掛一覧（右ペイン）
     # ------------------------------------------------------------------
@@ -605,6 +807,9 @@ class WipExpansionWindow(tk.Toplevel):
             side=tk.LEFT, expand=True, fill=tk.X, padx=(5, 0)
         )
         ttk.Button(wip_action_frame, text="対象外解除", command=self.on_unmark_wip_excluded).pack(
+            side=tk.LEFT, expand=True, fill=tk.X, padx=(5, 0)
+        )
+        ttk.Button(wip_action_frame, text="一括展開・登録", command=self.on_bulk_expand_register).pack(
             side=tk.LEFT, expand=True, fill=tk.X, padx=(5, 0)
         )
         ttk.Button(wip_action_frame, text="実績修正", command=self.on_open_wip_scrap_correction).pack(

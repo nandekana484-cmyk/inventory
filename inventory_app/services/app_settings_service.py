@@ -78,3 +78,28 @@ def load_last_db_path():
     """
     value = _read_settings().get("last_db_path")
     return value if isinstance(value, str) and value else None
+
+
+def save_shared_db_root(path: str) -> None:
+    """
+    共有フォルダ上の月別DB一覧（ui.shared_db_list_window.SharedDbListWindow）で
+    指定した「親ディレクトリ」のパスを永続化する。save_last_db_path()と同じ
+    read-modify-write方式・同じ「失敗しても例外を投げない」方針
+    （一覧画面の再スキャン自体を止めるべきではないため）。
+    """
+    settings = _read_settings()
+    settings["shared_db_root"] = path
+    try:
+        _write_settings(settings)
+    except OSError:
+        pass
+
+
+def load_shared_db_root():
+    """
+    前回指定された共有フォルダの親ディレクトリパスを返す。設定ファイルが
+    存在しない・壊れている・該当キーが無い・値が空文字列等の場合は
+    いずれもNoneを返す（load_last_db_path()と同じ方針）。
+    """
+    value = _read_settings().get("shared_db_root")
+    return value if isinstance(value, str) and value else None

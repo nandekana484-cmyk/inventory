@@ -186,7 +186,7 @@ NG連動計算式:**面1保存値 = 面1欄入力値 + 面2欄入力値、面2�
 ## 6. 未対応・将来の検討事項
 
 - ~~`scrap_records`向けの1行単位の修正・削除機能(`update_scrap_record()`/`delete_scrap_record()`)は実装していない(ユーザー決定により、kitting_list_no単位の洗い替え(`replace_scrap_records()`)で運用する方針としたため)。~~ → **方針転換し実装済み（2026-09-15、§13参照）**。`scrap_records`・`wip_scrap_records`双方に1行単位のUPDATE/DELETE関数と、専用の個別修正画面（`ScrapCorrectionWindow`/`WipScrapCorrectionWindow`）を追加した。グループ単位の洗い替え（`replace_scrap_records()`/`save_wip_scrap_records()`）自体は廃止しておらず、両者は共存する（個別修正は再展開・再登録で上書きされ得る点に注意、§13参照）。
-- **NG一覧の一括展開・登録機能** → **完了（2026-09-14、§12参照）**。仕掛展開画面への同様の機能は、この記録時点で**未実装**（コード確認済み：`models/wip_scrap_records.py`・`ui/wip_expansion_window.py`のいずれにも一括処理に相当する関数・ボタンは存在しない。次回セッションでの実装候補）。
+- **NG一覧・仕掛一覧の一括展開・登録機能** → **完了**（NG一覧：2026-09-14、仕掛一覧：2026-09-15、§12参照）。仕掛展開画面にも同じ設計で実装済み（NG入力画面との重要な違い：`wip_board_snapshot`の行は既にfile_no・面・lot_no・mounting_lineを保持しているため計画候補の曖昧さ自体が存在せず、曖昧さが発生し得るのは実装ラインが複数のケースのみ）。
 - NG一覧のフィルタ・ソート機能は、計画一覧のロジックをコピー&適応した実装であり、共通コンポーネントとしては切り出していない(将来、両者の挙動を同時に変更する必要がある場合は両方修正が必要な点に注意)。
 - `find_opposite_side_plan()`の複数候補時「最も近いplan_start_datetimeを自動選択」は、業務上本当に正しい組み合わせを保証するものではない(日時が近いというだけの推測)。誤った組み合わせになるケースがないか、実運用で注意が必要。
 - **ロード画面（`LoadingWindow`＋非同期パターン）の追加** → **完了（2026-09-11）**。CSV/TSV読み込み処理における非同期ロード画面の有無を9画面調査した結果発見された未対応箇所（NG入力画面・仕掛展開画面、各種CSVインポート5画面）は、いずれも対応が完了した。詳細は`UI_WORKFLOW_FIXES_NOTES.md`グループR参照。
@@ -315,7 +315,20 @@ NG用・仕掛用で**2テーブルに分ける**方針を採用した（ユー�
 
 **重要な設計判断**：計画候補が複数ある場合（`search_plan_by_kitting_no()`がcandidatesを返す）・実装ラインが複数ある場合（`list_mounting_lines()`が2件以上返す）、バックグラウンドスレッドからは選択ダイアログを表示できないため、**その行だけエラーとして扱う**（無理な自動選択はしない、安全側の設計）。
 
-**仕掛展開画面への同様の機能**：この記録時点では**未実装**（次のステップとして予定されていたが、着手には至っていない。実装する場合は`models/wip_scrap_records.py`・`ui/wip_expansion_window.py`に本節と同じ設計で追加することになる）。
+### 仕掛展開画面への同様の機能（実装済み、2026-09-15）
+NG入力画面の一括展開・登録機能（AP-1〜AP-5）と同じ設計で、仕掛展開画面（`ui/wip_expansion_window.py`）にも実装した。
+
+**NG入力画面との重要な違い**：`wip_board_snapshot`の行は、月報の「仕掛数量抽出」時点で既にfile_no・生産面・lot_no・mounting_lineを保持しているため、NG入力画面のような「kitting_list_noから計画を検索し、複数候補があれば曖昧」という判定ステップ自体が存在しない（計画あり／計画外の区別も無い）。曖昧さが発生し得るのは、**mounting_lineが未確定（空欄）の行に限り、実装ラインが複数存在するケースのみ**であり、この場合のみNG入力画面と同様にその行だけエラーとして扱う（`list_mounting_lines()`が2件以上返す場合）。
+
+| # | 対象ファイル | 実施内容 | 判定 |
+|---|---|---|---|
+| AR-1 | `ui/wip_expansion_window.py` | 仕掛一覧に「一括展開・登録」ボタンを追加（`更新`／`対象外にする`／`対象外解除`の直後、`実績修正`の前。NG入力画面と同じ並び） | **反映済み** |
+| AR-2 | `ui/wip_expansion_window.py` | `_get_bulk_wip_expand_targets()`（新規）：`list_wip_snapshot()`・`list_wip_scrap_summary()`・`list_wip_exclusions()`の生データを突き合わせ、「未確定（`wip_scrap_records`に対応行が無い）かつ対象外でない」行のみ抽出。`wip_board_snapshot`はキーの一意性がDBレベルで保証されないため、dictに丸めずリストのまま走査する | **反映済み** |
+| AR-3 | `ui/wip_expansion_window.py` | `_bulk_expand_and_register_one_wip()`（新規）：`expand_wip_to_parts()`（file_no・生産面・mounting_line・仕掛数量を使用）で展開し、チェック確認のステップは行わず`save_wip_scrap_records()`でそのまま登録 | **反映済み** |
+| AR-4 | `ui/wip_expansion_window.py` | `_run_bulk_wip_expand_worker()`：対象行を1件ずつtry/exceptで保護し、1件のエラーで処理全体を止めず他の行の処理を継続する（AP-4と同じ設計） | **反映済み** |
+| AR-5 | `ui/wip_expansion_window.py` | `on_bulk_expand_register()`：既存の非同期パターン（`LoadingWindow`＋`threading.Thread(daemon=True)`＋`queue.Queue`＋`self.after(200,...)`ポーリング）を適用。処理完了後、仕掛一覧を再取得し状態（未確定→確定済み）を反映する | **反映済み** |
+
+**検証結果**：一時DBで4パターン（未確定・対象外でない2件、対象外1件、既に確定済み1件）を用意し検証。①対象抽出：未確定かつ対象外でない行のみ正しく抽出（対象外・確定済みは除外）。②一括登録：BOM展開をモックし、1件成功（`wip_scrap_records`に正しく登録）・1件はBOM展開エラーで失敗、他行の処理は継続されることを確認。③対象外の除外：対象外指定した行は一括処理の対象にならない。④確定済みの非重複：既に確定済みの行は再登録されず元のレコードのまま維持される。⑤エラー時の継続・報告：1件のエラーでも他行の処理は継続され、完了時に成功/失敗件数とエラー内容が表示される。⑥状態の再反映：処理完了後、成功した行は「確定済み」に、失敗した行は「未確定」のまま正しく表示される。⑦ロード画面：実行直後に`LoadingWindow`が表示され、非同期処理中も`root.update()`が返り続ける（UIスレッドがブロックされない）ことを確認。`python -m pytest tests/`にも影響無し。
 
 ### 実装中に発見された重要な問題（検証手法自体のリスク）
 これまで慣行としていた「全パッケージimportループチェック」（`pkgutil.walk_packages`で`ui`/`models`/`services`配下を含む作業ディレクトリ全体を対象にimportし、正しくimportできるか確認する手法）が、作業ディレクトリ直下の`check_*.py`・`delete_failed_batches.py`・`delete_test_batches.py`等の単発メンテナンススクリプトまで無差別にimportし、**実DBに対してモジュールトップレベルの処理を走らせてしまう**リスクを抱えていたことが判明した。今回は対象0件で実害は無かったが、`delete_*`という名前のスクリプトが存在する以上、偶然実害が無かっただけというリスクであった。**以降、`ui`/`models`/`services`/`config`に限定したスコープ付きimportチェックに切り替えた**（この安全化の詳細・今後の運用指針は`CANONICAL_DESIGN_DECISIONS.md`§5に記載。このプロジェクトの検証手法そのものの安全性向上として重要なため、単なる本機能の実装メモに留めず正典側にも記録した）。

@@ -118,6 +118,13 @@ def import_kitting_plan_csv(
     reader = csv.reader(f)
 
     # 3) create plan batch
+    # create_plan_batch()は内部でinit_kitting_plan_tables()を呼ぶため、これが
+    # CSV行ループに入る前の唯一かつ十分なテーブル存在保証になる。find_pending_
+    # kitting_plan_item()・upsert_pending_kitting_plan_item()・
+    # delete_pending_kitting_plan_item()（models/kitting_plan.py）は、この保証を
+    # 前提に、行ごとのinit_kitting_plan_tables()呼び出しを行わない（以前は
+    # 行ごとに呼んでおり、CREATE TABLE/INDEX IF NOT EXISTS文がCSVの行数分
+    # 冗長に再実行される性能上のボトルネックだった）。
     batch_id = create_plan_batch(source_file=os.path.basename(file_path), imported_by=worker_id, row_count=0)
 
     inserted = 0

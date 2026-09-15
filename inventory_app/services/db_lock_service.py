@@ -121,13 +121,24 @@ def acquire_lock(db_path: str, worker_name: str, pc_name: str, force: bool = Fal
 
     取得できる条件（force=Falseの通常時）：
       - ロックファイルが存在しない、または
+      - 既存ロックのworker_name・pc_nameが、今回acquire_lock()を呼んでいる
+        worker_name・pc_nameと完全一致する（同一作業者が同一PCから再取得しよう
+        としている）、または
       - 存在するが最終更新時刻からLOCK_STALE_SECONDS以上経過している（自動解除対象）。
-    それ以外（他者が有効なロックを保持中）はFalseを返す。
+    それ以外（別の作業者・別のPCが有効なロックを保持中）はFalseを返す。
+
+    「同一作業者・同一PC」を経過時間の判定より優先する理由：アプリが正常終了せず
+    （強制終了・PCクラッシュ等で`release_lock()`が呼ばれないまま）ロックファイルが
+    残った場合、本人が同じPCからすぐに再ログインしようとしても、他の誰かが
+    使用中なわけではないのに30分待たされてしまう不便を解消するため。他者が
+    使用中のロックを誤って奪ってしまうリスクは、worker_name・pc_nameの完全一致を
+    条件にすることで避けている（別PC・別作業者からの取得は従来通り経過時間判定のまま）。
 
     ロックファイルが存在するが内容を読み取れない（壊れている）場合、
     force=FalseならLockFileCorruptedErrorをそのまま送出する（自動では解除・
-    上書きしない。呼び出し元は、他の利用者が本当に使用中でないかをユーザーに
-    確認させた上で、force=Trueで再度呼び出すこと）。
+    上書きしない。同一作業者・同一PCであっても、壊れたロックの中身自体を
+    信頼できない以上この例外は変わらず送出する。呼び出し元は、他の利用者が
+    本当に使用中でないかをユーザーに確認させた上で、force=Trueで再度呼び出すこと）。
 
     force=Trueの場合、既存ロックの有効・無効・破損の有無を一切確認せず、
     無条件に新しいロックで上書きする（「使用中でないことを確認した上での
@@ -135,8 +146,13 @@ def acquire_lock(db_path: str, worker_name: str, pc_name: str, force: bool = Fal
     """
     if not force:
         existing = _read_lock(db_path)
-        if existing is not None and not _is_stale(existing):
-            return False
+        if existing is not None:
+            same_owner = (
+                existing.get("worker_name") == worker_name
+                and existing.get("pc_name") == pc_name
+            )
+            if not same_owner and not _is_stale(existing):
+                return False
 
     token = uuid.uuid4().hex
     now = datetime.now().isoformat()
@@ -228,6 +244,35 @@ def get_lock_info(db_path: str):
     except LockFileCorruptedError:
         return None
     if info is None:
+        return None
+    return {
+        "worker_name": info.get("worker_name"),
+        "pc_name": info.get("pc_name"),
+        "acquired_at": info.get("acquired_at"),
+        "last_updated": info.get("last_updated"),
+    }
+
+
+def get_active_lock_info(db_path: str):
+    """
+    削除等の危険な操作の前に、「他者が今も使用中とみなせる有効なロックが
+    存在するか」を確認するための補助関数。
+
+    get_lock_info()と似ているが、LOCK_STALE_SECONDS（30分）以上更新が無い
+    自動解除対象のロック（acquire_lock()なら上書きで取得できてしまう状態）を
+    「有効なロックではない」として区別する点が異なる。get_lock_info()自体は
+    acquire_lock()失敗時に「誰が使用中か」をそのまま表示する用途のため、この
+    区別を行わない（既存の呼び出し元の挙動を変えないよう、get_lock_info()
+    自体は変更せずこちらを別関数として新設した）。
+
+    戻り値：有効なロックがあれば{"worker_name", "pc_name", "acquired_at",
+    "last_updated"}、無ければ（ロック無し・破損・自動解除対象のいずれか）None。
+    """
+    try:
+        info = _read_lock(db_path)
+    except LockFileCorruptedError:
+        return None
+    if info is None or _is_stale(info):
         return None
     return {
         "worker_name": info.get("worker_name"),

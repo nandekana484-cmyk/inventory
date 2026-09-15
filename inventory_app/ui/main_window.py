@@ -4,6 +4,7 @@ import socket
 import threading
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
+import tkinter.font as tkfont
 import config
 from db.init_db import init_database_at
 from models.kitting_plan import init_kitting_plan_tables
@@ -23,6 +24,8 @@ from ui.parts_attributes_import_window import PartsAttributesImportWindow
 from ui.board_structure_import_window import BoardStructureImportWindow
 from ui.wip_expansion_window import WipExpansionWindow
 from ui.worker_management_window import WorkerManagementWindow
+from ui.shared_db_list_window import SharedDbListWindow
+from ui.db_delete_helper import confirm_and_delete_database
 from services.db_migration_carryover import carry_over_incomplete_lots
 from services.unprocessed_check_service import check_unprocessed_items
 from services.app_settings_service import load_last_db_path
@@ -110,6 +113,11 @@ class MainWindow(tk.Tk):
         self.btn_switch_database = ttk.Button(db_select_row1, text="切り替え", command=self.on_switch_database)
         self.btn_switch_database.pack(side=tk.LEFT)
 
+        self.btn_delete_local_database = ttk.Button(
+            db_select_row1, text="削除", command=self.on_delete_local_database,
+        )
+        self.btn_delete_local_database.pack(side=tk.LEFT, padx=(5, 0))
+
         ttk.Separator(db_select_row1, orient="vertical").pack(side=tk.LEFT, fill=tk.Y, padx=10)
 
         ttk.Label(db_select_row1, text="新規フォルダ名：").pack(side=tk.LEFT)
@@ -159,6 +167,28 @@ class MainWindow(tk.Tk):
             header_frame, text="共有フォルダのDBを開く", command=self.on_open_shared_database,
         )
         self.btn_open_shared_database.pack(side=tk.RIGHT, padx=(0, 10))
+
+        self.btn_shared_db_list = ttk.Button(
+            header_frame, text="共有フォルダのDB一覧", command=self.open_shared_db_list,
+        )
+        self.btn_shared_db_list.pack(side=tk.RIGHT, padx=(0, 10))
+
+        # 現在接続中のDBパスを常時表示する行（ヘッダー直下）。ローカル・共有フォルダ
+        # （UNC）のどちらでも、切り替え操作のたびに最新のフルパスへ更新される
+        # （_update_current_db_label()参照。呼び出し箇所：起動時のこの直後、
+        # _try_switch_db_path()＝on_switch_database()・_switch_to_shared_db()
+        # （on_open_shared_database()・SharedDbListWindow「このDBに切り替える」共通）・
+        # on_create_shared_database()共通、on_create_database()の両分岐）。
+        # 長いUNCパスでウィンドウの横幅が押し広げられてレイアウトが崩れないよう、
+        # _truncate_path_for_display()で必要に応じて中央を省略表示する
+        # （フルパスは自己管理のself._current_db_full_pathに保持）。
+        db_path_frame = ttk.Frame(self, padding=(10, 0, 10, 8))
+        db_path_frame.pack(fill=tk.X)
+        ttk.Label(db_path_frame, text="接続中のデータベース：", font=("Helvetica", 9)).pack(side=tk.LEFT)
+        self._current_db_full_path = ""
+        self.lbl_current_db_path = ttk.Label(db_path_frame, text="-", font=("Helvetica", 9), foreground="#333333")
+        self.lbl_current_db_path.pack(side=tk.LEFT)
+        self._update_current_db_label()
 
         # メニューボタン領域
         # 月次データ（config.DB_PATH切り替えの対象＝月ごとのDBフォルダに入っている
@@ -587,6 +617,64 @@ class MainWindow(tk.Tk):
         from ui.login_window import LoginWindow
         LoginWindow().mainloop()
 
+    def _update_current_db_label(self):
+        """
+        現在接続中のDBパス（config.get_current_db_label()、実体はconfig.DB_PATH
+        をそのまま返す）を、ヘッダー直下のラベル（self.lbl_current_db_path）へ
+        反映する。
+
+        呼び出し箇所：__init__()の初回表示に加え、config.DB_PATHを変更する
+        全ての操作の後（_try_switch_db_path()＝on_switch_database()・
+        _switch_to_shared_db()（on_open_shared_database()・SharedDbListWindow
+        「このDBに切り替える」共通）・on_create_shared_database()が共通で経由する、
+        on_create_database()の引き継ぎ無し分岐、_poll_create_db_queue()＝
+        on_create_database()の引き継ぎ有り分岐の非同期完了時）。
+        """
+        self._current_db_full_path = config.get_current_db_label()
+        self.lbl_current_db_path.config(
+            text=self._truncate_path_for_display(self._current_db_full_path)
+        )
+
+    # ラベル本体（接頭辞「接続中のデータベース：」を除いた、パス部分のみ）に
+    # 許容する最大描画幅（ピクセル）。ウィンドウ幅940px・接頭辞ラベルの実測幅
+    # （Helvetica 9で約135px）・左右パディング・ウィンドウ枠を差し引いた
+    # 安全側の値（実測での合計オーバーフローが無いことを確認した上で設定）。
+    _DB_PATH_LABEL_MAX_WIDTH_PX = 680
+
+    @classmethod
+    def _truncate_path_for_display(cls, path: str) -> str:
+        """
+        表示用にパスを省略する。指定フォントでの描画幅が
+        _DB_PATH_LABEL_MAX_WIDTH_PX以下ならそのまま返す。超える場合は、
+        先頭（ローカルのドライブレター、または共有フォルダのUNCサーバー名側）と
+        末尾（フォルダ名・ファイル名側。今どのDBかを判別するのに最も重要な情報）を
+        残しながら中央を1文字ずつ削り、"…"で省略する。
+
+        文字数ではなくピクセル幅で判定する理由：共有フォルダのUNCパスには
+        日本語のフォルダ名（全角文字、半角の概ね2倍の描画幅）が含まれることが
+        多く、固定文字数での省略では全角文字が連続する場合に実際の描画幅が
+        ウィンドウ幅を超えてしまう（実測で確認済み）。
+        """
+        font = tkfont.Font(font=("Helvetica", 9))
+        if font.measure(path) <= cls._DB_PATH_LABEL_MAX_WIDTH_PX:
+            return path
+
+        ellipsis = "…"
+        head_len = len(path) // 2
+        tail_len = len(path) - head_len
+        while head_len > 0 or tail_len > 0:
+            candidate = path[:head_len] + ellipsis + path[-tail_len:] if tail_len else path[:head_len] + ellipsis
+            if font.measure(candidate) <= cls._DB_PATH_LABEL_MAX_WIDTH_PX:
+                return candidate
+            # 先頭・末尾のうち長い方から1文字ずつ削り、両側の情報をできるだけ
+            # バランス良く残す。
+            if head_len >= tail_len:
+                head_len -= 1
+            else:
+                tail_len -= 1
+
+        return ellipsis
+
     def _load_db_folders(self):
         db_root = os.path.join(config.APP_DATA_DIR, "db")
         folders = []
@@ -623,6 +711,7 @@ class MainWindow(tk.Tk):
         self._release_current_lock()
         config.set_db_path(new_path)
         self._lock_acquired = True
+        self._update_current_db_label()
         return True
 
     def on_switch_database(self):
@@ -640,6 +729,21 @@ class MainWindow(tk.Tk):
             return
         messagebox.showinfo("完了", "データベースを切り替えました。", parent=self.winfo_toplevel())
 
+    def on_delete_local_database(self):
+        """
+        ローカルdb/フォルダ配下の月別DBを削除する
+        （ui.db_delete_helper.confirm_and_delete_database()、安全対策込み）。
+        削除後は一覧（db_folder_combobox）を再取得する。
+        """
+        folder = self.db_folder_var.get().strip()
+        if not folder:
+            messagebox.showwarning("警告", "削除するフォルダを選択してください。", parent=self.winfo_toplevel())
+            return
+
+        db_path = os.path.join(config.APP_DATA_DIR, "db", folder, "inventory.db")
+        if confirm_and_delete_database(self.winfo_toplevel(), db_path):
+            self._load_db_folders()
+
     def _shared_dialog_initial_dir(self) -> str:
         """
         共有フォルダ選択ダイアログの初期ディレクトリ。ドキュメントフォルダが
@@ -654,6 +758,10 @@ class MainWindow(tk.Tk):
         共有フォルダ（UNCパス等）上の既存の.dbファイルを直接選択して切り替える。
         ローカルのdb/フォルダ限定だった既存の「切り替え」プルダウンとは別経路で、
         任意のパスをconfig.set_db_path()に渡せるようにする。
+
+        実際の切り替え判定・処理は_switch_to_shared_db()に委ねる
+        （ui.shared_db_list_window.SharedDbListWindow「このDBに切り替える」と
+        同じ処理を共有するため）。
         """
         selected = filedialog.askopenfilename(
             title="共有フォルダのデータベースファイルを選択",
@@ -664,14 +772,39 @@ class MainWindow(tk.Tk):
         if not selected:
             return
 
-        new_path = os.path.abspath(selected)
+        self._switch_to_shared_db(selected)
+
+    def _switch_to_shared_db(self, path: str) -> bool:
+        """
+        共有フォルダ上のinventory.dbパス（絶対パス化前でも可）へ切り替える
+        共通処理。on_open_shared_database()（ファイル選択ダイアログ経由）と
+        ui.shared_db_list_window.SharedDbListWindow「このDBに切り替える」
+        （一覧からの選択経由）の両方から、パスの取得元だけを変えて共通で使う。
+
+        戻り値：切り替えが完了した（既に使用中だった場合を含む）ならTrue、
+        他者が使用中で切り替えられなかった場合はFalse。
+        SharedDbListWindow側は、Trueが返った場合のみ一覧画面を閉じる。
+        """
+        new_path = os.path.abspath(path)
         if new_path == os.path.abspath(config.DB_PATH):
             messagebox.showinfo("情報", "既にこのデータベースを使用中です。", parent=self.winfo_toplevel())
-            return
+            return True
 
         if not self._try_switch_db_path(new_path, error_title="開けません"):
-            return
+            return False
+
         messagebox.showinfo("完了", f"データベースを切り替えました：\n{new_path}", parent=self.winfo_toplevel())
+        return True
+
+    def open_shared_db_list(self):
+        """
+        共有フォルダ上の月別DB一覧画面（ui.shared_db_list_window.SharedDbListWindow）を
+        開く。一覧から選ばれたDBへの切り替えは_switch_to_shared_db()に委ねる
+        （既存のon_open_shared_database()と同じ切り替え経路を再利用する）。
+        """
+        self._open_singleton_window(
+            "shared_db_list", lambda: SharedDbListWindow(self, self._switch_to_shared_db),
+        )
 
     def on_create_shared_database(self):
         """
@@ -759,6 +892,7 @@ class MainWindow(tk.Tk):
         if not carry_over:
             config.set_db_path(new_db_path)
             init_kitting_plan_tables()
+            self._update_current_db_label()
             messagebox.showinfo("完了", "新しいデータベースを作成しました。", parent=self.winfo_toplevel())
             self._load_db_folders()
             self.db_folder_var.set(folder)
@@ -801,6 +935,10 @@ class MainWindow(tk.Tk):
             self._create_db_loading_window.destroy()
             self._create_db_loading_window = None
         self._set_menu_enabled(True)
+        # carry_over_incomplete_lots()は成否に関わらず、戻る時点でconfig.DB_PATHを
+        # 必ずnew_db_pathにする契約（services/db_migration_carryover.py参照）のため、
+        # success/failureどちらの分岐でもラベルを更新する。
+        self._update_current_db_label()
 
         if success:
             summary = payload["summary"]

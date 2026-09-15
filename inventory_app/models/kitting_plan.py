@@ -125,9 +125,14 @@ def upsert_pending_kitting_plan_item(data: dict, created_by: str = None) -> int:
     item辞書（kitting_list_noを除く）をそのまま渡せる想定。未知のキーは無視する。
 
     戻り値：対象行のpending_id。
-    """
-    init_kitting_plan_tables()
 
+    テーブルの存在保証について：この関数はservices.kitting_import_service.
+    import_kitting_plan_csv()のCSV行ループ内から呼ばれる想定で、同関数は
+    ループに入る前に必ずcreate_plan_batch()（内部でinit_kitting_plan_tables()を
+    呼ぶ）を実行済みのため、ここで毎回init_kitting_plan_tables()を呼ぶ必要は
+    ない（以前は呼んでいたが、CSV行ごとに冗長なCREATE TABLE/INDEX
+    IF NOT EXISTS文が再実行され性能上のボトルネックになっていたため削除した）。
+    """
     lot_no = data.get("lot_no")
     setup_file_no = data.get("setup_file_no")
     production_side = data.get("production_side")
@@ -196,8 +201,11 @@ def find_pending_kitting_plan_item(lot_no, setup_file_no, production_side, order
     （services.kitting_import_service.import_kitting_plan_csv()から呼ぶ）。
 
     戻り値：一致する行（辞書）。無ければNone。
+
+    テーブルの存在保証はupsert_pending_kitting_plan_item()と同じ理由により
+    呼び出し元（import_kitting_plan_csv()）に委ねる（init_kitting_plan_tables()の
+    毎回呼び出しは削除済み）。
     """
-    init_kitting_plan_tables()
     with get_connection() as con:
         row = con.execute("""
             SELECT * FROM pending_kitting_plan_items
@@ -210,8 +218,13 @@ def find_pending_kitting_plan_item(lot_no, setup_file_no, production_side, order
 
 
 def delete_pending_kitting_plan_item(pending_id: int):
-    """保留行（pending_kitting_plan_items）を1件削除する（確定登録が完了した後に呼ぶ）。"""
-    init_kitting_plan_tables()
+    """
+    保留行（pending_kitting_plan_items）を1件削除する（確定登録が完了した後に呼ぶ）。
+
+    テーブルの存在保証はupsert_pending_kitting_plan_item()と同じ理由により
+    呼び出し元（import_kitting_plan_csv()）に委ねる（init_kitting_plan_tables()の
+    毎回呼び出しは削除済み）。
+    """
     with get_connection() as con:
         con.execute("DELETE FROM pending_kitting_plan_items WHERE pending_id = ?", (pending_id,))
         con.commit()
