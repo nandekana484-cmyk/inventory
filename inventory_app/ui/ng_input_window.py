@@ -18,6 +18,7 @@ from models.ng_declarations import get_ng_declaration, list_ng_declarations_late
 from models.ng_exclusion_list import (
     mark_ng_excluded, unmark_ng_excluded, list_ng_exclusions,
 )
+from models.operation_log import log_operation
 from ui.checkable_treeview import CheckableTreeview
 from ui.loading_window import LoadingWindow
 from ui.scrap_correction_window import ScrapCorrectionWindow
@@ -426,6 +427,11 @@ class NgInputWindow(tk.Toplevel):
 
         worker_id = (self.current_worker or {}).get("worker_id", "SYSTEM")
         mark_ng_excluded(kitting_list_no, side, lot_no, reason, worker_id)
+        log_operation(
+            (self.current_worker or {}).get("name", "unknown"),
+            "NG対象外にする",
+            detail=f"{kitting_list_no}{f'（ロットNo. {lot_no}）' if lot_no else ''} / 面{side}",
+        )
         self.load_ng_list()
 
     def on_unmark_ng_excluded(self):
@@ -449,6 +455,11 @@ class NgInputWindow(tk.Toplevel):
             return
 
         unmark_ng_excluded(kitting_list_no, side, lot_no)
+        log_operation(
+            (self.current_worker or {}).get("name", "unknown"),
+            "NG対象外解除",
+            detail=f"{kitting_list_no}{f'（ロットNo. {lot_no}）' if lot_no else ''} / 面{side}",
+        )
         self.load_ng_list()
 
     def on_open_scrap_correction(self):
@@ -470,7 +481,7 @@ class NgInputWindow(tk.Toplevel):
 
         ScrapCorrectionWindow(
             self, kitting_list_no=kitting_list_no, lot_no=lot_no, production_side=side,
-            on_updated=self.load_ng_list,
+            on_updated=self.load_ng_list, current_worker=self.current_worker,
         )
 
     def on_expand(self, lot_no=None):
@@ -883,6 +894,11 @@ class NgInputWindow(tk.Toplevel):
             kitting_list_no, file_no, side, records, report_date,
             lot_no=lot_no, is_unplanned=is_unplanned,
         )
+        log_operation(
+            (self.current_worker or {}).get("name", "unknown"),
+            "仕損登録",
+            detail=f"{kitting_list_no}{f'（ロットNo. {lot_no}）' if lot_no else ''} / 面{side} / {len(records)}件",
+        )
 
         messagebox.showinfo("登録完了", f"{len(records)}件の仕損実績を登録しました（{report_date}）。", parent=self.winfo_toplevel())
 
@@ -1112,6 +1128,12 @@ class NgInputWindow(tk.Toplevel):
                 return
 
             self._show_bulk_expand_result(payload)
+            log_operation(
+                (self.current_worker or {}).get("name", "unknown"),
+                "NG一括展開・登録",
+                detail=f"対象{payload['total']}件 / 成功{payload['success_count']}件 / "
+                       f"失敗{len(payload['failures'])}件",
+            )
             # 状態（未展開→展開済み）を反映するため、NG一覧を再取得する
             self.load_ng_list()
 

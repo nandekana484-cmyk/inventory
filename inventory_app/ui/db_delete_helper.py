@@ -8,9 +8,10 @@ ui/shared_db_list_window.py（共有フォルダDB一覧）の両方から使う
 from tkinter import messagebox
 
 from services.db_delete_service import check_delete_safety, delete_database_files
+from models.operation_log import log_operation
 
 
-def confirm_and_delete_database(parent, db_path: str) -> bool:
+def confirm_and_delete_database(parent, db_path: str, current_worker=None) -> bool:
     """
     db_pathの削除可否をユーザーに確認し、承認されれば実際に削除する。
 
@@ -25,6 +26,12 @@ def confirm_and_delete_database(parent, db_path: str) -> bool:
 
     戻り値：実際に削除を実行したかどうか。呼び出し元（一覧画面）はTrueの
     場合のみ一覧を再取得すればよい。
+
+    操作履歴の記録先について：削除対象（db_path）自体は削除により消えてしまう
+    ため、そのDB内のoperation_logには記録を残せない。上記安全対策1により
+    db_pathは常にconfig.DB_PATH（現在接続中の別DB）と異なることが保証されて
+    いるため、代わりに現在接続中のDB（config.DB_PATH）のoperation_logへ、
+    「どのDBを削除したか」をdetailに含めて記録する（記録を諦めない方針）。
     """
     safety = check_delete_safety(db_path)
 
@@ -59,5 +66,10 @@ def confirm_and_delete_database(parent, db_path: str) -> bool:
         return False
 
     delete_database_files(db_path)
+    log_operation(
+        (current_worker or {}).get("name", "unknown"),
+        "月別DB削除",
+        detail=db_path,
+    )
     messagebox.showinfo("削除完了", f"データベースを削除しました：\n{db_path}", parent=parent)
     return True

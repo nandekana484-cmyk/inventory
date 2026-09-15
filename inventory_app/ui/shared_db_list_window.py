@@ -41,9 +41,10 @@ class SharedDbListWindow(tk.Toplevel):
     （一覧表示・親ディレクトリの永続化のみに責務を限定する）。
     """
 
-    def __init__(self, parent, switch_callback):
+    def __init__(self, parent, switch_callback, current_worker=None):
         super().__init__(parent)
         self._switch_callback = switch_callback
+        self.current_worker = current_worker or {}
 
         self.title("共有フォルダのDB一覧")
         self.geometry("760x420")
@@ -172,5 +173,5 @@ class SharedDbListWindow(tk.Toplevel):
             return
 
         path = sel[0]
-        if confirm_and_delete_database(self, path):
+        if confirm_and_delete_database(self, path, current_worker=self.current_worker):
             self.refresh(show_empty_message=False)

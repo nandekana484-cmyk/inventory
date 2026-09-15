@@ -9,6 +9,7 @@ import sqlite3
 import os
 
 from models.kitting_plan import list_plan_batches, mark_batch_deleted
+from models.operation_log import log_operation
 from ui.loading_window import LoadingWindow
 
 class KittingPlanImportWindow(tk.Toplevel):
@@ -162,6 +163,11 @@ class KittingPlanImportWindow(tk.Toplevel):
                 msg += f"\n{confirmed_from_pending_count}件が保留から確定されました。"
 
             self.result_label.config(text=status_text)
+            log_operation(
+                self.current_worker.get("name", "unknown"),
+                "キッティング計画CSV取込",
+                detail=f"バッチID: {batch_id} / {count}件（{filename}）",
+            )
             messagebox.showinfo("取込完了", msg, parent=self.winfo_toplevel())
             self._load_batch_list(select_batch_id=batch_id)
 
@@ -292,6 +298,11 @@ class KittingPlanImportWindow(tk.Toplevel):
             return
         try:
             mark_batch_deleted(bid, deleted=True)
+            log_operation(
+                self.current_worker.get("name", "unknown"),
+                "キッティング計画バッチ削除",
+                detail=f"バッチID: {bid}",
+            )
             messagebox.showinfo(
                 "完了",
                 f"バッチ {bid} を削除しました（ソフト削除）。\n"

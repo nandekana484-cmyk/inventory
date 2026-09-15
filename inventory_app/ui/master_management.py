@@ -8,6 +8,7 @@ from models.master import (
     get_all_parts, upsert_part, delete_part,
     get_all_products, upsert_product, delete_product,
 )
+from models.operation_log import log_operation
 
 class MasterManagementWindow(tk.Toplevel):
     def __init__(self, parent, current_worker):
@@ -85,6 +86,11 @@ class MasterManagementWindow(tk.Toplevel):
             messagebox.showwarning("エラー", "部品/リールIDを入力してください。", parent=self.winfo_toplevel())
             return
         upsert_part(pid, c96, ptype, shelf, "リール")
+        log_operation(
+            self.current_worker.get("name", "unknown"),
+            "部品マスタ登録・更新",
+            detail=f"{pid}（{c96}）",
+        )
         self.load_parts()
         messagebox.showinfo("完了", "部品情報を保存しました。", parent=self.winfo_toplevel())
 
@@ -95,6 +101,11 @@ class MasterManagementWindow(tk.Toplevel):
         pid = self.tree_parts.item(sel[0], "values")[0]
         if messagebox.askyesno("確認", f"部品 {pid} を削除しますか？", parent=self.winfo_toplevel()):
             delete_part(pid)
+            log_operation(
+                self.current_worker.get("name", "unknown"),
+                "部品マスタ削除",
+                detail=str(pid),
+            )
             self.load_parts()
 
     # --- タブ2: 完成品マスタ ---
@@ -140,6 +151,11 @@ class MasterManagementWindow(tk.Toplevel):
             messagebox.showwarning("エラー", "製品IDを入力してください。", parent=self.winfo_toplevel())
             return
         upsert_product(pid, pname)
+        log_operation(
+            self.current_worker.get("name", "unknown"),
+            "完成品マスタ登録・更新",
+            detail=f"{pid}（{pname}）",
+        )
         self.load_products()
         messagebox.showinfo("完了", "製品情報を保存しました。", parent=self.winfo_toplevel())
 
@@ -150,4 +166,9 @@ class MasterManagementWindow(tk.Toplevel):
         pid = self.tree_products.item(sel[0], "values")[0]
         if messagebox.askyesno("確認", f"製品 {pid} を削除しますか？", parent=self.winfo_toplevel()):
             delete_product(pid)
+            log_operation(
+                self.current_worker.get("name", "unknown"),
+                "完成品マスタ削除",
+                detail=str(pid),
+            )
             self.load_products()

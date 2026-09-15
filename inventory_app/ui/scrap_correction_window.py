@@ -5,6 +5,7 @@ from tkinter import ttk, messagebox
 from models.scrap_records import (
     list_scrap_records_by_kitting_no, update_scrap_record, delete_scrap_record,
 )
+from models.operation_log import log_operation
 
 
 class ScrapCorrectionWindow(tk.Toplevel):
@@ -27,12 +28,14 @@ class ScrapCorrectionWindow(tk.Toplevel):
     そのため本画面での個別修正・削除は、対象の計画が再展開・再登録されると
     （新しいidの行に置き換わり）失われる。この注意を画面上に常時表示する。
     """
-    def __init__(self, parent, kitting_list_no, lot_no=None, production_side=None, on_updated=None):
+    def __init__(self, parent, kitting_list_no, lot_no=None, production_side=None, on_updated=None,
+                 current_worker=None):
         super().__init__(parent)
         self.kitting_list_no = kitting_list_no
         self.lot_no = lot_no
         self.production_side = production_side
         self.on_updated = on_updated
+        self.current_worker = current_worker or {}
 
         self.title(f"NG実績修正（{kitting_list_no}）")
         self.geometry("520x460")
@@ -121,6 +124,11 @@ class ScrapCorrectionWindow(tk.Toplevel):
             return
 
         update_scrap_record(record_id, qty)
+        log_operation(
+            self.current_worker.get("name", "unknown"),
+            "NG実績修正",
+            detail=f"{self.kitting_list_no}{f'（ロットNo. {self.lot_no}）' if self.lot_no else ''} / {qty:g}",
+        )
         self._after_change()
         messagebox.showinfo("修正完了", "NG実績を修正しました。", parent=self.winfo_toplevel())
 
@@ -136,6 +144,11 @@ class ScrapCorrectionWindow(tk.Toplevel):
             return
 
         delete_scrap_record(record_id)
+        log_operation(
+            self.current_worker.get("name", "unknown"),
+            "NG実績削除",
+            detail=f"{self.kitting_list_no}{f'（ロットNo. {self.lot_no}）' if self.lot_no else ''}",
+        )
         self._after_change()
         messagebox.showinfo("削除完了", "NG実績を削除しました。", parent=self.winfo_toplevel())
 

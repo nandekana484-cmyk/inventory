@@ -25,6 +25,8 @@ from ui.board_structure_import_window import BoardStructureImportWindow
 from ui.wip_expansion_window import WipExpansionWindow
 from ui.worker_management_window import WorkerManagementWindow
 from ui.shared_db_list_window import SharedDbListWindow
+from ui.operation_log_window import OperationLogWindow
+from models.operation_log import log_operation
 from ui.db_delete_helper import confirm_and_delete_database
 from services.db_migration_carryover import carry_over_incomplete_lots
 from services.unprocessed_check_service import check_unprocessed_items
@@ -261,6 +263,15 @@ class MainWindow(tk.Tk):
             monthly_frame, text="8. PDF読み取り（在庫照合）", command=self.open_pdf_ocr_import
         )
         btn_pdf_ocr_import.pack(fill=tk.X, pady=5)
+
+        # operation_logテーブルは月次DB（config.DB_PATH）に同居し、DBを切り替える
+        # たびに履歴も切り替わる（月をまたいだ通算履歴にはならない）ため、月をまたいで
+        # 使い回す共通マスタ側ではなく、月次データ側に配置した（項目8と同じ理由・
+        # 同じ末尾追加の考え方）。
+        btn_operation_log = ttk.Button(
+            monthly_frame, text="9. 操作履歴", command=self.open_operation_log
+        )
+        btn_operation_log.pack(fill=tk.X, pady=5)
 
         ttk.Label(master_frame, text="共通マスタ", font=("Helvetica", 11, "bold")).pack(anchor=tk.W, pady=(0, 5))
 
@@ -518,11 +529,14 @@ class MainWindow(tk.Tk):
         self.after(200, _poll)
 
     def open_inventory_input(self):
-        self._open_singleton_window("inventory_input", lambda: InventoryInputWindow(self))
+        self._open_singleton_window(
+            "inventory_input", lambda: InventoryInputWindow(self, current_worker=self.current_worker)
+        )
 
     def open_theoretical_inventory_import(self):
         self._open_singleton_window(
-            "theoretical_inventory_import", lambda: TheoreticalInventoryImportWindow(self)
+            "theoretical_inventory_import",
+            lambda: TheoreticalInventoryImportWindow(self, current_worker=self.current_worker),
         )
 
     def open_inventory_diff(self):
@@ -565,7 +579,9 @@ class MainWindow(tk.Tk):
         self._open_singleton_window("inventory_diff", lambda: InventoryDiffWindow(self))
 
     def open_master_import(self):
-        self._open_singleton_window("master_import", lambda: MasterImportWindow(self))
+        self._open_singleton_window(
+            "master_import", lambda: MasterImportWindow(self, current_worker=self.current_worker)
+        )
 
     def open_ng_input(self):
         self._open_singleton_window("ng_input", lambda: NgInputWindow(self, self.current_worker))
@@ -580,16 +596,24 @@ class MainWindow(tk.Tk):
 
     def open_parts_attributes_import(self):
         self._open_singleton_window(
-            "parts_attributes_import", lambda: PartsAttributesImportWindow(self)
+            "parts_attributes_import",
+            lambda: PartsAttributesImportWindow(self, current_worker=self.current_worker),
         )
 
     def open_board_structure_import(self):
         self._open_singleton_window(
-            "board_structure_import", lambda: BoardStructureImportWindow(self)
+            "board_structure_import",
+            lambda: BoardStructureImportWindow(self, current_worker=self.current_worker),
         )
 
     def open_worker_management(self):
-        self._open_singleton_window("worker_management", lambda: WorkerManagementWindow(self))
+        self._open_singleton_window(
+            "worker_management",
+            lambda: WorkerManagementWindow(self, current_worker=self.current_worker),
+        )
+
+    def open_operation_log(self):
+        self._open_singleton_window("operation_log", lambda: OperationLogWindow(self))
 
     def on_logout(self):
         """
@@ -741,7 +765,7 @@ class MainWindow(tk.Tk):
             return
 
         db_path = os.path.join(config.APP_DATA_DIR, "db", folder, "inventory.db")
-        if confirm_and_delete_database(self.winfo_toplevel(), db_path):
+        if confirm_and_delete_database(self.winfo_toplevel(), db_path, current_worker=self.current_worker):
             self._load_db_folders()
 
     def _shared_dialog_initial_dir(self) -> str:
@@ -803,7 +827,8 @@ class MainWindow(tk.Tk):
         （既存のon_open_shared_database()と同じ切り替え経路を再利用する）。
         """
         self._open_singleton_window(
-            "shared_db_list", lambda: SharedDbListWindow(self, self._switch_to_shared_db),
+            "shared_db_list",
+            lambda: SharedDbListWindow(self, self._switch_to_shared_db, current_worker=self.current_worker),
         )
 
     def on_create_shared_database(self):
@@ -945,6 +970,17 @@ class MainWindow(tk.Tk):
             folder_name = payload["folder"]
             failed_lot_nos = summary.get("failed_lot_nos") or []
             skipped_lot_nos = summary.get("skipped_lot_nos") or []
+
+            # config.DB_PATHはこの時点で既にnew_db_pathへ切り替わっている
+            # （carry_over_incomplete_lots()の契約、上のコメント参照）ため、
+            # ここでlog_operation()を呼ぶと新DB側のoperation_logに記録される
+            # （旧DB側には一切書き込まれない）。
+            log_operation(
+                self.current_worker.get("name", "unknown"),
+                "未完了計画のDB間引き継ぎ",
+                detail=f"成功{summary['lots_copied']}件 / スキップ{len(skipped_lot_nos)}件 / "
+                       f"失敗{len(failed_lot_nos)}件",
+            )
 
             msg = (
                 "新しいデータベースを作成しました。\n"

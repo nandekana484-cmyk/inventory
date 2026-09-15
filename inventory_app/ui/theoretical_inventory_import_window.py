@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
 from models.theoretical_inventory import list_theoretical_inventory, upsert_theoretical_inventory
+from models.operation_log import log_operation
 from ui.loading_window import LoadingWindow
 
 # エンコーディング自動判定の候補（この順で試す）
@@ -73,8 +74,9 @@ class TheoreticalInventoryImportWindow(tk.Toplevel):
     """
     他部門管理の理論在庫（96コード・在庫数）をCSVからインポートする画面。
     """
-    def __init__(self, parent):
+    def __init__(self, parent, current_worker=None):
         super().__init__(parent)
+        self.current_worker = current_worker or {}
         self.selected_csv_path = None
 
         self.title("理論在庫インポート")
@@ -163,6 +165,11 @@ class TheoreticalInventoryImportWindow(tk.Toplevel):
 
             result = payload
             self.load_theoretical_inventory()
+            log_operation(
+                self.current_worker.get("name", "unknown"),
+                "理論在庫インポート",
+                detail=f"{result['imported']}件",
+            )
 
             msg = f"成功件数：{result['imported']}件\n警告件数：{len(result['warnings'])}件"
             warnings = result["warnings"]

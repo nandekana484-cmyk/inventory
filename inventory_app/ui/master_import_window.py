@@ -6,6 +6,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
 from services.master_import_service import import_parts_csv
+from models.operation_log import log_operation
 from ui.loading_window import LoadingWindow
 
 
@@ -19,7 +20,7 @@ class MasterImportWindow(tk.Toplevel):
     （丁取り数等の部品属性）と共有フォルダのTSV（services.bom_service）に
     完全移行しており、本画面の対象外。
     """
-    def __init__(self, parent):
+    def __init__(self, parent, current_worker=None):
         super().__init__(parent)
         self.title("マスタインポート")
         self.geometry("800x520")
@@ -27,7 +28,7 @@ class MasterImportWindow(tk.Toplevel):
         notebook = ttk.Notebook(self)
         notebook.pack(expand=True, fill=tk.BOTH, padx=10, pady=10)
 
-        notebook.add(PartsImportTab(notebook), text=" 部品マスタインポート ")
+        notebook.add(PartsImportTab(notebook, current_worker=current_worker), text=" 部品マスタインポート ")
 
 
 class _BaseImportTab(ttk.Frame):
@@ -35,12 +36,15 @@ class _BaseImportTab(ttk.Frame):
     「CSV選択」「インポート実行」「プレビューTreeview」を持つタブの共通実装。
     プレビュー列（PREVIEW_COLS）と実際のインポート処理（run_import）は
     サブクラスで指定する（部品マスタ／BOMマスタ以外のタブを将来追加する際の拡張ポイント）。
+    OPERATION_NAME（operation_logへ記録する操作名）もサブクラスで指定する。
     """
     PREVIEW_COLS = ()
     PREVIEW_HEADERS = {}
+    OPERATION_NAME = "マスタインポート"
 
-    def __init__(self, parent):
+    def __init__(self, parent, current_worker=None):
         super().__init__(parent, padding=10)
+        self.current_worker = current_worker or {}
         self.selected_csv_path = None
 
         select_frame = ttk.Frame(self)
@@ -125,6 +129,11 @@ class _BaseImportTab(ttk.Frame):
 
             result = payload
             self.load_preview(result["rows"])
+            log_operation(
+                self.current_worker.get("name", "unknown"),
+                self.OPERATION_NAME,
+                detail=f"{result['imported']}件",
+            )
 
             msg = f"取込件数：{result['imported']}件"
             warnings = result["warnings"]
@@ -141,6 +150,7 @@ class _BaseImportTab(ttk.Frame):
 class PartsImportTab(_BaseImportTab):
     PREVIEW_COLS = ("part_no", "name", "shelf")
     PREVIEW_HEADERS = {"part_no": "部品番号", "name": "部品名", "shelf": "棚番"}
+    OPERATION_NAME = "部品マスタインポート"
 
     def run_import(self):
         return import_parts_csv(self.selected_csv_path)

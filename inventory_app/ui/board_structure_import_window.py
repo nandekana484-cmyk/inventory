@@ -9,6 +9,7 @@ from tkinter import ttk, messagebox, filedialog
 from models.board_structure_master import (
     list_board_structure, upsert_board_structure, delete_board_structure_not_in,
 )
+from models.operation_log import log_operation
 from ui.loading_window import LoadingWindow
 
 # エンコーディング自動判定の候補（この順で試す。ui/parts_attributes_import_window.py と同一）
@@ -177,8 +178,9 @@ class BoardStructureImportWindow(tk.Toplevel):
     生産実績入力画面（ui/kitting_production_entry.py）の計画情報欄「構成基板数」
     表示で、plan["board_name"]をキーに参照される。
     """
-    def __init__(self, parent):
+    def __init__(self, parent, current_worker=None):
         super().__init__(parent)
+        self.current_worker = current_worker or {}
         self.selected_csv_path = None
 
         self.title("構成基板数マスタインポート")
@@ -276,6 +278,11 @@ class BoardStructureImportWindow(tk.Toplevel):
 
             result = payload
             self.load_board_structure()
+            log_operation(
+                self.current_worker.get("name", "unknown"),
+                "構成基板数マスタインポート",
+                detail=f"成功{result['imported']}件 / 削除{result.get('deleted', 0)}件",
+            )
 
             msg = (
                 f"成功件数：{result['imported']}件\n"

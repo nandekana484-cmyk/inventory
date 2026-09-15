@@ -13,6 +13,7 @@ from ui.daily_report_window import (
     ReportPreviewWindow,
 )
 from models.wip_board_snapshot import save_wip_snapshot
+from models.operation_log import log_operation
 
 
 class MonthlyReportWindow(tk.Toplevel):
@@ -20,8 +21,9 @@ class MonthlyReportWindow(tk.Toplevel):
     任意の期間（開始日～終了日）を指定して集計する月報ウィンドウ。
     列構成・印刷プレビュー・PDF/CSV出力ロジックは日報（DailyReportWindow）と共通。
     """
-    def __init__(self, parent):
+    def __init__(self, parent, current_worker=None):
         super().__init__(parent)
+        self.current_worker = current_worker or {}
         self.from_date = None
         self.to_date = None
         self.report_rows = []
@@ -299,6 +301,11 @@ class MonthlyReportWindow(tk.Toplevel):
         lot_nos = sorted({row["lot_no"] for row in self.report_rows if row["lot_no"]})
         wip_rows = build_wip_extraction_rows(lot_nos)
         save_wip_snapshot(wip_rows)
+        log_operation(
+            self.current_worker.get("name", "unknown"),
+            "仕掛数量抽出",
+            detail=f"{len(wip_rows)}件",
+        )
 
         messagebox.showinfo(
             "完了", f"{len(wip_rows)}件の仕掛基板をスナップショットに保存しました。",

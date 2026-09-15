@@ -3,6 +3,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 from models.workers import get_all_workers, upsert_worker, set_worker_active
+from models.operation_log import log_operation
 
 
 class WorkerManagementWindow(tk.Toplevel):
@@ -14,8 +15,9 @@ class WorkerManagementWindow(tk.Toplevel):
     is_active フラグによる無効化のみをサポートする
     （無効化した作業者はログイン画面の一覧から外れるが、履歴の参照は壊れない）。
     """
-    def __init__(self, parent):
+    def __init__(self, parent, current_worker=None):
         super().__init__(parent)
+        self.current_worker = current_worker or {}
         self.title("作業者管理")
         self.geometry("640x520")
 
@@ -116,6 +118,11 @@ class WorkerManagementWindow(tk.Toplevel):
 
         is_active = self.var_active.get()
         upsert_worker(worker_id, name, role, is_active)
+        log_operation(
+            self.current_worker.get("name", "unknown"),
+            "作業者登録・更新",
+            detail=f"{worker_id}（{name}）",
+        )
         self.load_workers()
         messagebox.showinfo("完了", f"作業者「{name}」を保存しました。", parent=self.winfo_toplevel())
 
@@ -135,6 +142,11 @@ class WorkerManagementWindow(tk.Toplevel):
             return
 
         set_worker_active(worker_id, new_active)
+        log_operation(
+            self.current_worker.get("name", "unknown"),
+            f"作業者{action_label}",
+            detail=f"{worker_id}（{name}）",
+        )
         self.load_workers()
         self.var_active.set(new_active)
         messagebox.showinfo("完了", f"作業者「{name}」を{action_label}しました。", parent=self.winfo_toplevel())

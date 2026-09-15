@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
 from models.inventory import list_inventory, upsert_inventory, upsert_inventory_stock, delete_inventory
+from models.operation_log import log_operation
 from ui.loading_window import LoadingWindow
 
 # エンコーディング自動判定の候補（この順で試す）
@@ -107,8 +108,9 @@ class InventoryInputWindow(tk.Toplevel):
     確認状態を含む）が必要になった場合は、models.inventory 側のテーブル定義・
     関数の拡張が別途必要（本タスクでは実施しない）。
     """
-    def __init__(self, parent):
+    def __init__(self, parent, current_worker=None):
         super().__init__(parent)
+        self.current_worker = current_worker or {}
         self.title("在庫入力")
         self.geometry("760x520")
 
@@ -201,6 +203,11 @@ class InventoryInputWindow(tk.Toplevel):
             return
 
         delete_inventory(part_no)
+        log_operation(
+            self.current_worker.get("name", "unknown"),
+            "在庫削除",
+            detail=part_no,
+        )
         self.load_inventory()
         self.entry_part_no.delete(0, tk.END)
         self.entry_stock_qty.delete(0, tk.END)
@@ -252,6 +259,11 @@ class InventoryInputWindow(tk.Toplevel):
 
             result = payload
             self.load_inventory()
+            log_operation(
+                self.current_worker.get("name", "unknown"),
+                "在庫CSV取込",
+                detail=f"{result['imported']}件",
+            )
 
             msg = f"成功件数：{result['imported']}件\n警告件数：{len(result['warnings'])}件"
             warnings = result["warnings"]

@@ -21,6 +21,7 @@ from models.kitting_plan import list_active_plan_items, find_opposite_side_plan,
 from models.production import list_daily_production_today
 from models.ng_declarations import save_ng_declaration, get_ng_declaration
 from models.board_structure_master import get_board_structure
+from models.operation_log import log_operation
 from ui.daily_report_window import DailyReportWindow
 from ui.monthly_report_window import MonthlyReportWindow
 from ui.plan_candidate_dialog import select_plan_candidate_by_lot
@@ -1282,13 +1283,14 @@ class KittingProductionEntryWindow(tk.Toplevel):
             kitting_list_no=self.current_plan["kitting_list_no"],
             lot_no=self.current_plan["lot_no"],
             on_updated=self.load_plan_list,
+            current_worker=self.current_worker,
         )
 
     def open_daily_report(self):
         DailyReportWindow(self)
 
     def open_monthly_report(self):
-        MonthlyReportWindow(self)
+        MonthlyReportWindow(self, current_worker=self.current_worker)
 
     def on_production_csv_import(self):
         """
@@ -1755,6 +1757,12 @@ class KittingProductionEntryWindow(tk.Toplevel):
             messagebox.showerror("登録エラー", f"実績の登録に失敗しました：{e}", parent=self.winfo_toplevel())
             return
 
+        log_operation(
+            self.current_worker.get("name", "unknown"),
+            "生産実績登録",
+            detail=f"{kitting_no} / ロットNo. {lot_no} / {daily_qty:g}",
+        )
+
         # 実績CSVステージング一覧（ui.production_import_staging_window）経由の
         # 登録であれば、実績登録が成功した時点でその行を一覧から消す
         # （_on_csv_staging_row_confirmed()で転記時にセットされたコールバック）。
@@ -1914,11 +1922,12 @@ class ActualCorrectionWindow(tk.Toplevel):
     """
     完了済み計画も含め、production_daily の実績を修正・削除するためのウィンドウ。
     """
-    def __init__(self, parent, kitting_list_no, lot_no, on_updated=None):
+    def __init__(self, parent, kitting_list_no, lot_no, on_updated=None, current_worker=None):
         super().__init__(parent)
         self.kitting_list_no = kitting_list_no
         self.lot_no = lot_no
         self.on_updated = on_updated
+        self.current_worker = current_worker or {}
 
         self.title(f"実績修正（{kitting_list_no}）")
         self.geometry("500x420")
@@ -1990,6 +1999,11 @@ class ActualCorrectionWindow(tk.Toplevel):
             return
 
         update_daily_result(prod_log_id, daily_qty)
+        log_operation(
+            self.current_worker.get("name", "unknown"),
+            "生産実績修正",
+            detail=f"{self.kitting_list_no} / ロットNo. {self.lot_no} / {daily_qty:g}",
+        )
         self._after_change()
         messagebox.showinfo("修正完了", "実績を修正しました。", parent=self.winfo_toplevel())
 
@@ -2003,6 +2017,11 @@ class ActualCorrectionWindow(tk.Toplevel):
             return
 
         delete_daily_result(prod_log_id)
+        log_operation(
+            self.current_worker.get("name", "unknown"),
+            "生産実績削除",
+            detail=f"{self.kitting_list_no} / ロットNo. {self.lot_no}",
+        )
         self._after_change()
         messagebox.showinfo("削除完了", "実績を削除しました。", parent=self.winfo_toplevel())
 

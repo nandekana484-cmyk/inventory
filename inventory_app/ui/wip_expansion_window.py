@@ -11,6 +11,7 @@ from models.wip_scrap_records import save_wip_scrap_records, list_wip_scrap_summ
 from models.wip_exclusion_list import (
     mark_wip_excluded, unmark_wip_excluded, list_wip_exclusions,
 )
+from models.operation_log import log_operation
 from ui.checkable_treeview import CheckableTreeview
 from ui.loading_window import LoadingWindow
 from ui.wip_scrap_correction_window import WipScrapCorrectionWindow
@@ -287,6 +288,11 @@ class WipExpansionWindow(tk.Toplevel):
 
         worker_id = (self.current_worker or {}).get("worker_id", "SYSTEM")
         mark_wip_excluded(kitting_list_no, lot_no, file_no, side, reason, worker_id)
+        log_operation(
+            (self.current_worker or {}).get("name", "unknown"),
+            "仕掛対象外にする",
+            detail=f"{kitting_list_no}{f'（ロットNo. {lot_no}）' if lot_no else ''} / 面{side}",
+        )
         self.load_wip_list()
 
     def on_unmark_wip_excluded(self):
@@ -308,6 +314,11 @@ class WipExpansionWindow(tk.Toplevel):
             return
 
         unmark_wip_excluded(kitting_list_no, lot_no, file_no, side)
+        log_operation(
+            (self.current_worker or {}).get("name", "unknown"),
+            "仕掛対象外解除",
+            detail=f"{kitting_list_no}{f'（ロットNo. {lot_no}）' if lot_no else ''} / 面{side}",
+        )
         self.load_wip_list()
 
     def on_open_wip_scrap_correction(self):
@@ -331,7 +342,7 @@ class WipExpansionWindow(tk.Toplevel):
 
         WipScrapCorrectionWindow(
             self, kitting_list_no=kitting_list_no, lot_no=lot_no, production_side=side,
-            on_updated=self.load_wip_list,
+            on_updated=self.load_wip_list, current_worker=self.current_worker,
         )
 
     def _run_bom_expansion_async(self, work_fn, on_success):
@@ -490,6 +501,11 @@ class WipExpansionWindow(tk.Toplevel):
             return
 
         save_wip_scrap_records(kitting_list_no, file_no, side, records, lot_no=lot_no, mounting_line=mounting_line)
+        log_operation(
+            (self.current_worker or {}).get("name", "unknown"),
+            "仕掛確定登録",
+            detail=f"{kitting_list_no}{f'（ロットNo. {lot_no}）' if lot_no else ''} / 面{side} / {len(records)}件",
+        )
 
         messagebox.showinfo(
             "登録完了", f"{len(records)}件の仕掛展開結果を確定登録しました。", parent=self.winfo_toplevel(),
@@ -715,6 +731,12 @@ class WipExpansionWindow(tk.Toplevel):
                 return
 
             self._show_bulk_wip_expand_result(payload)
+            log_operation(
+                (self.current_worker or {}).get("name", "unknown"),
+                "仕掛一括展開・登録",
+                detail=f"対象{payload['total']}件 / 成功{payload['success_count']}件 / "
+                       f"失敗{len(payload['failures'])}件",
+            )
             # 状態（未確定→確定済み）を反映するため、仕掛一覧を再取得する
             self.load_wip_list()
 

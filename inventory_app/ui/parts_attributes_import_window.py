@@ -9,6 +9,7 @@ from tkinter import ttk, messagebox, filedialog
 from models.parts_attributes import (
     list_parts_attributes, upsert_parts_attributes, delete_parts_attributes_not_in,
 )
+from models.operation_log import log_operation
 from ui.loading_window import LoadingWindow
 
 # エンコーディング自動判定の候補（この順で試す）
@@ -145,8 +146,9 @@ class PartsAttributesImportWindow(tk.Toplevel):
     新BOM計算ロジック（services.bom_service.BOMService._calculate_bom）で、
     BOM TSVの係数が0かつRフラグがある行の qty 計算（部品員数 ÷ 丁取り数）に使われる。
     """
-    def __init__(self, parent):
+    def __init__(self, parent, current_worker=None):
         super().__init__(parent)
+        self.current_worker = current_worker or {}
         self.selected_csv_path = None
 
         self.title("部品属性（丁取り数）インポート")
@@ -254,6 +256,11 @@ class PartsAttributesImportWindow(tk.Toplevel):
 
             result = payload
             self.load_parts_attributes()
+            log_operation(
+                self.current_worker.get("name", "unknown"),
+                "部品属性インポート",
+                detail=f"成功{result['imported']}件 / 削除{result.get('deleted', 0)}件",
+            )
 
             msg = f"成功件数：{result['imported']}件\n警告件数：{len(result['warnings'])}件\n削除件数：{result.get('deleted', 0)}件"
             warnings = result["warnings"]
