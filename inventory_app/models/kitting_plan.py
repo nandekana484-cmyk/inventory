@@ -754,7 +754,7 @@ def create_plan_version(
         return new_plan_item_id
 
 
-def find_matching_plan_items(lot_no: str, product_name_normalized: str):
+def find_matching_plan_items(lot_no: str, product_name_normalized: str, plan_items_by_lot: dict = None):
     """
     実績CSV自動取込（services.production_import_service）用の内部ヘルパー。
     lot_no + 正規化済み製品名(product_name_normalized) から、候補となる
@@ -764,6 +764,19 @@ def find_matching_plan_items(lot_no: str, product_name_normalized: str):
     production_import_service 側で未一致の理由（計画なし／製品名ゆらぎ／複数候補あり）
     を判別する際にも同じロジックを使うために公開関数としている。
 
+    plan_items_by_lot：呼び出し元がlist_active_plan_items()を1回だけ呼び、
+    lot_noをキーにグルーピングした辞書（{lot_no: [item, ...], ...}、キーは
+    str(item.get("lot_no") or "").strip()で正規化したもの）を事前に用意できる
+    場合に渡す。渡された場合、本関数は内部でlist_active_plan_items()を呼ばず、
+    この辞書から該当lot_noの候補をそのまま取得する（CSV取込のように行数分
+    繰り返し呼ばれる場面でのN+1解消。services.production_service.
+    list_incomplete_lots()で行った「1回だけ全件取得→lot_noごとにグルーピング」
+    と同じアプローチ。実測で2000行のCSV取込が約61秒→改善後は1秒未満まで
+    短縮：list_active_plan_items()が全計画のフルスキャン＋累計実績の一括集計を
+    行毎回呼ばれていたことが原因だった）。省略時（None）は従来通り
+    list_active_plan_items()を都度呼ぶ（後方互換。呼び出し元を変更したくない
+    既存・将来の利用箇所への影響を避けるため、デフォルト引数として残す）。
+
     戻り値：(lot_no が一致する現在アクティブな計画一覧, その中で製品名も一致する計画一覧)
     """
     # services.production_import_service は本モジュールの resolve_plan_by_lot_and_name /
@@ -771,10 +784,13 @@ def find_matching_plan_items(lot_no: str, product_name_normalized: str):
     # 逆方向にインポートすると循環importになる。関数内インポートで回避する。
     from services.production_import_service import normalize_product_name
 
-    candidates = [
-        item for item in list_active_plan_items()
-        if str(item.get("lot_no") or "").strip() == lot_no
-    ]
+    if plan_items_by_lot is not None:
+        candidates = plan_items_by_lot.get(lot_no, [])
+    else:
+        candidates = [
+            item for item in list_active_plan_items()
+            if str(item.get("lot_no") or "").strip() == lot_no
+        ]
 
     # 一致判定：
     #   1. 完全一致／2. 正規化一致：
@@ -791,7 +807,7 @@ def find_matching_plan_items(lot_no: str, product_name_normalized: str):
     return candidates, matched
 
 
-def resolve_plan_by_lot_and_name(lot_no: str, product_name_normalized: str):
+def resolve_plan_by_lot_and_name(lot_no: str, product_name_normalized: str, plan_items_by_lot: dict = None):
     """
     lot_no + 正規化済み製品名(product_name_normalized) から計画を一意に特定し、
     kitting_list_no を返す（実績CSV自動取込用）。
@@ -799,8 +815,12 @@ def resolve_plan_by_lot_and_name(lot_no: str, product_name_normalized: str):
     一致するアクティブな計画の kitting_list_no が1種類のみに定まれば、その値を返す。
     0件、または複数の異なる kitting_list_no に一致する場合（曖昧）は None を返す。
     未一致の理由を区別したい場合は find_matching_plan_items() を利用すること。
+
+    plan_items_by_lot：find_matching_plan_items()と同じ（事前グルーピング辞書）。
+    そのままfind_matching_plan_items()へ引き継ぐのみで、本関数自体のロジックは
+    変更しない。省略時（None）は従来通り。
     """
-    _, matched = find_matching_plan_items(lot_no, product_name_normalized)
+    _, matched = find_matching_plan_items(lot_no, product_name_normalized, plan_items_by_lot)
 
     unique_kitting_nos = {item["kitting_list_no"] for item in matched}
     if len(unique_kitting_nos) == 1:

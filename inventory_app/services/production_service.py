@@ -287,8 +287,32 @@ def _build_report_rows(records):
     kitting_list_no をキーに計画情報（setup_file_no / board_name / lot_no / order_qty）と
     突き合わせ、通し番号・生産数・累計数を付与した辞書のリストを返す。
 
-    さらに、同一 lot_no に属する実績（daily_qty）の最小値を「引落数量」とし、
-    各行の「仕掛数量」（daily_qty - 引落数量）・「未完了数」（order_qty - 引落数量）を付与する。
+    「引落数量」（lot_completed）・「仕掛数量」（surplus_qty）・「未完了数」
+    （lot_remaining）は、services.production_service.calculate_lot_completion()
+    （lot_noに属する全setup_file_no×production_side単位の実績累計を合算した上で
+    最小値を取る、正しいロジック）をそのまま使う。以前はこの関数独自に
+    「その日/期間に実績登録があった行（daily_qty）だけを対象にした最小値」を
+    計算していたが、これは同一lot_no内に実績登録が無い（未生産の）file_noが
+    ある場合、その未生産file_noがそもそも集計対象に含まれず、生産済みの
+    file_noのdaily_qtyだけを見て誤って「引落済み」と判定してしまう不具合が
+    あった（調査により実データ・lot_no=110068等で確認済み。calculate_lot_
+    completion()なら未生産file_noの実績0が正しく最小値に反映され、引落数量が
+    0のまま＝全て仕掛のままになる）。同一lot_noに属する行が複数あっても
+    calculate_lot_completion()の呼び出しはlot_no単位でキャッシュし、
+    重複計算を避ける（ui.kitting_production_entry.py::_fetch_plan_list_rows()
+    相当の既存パターンと同じ考え方）。
+
+    calculate_lot_completion()がValueError（対象lot_noの計画が1件も見つから
+    ない。実績はあるが、その後計画自体が削除・無効化されたlot_noが理論上
+    あり得る）を送出した場合、またはこの行のfile_no・面の組み合わせが
+    calculate_lot_completion()の返すfile_actualsに見つからない場合
+    （plan自体が見つからない・delete_flag=1等で計画一覧から外れている場合）は、
+    正しい完成数を判定できないため、安全側（未完成扱い）にフォールバックする：
+    lot_completed=0、surplus_qty=daily_qty、lot_remaining=order_qtyとする
+    （build_wip_extraction_rows()・_collect_order_qty_inconsistencies()の
+    ValueError時「判定不能としてスキップ」と同じ考え方だが、こちらは実績
+    自体は既に登録済みのデータのため行ごと非表示にはせず、保守的な値のまま
+    表示を継続する）。
 
     lot_noは、計画を都度検索し直す（plan["lot_no"]）のではなく、
     production_daily自身が持つrec["lot_id"]（登録時のlot_noがそのまま記録されている
@@ -331,13 +355,6 @@ def _build_report_rows(records):
             "lot_no": lot_no or (plan["lot_no"] if plan else ""),
         })
 
-    lot_completed = {}
-    for item in enriched:
-        lot_no = item["lot_no"]
-        daily_qty = item["daily_qty"]
-        if lot_no not in lot_completed or daily_qty < lot_completed[lot_no]:
-            lot_completed[lot_no] = daily_qty
-
     excluded_indices = set()
     inconsistency_warnings = []
     for idx, item in enumerate(enriched):
@@ -372,6 +389,7 @@ def _build_report_rows(records):
 
     report_rows = []
     seq = 1
+    lot_completion_cache = {}
     for idx, item in enumerate(enriched):
         if idx in excluded_indices:
             continue
@@ -381,7 +399,28 @@ def _build_report_rows(records):
         lot_no = item["lot_no"]
         daily_qty = item["daily_qty"]
         order_qty = plan["order_qty"] if plan else 0
-        completed = lot_completed.get(lot_no, 0)
+
+        if lot_no not in lot_completion_cache:
+            try:
+                lot_completion_cache[lot_no] = calculate_lot_completion(lot_no)
+            except ValueError:
+                lot_completion_cache[lot_no] = None
+        lot_info = lot_completion_cache[lot_no]
+
+        file_actual = None
+        if lot_info is not None and plan is not None:
+            file_actual = lot_info["file_actuals"].get(
+                (plan["setup_file_no"], plan["production_side"])
+            )
+
+        if lot_info is not None and file_actual is not None:
+            completed = lot_info["completed_quantity"]
+            surplus_qty = file_actual - completed
+            lot_remaining = lot_info["remaining_quantity"]
+        else:
+            completed = 0
+            surplus_qty = daily_qty
+            lot_remaining = order_qty
 
         report_rows.append({
             "seq": seq,
@@ -395,8 +434,8 @@ def _build_report_rows(records):
             "app_cumulative_qty": get_app_cumulative_qty(kitting_list_no, lot_no),
             "order_qty": order_qty,
             "lot_completed": completed,
-            "surplus_qty": daily_qty - completed,
-            "lot_remaining": order_qty - completed,
+            "surplus_qty": surplus_qty,
+            "lot_remaining": lot_remaining,
         })
         seq += 1
 

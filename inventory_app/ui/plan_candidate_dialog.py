@@ -47,7 +47,32 @@ def _format_qty(value):
         return str(value)
 
 
-def _show_candidate_list_dialog(parent, title, description, candidates):
+_QTY_DIFF_WARN_RATIO = 0.2  # 数量差が当日実績(daily_qty)の20%を超える候補を視覚的に注意喚起する閾値
+
+
+def _compute_qty_diff(candidate, daily_qty):
+    """candidateのplanned_qtyとdaily_qtyの差の絶対値。比較不能（どちらかがNone・数値化不能）ならNone。"""
+    if daily_qty is None:
+        return None
+    planned = candidate.get("planned_qty")
+    if planned is None:
+        return None
+    try:
+        return abs(float(planned) - float(daily_qty))
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_large_qty_diff(candidate, daily_qty):
+    """候補一覧で背景色を変えて注意喚起すべきほど数量差が大きいか。"""
+    diff = _compute_qty_diff(candidate, daily_qty)
+    if diff is None or daily_qty is None:
+        return False
+    threshold = abs(daily_qty) * _QTY_DIFF_WARN_RATIO
+    return diff > threshold
+
+
+def _show_candidate_list_dialog(parent, title, description, candidates, daily_qty=None):
     """
     候補一覧（kitting_plan_itemsの行の辞書のリスト）をTreeviewで一覧表示し、
     ユーザーに1件選ばせるモーダルダイアログの共通実装。
@@ -59,6 +84,12 @@ def _show_candidate_list_dialog(parent, title, description, candidates):
 
     戻り値：選択されたcandidatesの要素（辞書）。ユーザーがキャンセル
     （キャンセルボタン／ウインドウを閉じる）した場合はNone。
+
+    daily_qty：CSVの当日実績数（select_plan_candidate_by_lot()経由の場合のみ
+    指定される）。指定された場合、各行のplanned_qtyとの差が_QTY_DIFF_WARN_RATIO
+    （20%）を超える候補の背景色を薄く変え（"large_diff"タグ）、視覚的に
+    注意喚起する。select_plan_candidate()側はdaily_qtyという概念自体が
+    無いため、Noneのまま（ハイライト無し）。
 
     parentが最小化（アイコン化）状態の場合、Tkinter/Windowsの仕様上、
     transient(parent)したダイアログはstate()="withdrawn"のまま実際には
@@ -90,13 +121,15 @@ def _show_candidate_list_dialog(parent, title, description, candidates):
         tree.heading(col, text=_HEADERS[col])
         tree.column(col, width=100, anchor=tk.E if col in _RIGHT_ALIGNED else tk.W)
     tree.pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
+    tree.tag_configure("large_diff", background="#fff3cd")
 
     vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
     tree.configure(yscrollcommand=vsb.set)
     vsb.pack(side=tk.RIGHT, fill=tk.Y)
 
     for candidate in candidates:
-        tree.insert("", tk.END, values=(
+        tags = ("large_diff",) if _is_large_qty_diff(candidate, daily_qty) else ()
+        tree.insert("", tk.END, tags=tags, values=(
             candidate.get("lot_no") or "",
             candidate.get("board_name") or "",
             candidate.get("setup_file_no") or "",
@@ -161,32 +194,87 @@ def _parse_report_date(value):
         return None
 
 
-def _sort_candidates_by_report_date_closeness(candidates, report_date):
-    """
-    report_date（CSVの払い出し日、"YYYY-MM-DD"形式を期待）がパース可能な場合、
-    各候補のplan_start_datetime（"YYYY/MM/DD HH:MM:SS"形式）との日数差が
-    小さい順に安定ソートする。models.kitting_plan.find_opposite_side_plan()の
-    「パース→日数差→最小を選ぶ」というパターンを、1件選ぶのではなく全件を
-    並べ替えるために転用したもの。
+_DATE_DIFF_WEIGHT = 0.7
+_QTY_DIFF_WEIGHT = 0.3
 
-    plan_start_datetimeがパース不能な候補は末尾に回す（それら同士の相対順序は
-    元のまま、sorted()の安定性による）。report_date自体がNone・パース不能な
-    場合は、比較の基準が無いためソートせず元の順序のリストをそのまま返す。
+
+def _normalize(value, lo, hi):
+    """min-max正規化。値が無い（None）場合や、候補間で差が無い（hi<=lo）場合は0.0（中立）扱い。"""
+    if value is None or hi <= lo:
+        return 0.0
+    return (value - lo) / (hi - lo)
+
+
+def _sort_candidates_by_closeness(candidates, report_date, daily_qty=None):
+    """
+    候補一覧を、(1) report_date（CSVの払い出し日）とplan_start_datetimeの日数差、
+    (2) daily_qty（CSVの当日実績数）とplanned_qty（計画数）の差、の2軸を
+    組み合わせた複合スコアの小さい順に安定ソートする。
+
+    方式の選定理由：日数差（単位：日）と数量差（単位：枚等）はスケールが
+    全く異なるため、単純に足し合わせることができない。そこで候補集合内で
+    それぞれをmin-max正規化（0〜1に変換）した上で、日数差を主軸としつつ
+    （重み0.7）数量差もタイブレークとして反映する（重み0.3）よう
+    重み付け合算する。日数差だけでは優劣が付かない・僅差のケースで
+    数量差の大きい候補が後ろに回る一方、数量差だけでは大差が付いても
+    日数差が支配的な限りは日付の近さが優先される（0.7 vs 0.3という重みの
+    非対称性により、日付の近さが「主」・数量の近さが「従」という
+    要件を反映）。
+
+    以前の実装（_sort_candidates_by_report_date_closenessという名前だった、
+    日数差のみによる単純ソート）とのスケール互換性：daily_qty未指定
+    （report_date比較のみ）の場合、正規化後の値に一律で重み0.7を掛けても
+    ソート順（大小関係）自体は変わらないため、既存の呼び出し・挙動を
+    後方互換のまま保つ。
+
+    - report_dateがNone・パース不能：日数差は使わず、数量差のみで判定する
+      （daily_qty未指定なら結果的にソートせず元の順序のまま）。
+    - plan_start_datetimeがパース不能な候補：report_dateが使える場合に限り、
+      （数量差の大小に関わらず）末尾に回す。それら同士の相対順序は元のまま
+      （sortの安定性による）。
+    - planned_qtyが無い・数値化不能な候補：数量差は「不明」として中立
+      （ペナルティ無し＝0.0）に扱う。候補一覧からは除外しない。
     """
     reference = _parse_report_date(report_date)
-    if reference is None:
+    has_date_ref = reference is not None
+    has_qty_ref = daily_qty is not None
+
+    if not has_date_ref and not has_qty_ref:
         return list(candidates)
 
-    def sort_key(candidate):
+    def date_diff(candidate):
+        if not has_date_ref:
+            return None
         dt = _parse_plan_start_datetime(candidate.get("plan_start_datetime"))
         if dt is None:
-            return (1, 0)
-        return (0, abs((dt - reference).days))
+            return None
+        return abs((dt - reference).days)
 
-    return sorted(candidates, key=sort_key)
+    date_diffs = [date_diff(c) for c in candidates]
+    qty_diffs = [_compute_qty_diff(c, daily_qty) for c in candidates]
+
+    known_dates = [d for d in date_diffs if d is not None]
+    known_qtys = [q for q in qty_diffs if q is not None]
+    date_lo, date_hi = (min(known_dates), max(known_dates)) if known_dates else (0, 0)
+    qty_lo, qty_hi = (min(known_qtys), max(known_qtys)) if known_qtys else (0, 0)
+
+    def sort_key(item):
+        _, d, q = item
+        if has_date_ref and d is None:
+            return (1, 0.0)
+        score = 0.0
+        if has_date_ref:
+            score += _DATE_DIFF_WEIGHT * _normalize(d, date_lo, date_hi)
+        if has_qty_ref:
+            qty_weight = _QTY_DIFF_WEIGHT if has_date_ref else 1.0
+            score += qty_weight * _normalize(q, qty_lo, qty_hi)
+        return (0, score)
+
+    combined = sorted(zip(candidates, date_diffs, qty_diffs), key=sort_key)
+    return [candidate for candidate, _, _ in combined]
 
 
-def select_plan_candidate_by_lot(parent, lot_no, product_name, candidates, matched, report_date=None):
+def select_plan_candidate_by_lot(parent, lot_no, product_name, candidates, matched, report_date=None, daily_qty=None):
     """
     候補一覧から、実績CSV取込のステージング一覧（ui.production_import_staging_window）
     向けに1件選ばせる。select_plan_candidate()とは絞り込みの軸
@@ -210,25 +298,33 @@ def select_plan_candidate_by_lot(parent, lot_no, product_name, candidates, match
     （呼び出し元の方針：登録前に必ず人間の確認を挟む）。
 
     report_date：CSVの払い出し日（"YYYY-MM-DD"形式を期待、ui.kitting_
-    production_entry._resolve_csv_report_date()と同じ形式）。指定・パース
-    可能な場合、候補一覧を各候補のplan_start_datetimeとの日数差が小さい順
-    （払い出し日に近いものが先頭）に並べ替える。省略・パース不能な場合は
-    ソートせず元の順序のまま表示する。
+    production_entry._resolve_csv_report_date()と同じ形式）。
+
+    daily_qty：CSVの当日実績数。report_dateとあわせて、
+    _sort_candidates_by_closeness()による複合的な優先順位付け（日数差を
+    主軸に、数量差をタイブレークとして反映）に使う。指定した場合は
+    候補一覧にも当日実績数を表示し、計画数（planned_qty列）と見比べ
+    やすくする。省略時（None）は数量差を考慮せず、従来通り日数差のみで
+    ソートする。いずれも省略・パース不能な場合はソートせず元の順序の
+    まま表示する。数量差が大きい候補も一覧から除外はしない（優先順位を
+    下げる、および一覧上でハイライトするのみ）。
 
     戻り値：選択されたcandidatesまたはmatchedの要素（辞書）。キャンセル時はNone。
     """
     using_fallback = not matched
     effective_candidates = candidates if using_fallback else matched
-    effective_candidates = _sort_candidates_by_report_date_closeness(effective_candidates, report_date)
+    effective_candidates = _sort_candidates_by_closeness(effective_candidates, report_date, daily_qty)
 
     description = (
         f"ロットNo. {lot_no}（製品名: {product_name}）に該当する計画候補です。\n"
-        "登録する計画を選択してください。"
     )
+    if daily_qty is not None:
+        description += f"当日実績数：{_format_qty(daily_qty)}（計画数と見比べてご確認ください）\n"
+    description += "登録する計画を選択してください。"
     if using_fallback:
         description += (
             "\n※ 製品名が完全一致する候補がありませんでした。"
             "ロットNo.が一致する全ての候補を表示しています。"
         )
 
-    return _show_candidate_list_dialog(parent, "計画の選択", description, effective_candidates)
+    return _show_candidate_list_dialog(parent, "計画の選択", description, effective_candidates, daily_qty=daily_qty)

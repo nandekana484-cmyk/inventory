@@ -25,7 +25,7 @@ from models.operation_log import log_operation
 from ui.daily_report_window import DailyReportWindow
 from ui.monthly_report_window import MonthlyReportWindow
 from ui.plan_candidate_dialog import select_plan_candidate_by_lot
-from ui.production_import_staging_window import ProductionImportStagingWindow
+from ui.production_import_staging_window import open_or_notify
 from ui.loading_window import LoadingWindow
 
 
@@ -86,6 +86,13 @@ class KittingProductionEntryWindow(tk.Toplevel):
         # report_dateとして使う（CSV経由でない通常の手動登録ではNoneのまま＝
         # 従来通り実行日が使われる）。
         self._pending_csv_report_date = None
+        # 実績CSVステージング一覧（ui.production_import_staging_window.
+        # ProductionImportStagingWindow）のインスタンス参照。転記・登録の過程で
+        # 本ウインドウ（KittingProductionEntryWindow）にフォーカスが移ると
+        # ステージング一覧が背後に隠れてしまうため、_perform_registration()の
+        # 登録成功時にこの参照を使ってlift()で手前に戻す（on_production_csv_
+        # import()経由で開いた場合のみセットされる。開いていなければNoneのまま）。
+        self._csv_staging_window = None
 
         # 実績CSV取込（on_production_csv_import()）の非同期パース用。
         # ui.kitting_plan_import.KittingPlanImportWindow.on_start_import()と同じ
@@ -1294,13 +1301,16 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
     def on_production_csv_import(self):
         """
-        実績CSV（lot_no + 製品名ベース）を解析するが、この時点ではDBへ一切
-        書き込まない（「確認・選択・転記」方式）。解析結果は
-        ProductionImportStagingWindow に一覧表示し、行をダブルクリックした
-        際に候補選択ダイアログ（ui.plan_candidate_dialog.select_plan_candidate_by_lot()）
-        →計画確定→実績記入欄への転記、という流れで
-        _on_csv_staging_row_confirmed() に処理を委ねる。実際の登録は既存の
-        「実績記入欄→NG面1→NG面2→登録確認ダイアログ→登録」フロー
+        実績CSV（lot_no + 製品名ベース）を解析するが、production_dailyへは
+        一切書き込まない（「確認・選択・転記」方式）。解析結果（生の行データ）は
+        models.production_import_staging.pending_csv_import_rowsへ永続化される
+        （parse_production_csv_for_staging()内部で実施。ステージングデータの
+        永続化）。永続化後、open_pending_csv_staging_window()でステージング
+        一覧（ui.production_import_staging_window）を開いて表示し、行を
+        ダブルクリックした際に候補選択ダイアログ（ui.plan_candidate_dialog.
+        select_plan_candidate_by_lot()）→計画確定→実績記入欄への転記、という
+        流れで_on_csv_staging_row_confirmed() に処理を委ねる。実際の登録は
+        既存の「実績記入欄→NG面1→NG面2→登録確認ダイアログ→登録」フロー
         （_start_registration()）にそのまま乗せる。
 
         以前はimport_production_csv()で即時登録していたが、CSVの内容を
@@ -1310,7 +1320,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         （import_production_csv()自体は後方互換のため変更していない）。
 
         parse_production_csv_for_staging()はファイル読み込み・DBアクセス
-        （候補計画の検索）のみを行いTkinterには一切触れないため、UIスレッドで
+        （保留行の保存）のみを行いTkinterには一切触れないため、UIスレッドで
         同期実行すると行数の多いCSVでは画面がフリーズしたように見える。
         ui.kitting_plan_import.KittingPlanImportWindow.on_start_import()で
         確立済みのパターン（LoadingWindow表示→threading.Thread(daemon=True)で
@@ -1346,8 +1356,12 @@ class KittingProductionEntryWindow(tk.Toplevel):
     def _poll_csv_import_queue(self):
         """
         _run_csv_parse_in_thread()の完了をポーリングで検知し、UIスレッド上で
-        ロード画面を閉じてステージング一覧（ProductionImportStagingWindow）を
-        表示する。
+        ロード画面を閉じる。parse_production_csv_for_staging()は既にCSVの
+        行データをmodels.production_import_staging.pending_csv_import_rowsへ
+        永続化済みのため（ステージングデータの永続化）、ここでは保存件数
+        （imported_count）・警告を確認した上で、open_pending_csv_staging_window()
+        （このCSVで新規追加された分・以前から未処理のまま残っていた分を
+        まとめてDBから読み込んで表示する共通の入口）を呼ぶ。
         """
         try:
             success, payload = self._csv_import_queue.get_nowait()
@@ -1364,7 +1378,8 @@ class KittingProductionEntryWindow(tk.Toplevel):
             messagebox.showerror("エラー", f"実績CSV取込中にエラーが発生しました：\n{payload}", parent=self.winfo_toplevel())
             return
 
-        staged_rows = payload["rows"]
+        imported_count = payload["imported_count"]
+        already_registered_count = payload["already_registered_count"]
         warnings = payload["warnings"]
 
         if warnings:
@@ -1374,11 +1389,45 @@ class KittingProductionEntryWindow(tk.Toplevel):
                 "実績CSV取込：警告", f"警告（{len(warnings)}件）：\n{shown}{more}", parent=self.winfo_toplevel()
             )
 
-        if not staged_rows:
+        if already_registered_count > 0:
+            # services.production_import_service.is_already_registered()で、
+            # 既にproduction_dailyへ同じ数量で登録済みと判定された行の件数
+            # （ステージング一覧には表示しない）。
+            messagebox.showinfo(
+                "実績CSV取込",
+                f"{already_registered_count}件は登録済みのためスキップしました。",
+                parent=self.winfo_toplevel(),
+            )
+
+        if imported_count == 0:
+            # このCSVからは1件も保留行を追加できなかった、という意味の
+            # メッセージ（以前から残っている未処理行の有無とは別の話）。
+            # 過去の未処理行を確認したい場合は、メインメニューの
+            # 「実績CSV取込状況」から改めて開いてもらう。
             messagebox.showinfo("実績CSV取込", "登録対象の行がありませんでした。", parent=self.winfo_toplevel())
             return
 
-        ProductionImportStagingWindow(self, staged_rows, self._on_csv_staging_row_confirmed)
+        self.open_pending_csv_staging_window()
+
+    def open_pending_csv_staging_window(self):
+        """
+        実績CSV取込状況（未処理のステージング行、models.production_import_
+        staging.list_pending_csv_import_rows()）を開く。新規CSV取込直後
+        （_poll_csv_import_queue()）・メインメニューの「実績CSV取込状況」
+        （ui.main_window.MainWindow.open_production_import_staging()、新規
+        CSV取込を経由しない再開）の両方から呼ばれる共通の入口。
+
+        未処理行が1件も無ければui.production_import_staging_window.
+        open_or_notify()が案内メッセージのみ表示し、ウインドウは開かない。
+
+        既に開いている場合は多重に開かず前面に出す（_perform_registration()
+        末尾のlift()処理（登録完了時にステージング一覧を手前に戻す）が参照する
+        self._csv_staging_windowと常に同じインスタンスを指すようにするため）。
+        """
+        if self._csv_staging_window is not None and self._csv_staging_window.winfo_exists():
+            self._csv_staging_window.lift()
+            return
+        self._csv_staging_window = open_or_notify(self, self._on_csv_staging_row_confirmed)
 
     def _on_csv_staging_row_confirmed(self, row, remove_callback):
         """
@@ -1394,13 +1443,15 @@ class KittingProductionEntryWindow(tk.Toplevel):
         （self._pending_csv_row_removalに保持しておく）。CSV行の払い出し日
         （row["report_date"]）も同時にself._pending_csv_report_dateへ保持し、
         _perform_registration()でregister_daily_result()/overwrite_daily_result()の
-        report_dateとして使う。
+        report_dateとして使う。row["daily_qty"]は候補選択ダイアログにも渡し
+        （select_plan_candidate_by_lot()のdaily_qty引数）、日数差だけでなく
+        計画数との数量差も考慮した優先順位付け・表示に使う。
 
         キャンセル時は何もしない（ステージング一覧の行はそのまま残る）。
         """
         chosen = select_plan_candidate_by_lot(
             self, row["lot_no"], row["product_name"], row["candidates"], row["matched"],
-            row.get("report_date"),
+            row.get("report_date"), row.get("daily_qty"),
         )
         if chosen is None:
             return
@@ -1747,6 +1798,10 @@ class KittingProductionEntryWindow(tk.Toplevel):
         lot_no = self.current_plan["lot_no"]
         report_date = _resolve_csv_report_date(self._pending_csv_report_date)
         self._pending_csv_report_date = None
+        # self._pending_csv_row_removalはこの直後（remove_callback呼び出し時）に
+        # Noneへクリアされるため、末尾でのステージング一覧lift()の要否判定用に
+        # ここで先に控えておく。
+        from_csv_staging = self._pending_csv_row_removal is not None
 
         try:
             if preview["existing_daily_qty"] is not None:
@@ -1819,6 +1874,23 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
         messagebox.showinfo("登録完了", "\n".join(msg_lines), parent=self.winfo_toplevel())
         self.entry_daily_qty.focus_set()
+
+        # 実績CSVステージング一覧経由の登録であれば、ここで一覧を手前に戻す。
+        # 直前のentry_daily_qty.focus_set()で本ウインドウ（KittingProduction
+        # EntryWindow）側が前面に来ており、ステージング一覧が背後に隠れたままに
+        # なるため（本メソッド冒頭のremove_callback呼び出し直後にlift()しても、
+        # このfocus_set()で再び隠れてしまうため、末尾で行う必要がある）。
+        # 常時最前面（topmost）は、この後に開く可能性がある他のモーダル
+        # ダイアログ（候補選択・登録確認・エラー等）まで覆い隠してしまう恐れが
+        # あるため採用せず、登録完了のこのタイミングでのみ前面に戻す方式とした。
+        # ステージング一覧が最小化（アイコン化）されていた場合にlift()だけでは
+        # 復元されない問題は、ui.plan_candidate_dialog._show_candidate_list_
+        # dialog()のiconic対策と同じ考え方でdeiconify()してから戻す。
+        if from_csv_staging and self._csv_staging_window is not None \
+                and self._csv_staging_window.winfo_exists():
+            if self._csv_staging_window.state() == "iconic":
+                self._csv_staging_window.deiconify()
+            self._csv_staging_window.lift()
 
     def _register_opposite_side_daily_result(self, daily_qty, worker_id):
         """

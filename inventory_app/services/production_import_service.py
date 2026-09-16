@@ -22,6 +22,12 @@ from models.kitting_plan import (
     resolve_plan_by_lot_and_name,
     find_matching_plan_items,
     find_plan_item_by_kitting_no,
+    list_active_plan_items,
+)
+from models.production import get_app_cumulative_qty
+from models.production_import_staging import (
+    create_csv_import_batch,
+    upsert_pending_csv_import_row,
 )
 
 # 列名マッピング辞書（拡張ポイント）：canonical key -> 候補列名リスト
@@ -65,6 +71,96 @@ def normalize_product_name(name):
     normalized = normalized.lower().strip()
     normalized = re.sub(r"\s+", " ", normalized)
     return normalized
+
+
+def group_active_plan_items_by_lot(include_completed=False):
+    """
+    list_active_plan_items()を1回だけ呼び、lot_noをキーにグルーピングした辞書を
+    返す（{lot_no: [item, ...], ...}）。
+
+    include_completed：list_active_plan_items()にそのまま渡す（省略時は
+    False＝完了済み除外、通常の候補表示・自動確定判定用）。is_already_
+    registered()は、Trueで取得したグルーピング結果を別途渡すこと（完了済み
+    計画こそ「既に登録済み」判定の対象になるため。詳細はis_already_
+    registered()のdocstring参照）。
+
+    import_production_csv()は、CSVの行数分models.kitting_plan.
+    find_matching_plan_items()を呼ぶが、以前はその内部で毎回
+    list_active_plan_items()（現在アクティブな全計画のフルスキャン＋累計実績の
+    一括集計）が実行されており、CSV行数に比例して同じ全件取得が繰り返される
+    N+1状態だった（実測：2000行で約61秒）。services.production_service.
+    list_incomplete_lots()で採用済みの「1回だけ全件取得→Python側でlot_noごとに
+    グルーピング」と同じアプローチをこちらにも適用し、ループに入る前に本関数で
+    1回だけ計画一覧を取得する。
+
+    モジュール外にも公開している理由：ui.production_import_staging_window
+    （実績CSVステージング一覧）が、表示・再開のたびに保留行の候補を
+    find_matching_plan_items()で再照合する際、同じくN+1を避けるために
+    この関数を再利用するため（ステージングデータの永続化に伴い、候補自体は
+    DBに保存せず毎回再計算する方針とした。models.production_import_staging
+    参照）。
+
+    グルーピングキーはmodels.kitting_plan.find_matching_plan_items()の従来の
+    絞り込み条件（str(item.get("lot_no") or "").strip() == lot_no）と同じ正規化を
+    行う。呼び出し元がfind_matching_plan_items()へ渡すlot_noも同様に
+    str(...).strip()済みのため、キーの表記は一致する。
+    """
+    grouped = {}
+    for item in list_active_plan_items(include_completed=include_completed):
+        key = str(item.get("lot_no") or "").strip()
+        grouped.setdefault(key, []).append(item)
+    return grouped
+
+
+def is_already_registered(lot_no, product_name, daily_qty, plan_items_by_lot=None):
+    """
+    このCSV行（lot_no・product_name・daily_qty）が指す計画について、
+    production_dailyへ既に同じ数量で登録済みかどうかを判定する。
+    実績CSVステージング一覧（parse_production_csv_for_staging()）で、
+    重複登録の必要が無い行を一覧から除外するために使う。
+
+    対象計画の特定：find_matching_plan_items(lot_no, 正規化済み
+    product_name, plan_items_by_lot)を呼び、製品名まで一致した計画
+    （matched）がちょうど1件に定まる場合のみ判定を行う。0件（該当計画なし）
+    または複数件（lot_no+製品名だけでは一意特定できない、あいまい）の
+    場合は「判定不可」としてFalseを返す（＝一覧からは除外しない。誤って
+    有効な行を隠してしまうことを避けるため、判定できない場合は常に
+    「未登録」側に倒す）。
+
+    判定：matchedの1件について、models.production.get_app_cumulative_qty(
+    kitting_list_no, lot_no)（既存の実績取得関数、production_dailyの
+    daily_qty合計）を取得し、CSVのdaily_qtyと完全一致する場合のみ
+    「登録済み」（True）と判定する。数量が異なる場合（訂正が必要な
+    ケース）はFalse（一覧に表示し、通常通り確認・上書きの対象とする）。
+
+    plan_items_by_lot：group_active_plan_items_by_lot(include_completed=True)の
+    戻り値を渡すこと（省略時はlist_active_plan_items(include_completed=True)を
+    都度呼ぶ）。CSV行数分呼ばれる想定のため、呼び出し元は事前に1回だけ取得した
+    ものを渡し、N+1を避けること。
+
+    include_completed=Trueが必須な理由（重要）：models.kitting_plan.
+    list_active_plan_items()のデフォルト（include_completed=False）は、
+    実績が発注数に到達済み＝完了扱いの計画を除外する。本関数が検出したい
+    「既に登録済み（数量一致）」の計画は、まさにこの「完了済み」に該当する
+    ことが多く（実データで確認済み：lot_no=256939、全file_no生産済みの
+    ケースでは、デフォルトのままだとcandidatesが0件になり判定不能になって
+    しまっていた）、デフォルトのまま呼ぶと本関数の主目的（完了済みCSVの
+    再取込を検出する）を果たせない。find_matching_plan_items()の通常の
+    呼び出し（候補選択・自動確定判定用）がinclude_completed=Falseを
+    要求する理由（models.kitting_plan.list_active_plan_items()のdocstring
+    参照）とは目的が異なるため、本関数専用に別のグルーピング結果を使う。
+    """
+    if plan_items_by_lot is None:
+        plan_items_by_lot = group_active_plan_items_by_lot(include_completed=True)
+
+    product_name_normalized = normalize_product_name(product_name)
+    _, matched = find_matching_plan_items(lot_no, product_name_normalized, plan_items_by_lot)
+    if len(matched) != 1:
+        return False
+
+    plan = matched[0]
+    existing_qty = get_app_cumulative_qty(plan["kitting_list_no"], lot_no)
+    return existing_qty == daily_qty
 
 
 def import_production_csv(file_path, default_worker_id=None):
@@ -123,6 +219,11 @@ def import_production_csv(file_path, default_worker_id=None):
     errors = []
     required_column_skipped_count = 0
 
+    # list_active_plan_items()（現在アクティブな全計画のフルスキャン＋累計実績の
+    # 一括集計）をCSVの行数分繰り返し呼ぶN+1を避けるため、ループに入る前に1回だけ
+    # 呼び、lot_noごとにグルーピングしておく（group_active_plan_items_by_lot()参照）。
+    plan_items_by_lot = group_active_plan_items_by_lot()
+
     for i, row in enumerate(rows, start=2):  # 1行目はヘッダーのためCSV上の行番号に合わせる
         lot_no = row.get("lot_no")
         product_name = row.get("product_name")
@@ -149,10 +250,10 @@ def import_production_csv(file_path, default_worker_id=None):
         worker_id = row.get("worker_id") or default_worker_id or "CSV_IMPORT"
 
         product_name_normalized = normalize_product_name(product_name)
-        kitting_list_no = resolve_plan_by_lot_and_name(lot_no, product_name_normalized)
+        kitting_list_no = resolve_plan_by_lot_and_name(lot_no, product_name_normalized, plan_items_by_lot)
 
         if not kitting_list_no:
-            candidates, matched = find_matching_plan_items(lot_no, product_name_normalized)
+            candidates, matched = find_matching_plan_items(lot_no, product_name_normalized, plan_items_by_lot)
             if not candidates:
                 reason = "計画が見つからない（該当lot_noの計画なし）"
             elif not matched:
@@ -273,32 +374,47 @@ STAGING_STATUS_LABELS = {
 
 def parse_production_csv_for_staging(file_path, default_worker_id=None):
     """
-    実績CSVを解析するが、DBへは一切書き込まない（「確認・選択・転記」方式の
-    実績取込一覧向け）。import_production_csv()（即時登録版）とは別の
-    エントリーポイントとして新設した。import_production_csv()自体は後方互換の
-    ため変更していない。
+    実績CSVを解析し、production_daily へは書き込まず、
+    models.production_import_staging.pending_csv_import_rows へ永続化する
+    （「確認・選択・転記」方式の実績取込一覧向け）。import_production_csv()
+    （即時登録版）とは別のエントリーポイントとして新設した。
+    import_production_csv()自体は後方互換のため変更していない。
 
     必須列の検証（lot_no・product_name・daily_qtyの空欄チェック、daily_qtyの
     数値変換）・9割スキップ時の注意喚起は import_production_csv() と同じ
     ロジックを踏襲する。
 
-    各行について、models.kitting_plan.find_matching_plan_items(lot_no,
-    正規化済み製品名) を呼び、そのlot_noに属する現在アクティブな計画
-    （candidates）と、製品名も一致するもの（matched）を取得した上で、
-    以下の3状態のいずれかを"status"として付与する：
-      - "no_candidates"：candidatesが0件（該当lot_noの計画が無い）
-      - "needs_selection"：candidatesは1件以上あるが、matchedの
-        kitting_list_noが0種類または複数種類で自動確定できない
-      - "auto_resolvable"：matchedのkitting_list_noがちょうど1種類
-        （import_production_csv()ならそのまま自動登録される状態）
+    以前は本関数がここでmodels.kitting_plan.find_matching_plan_items()を
+    呼んで候補（candidates/matched）・状態（status）を計算していたが、
+    ステージングデータの永続化に伴い廃止した：候補はkitting_plan_itemsの
+    スナップショットであり、DBに保存すると計画の変更（新バージョン作成・
+    完了等）に追随できず陳腐化する。そのため候補計算は行わず、CSVの生の
+    行データ（lot_no・product_name・daily_qty・report_date・worker_id）のみを
+    保存し、候補の再照合はui.production_import_staging_window側で表示・
+    再開のたびに行う方針とした（models.production_import_staging参照）。
 
-    "auto_resolvable"であっても、実際にその計画を確定させるかどうかの判断は
-    呼び出し元のUI（必ず候補選択ダイアログを経由させる方針）に委ねる。
-    本関数はcandidatesが1件のみの場合でも自動的に確定させたりはしない。
+    同一lot_no+正規化済みproduct_nameの行が既存の保留行と重複する場合、
+    upsert_pending_csv_import_row()が古い保留行を削除して新しい内容で
+    置き換える（delete-then-insert。異なるタイミングで取り込んだCSVに
+    同じ行が含まれる場合、後から取り込んだ方が優先される）。
+
+    既に登録済み（数量一致）の行はステージング対象にしない：
+    is_already_registered()で判定し、Trueの行はupsert_pending_csv_import_row()
+    を呼ばずスキップする（既に同じ内容がproduction_dailyへ登録済みであり、
+    改めて確認・登録する必要が無いため）。パース時点（本関数）でスキップする
+    方式を採用した理由：CSV取込完了時のメッセージ（呼び出し元）に「スキップ
+    件数」をその場で表示する必要があり、パース時点であれば戻り値に件数を
+    含めるだけで済むが、表示時点（ステージング一覧を開くたび）でのフィルタ
+    リングだと、取込完了時点ではまだ何件スキップされるか確定しない
+    （ウインドウを開くまで計算しない）ため、要件（3）に合わない。
+    is_already_registered()自体は再照合可能な情報（find_matching_plan_items()・
+    get_app_cumulative_qty()）のみで判定しており、DBに何かを永続化するわけ
+    ではないため、後からこの行の状況が変わった（登録が取り消された等）場合も
+    次回CSV再取込時に改めて判定されるだけで、データの整合性上の問題は無い。
 
     戻り値：{
-        "rows": [{"row", "lot_no", "product_name", "daily_qty", "report_date",
-                   "worker_id", "candidates", "matched", "status"}, ...],
+        "imported_count": 保留行として保存した件数,
+        "already_registered_count": 既に登録済み（数量一致）と判定してスキップした件数,
         "warnings": [CSV解析時点の警告メッセージ（必須列欠落・数値変換エラー等）],
     }
     "report_date"はCSVの「払い出し日」相当の値をそのまま保持するが、
@@ -307,9 +423,19 @@ def parse_production_csv_for_staging(file_path, default_worker_id=None):
     """
     rows = parse_csv_generic(file_path, COLUMN_MAP_PRODUCTION)
 
-    staged_rows = []
     warnings = []
     required_column_skipped_count = 0
+    imported_count = 0
+    already_registered_count = 0
+
+    import_batch_id = create_csv_import_batch(file_path, imported_by=default_worker_id)
+
+    # is_already_registered()もfind_matching_plan_items()経由でlist_active_plan_items()
+    # を使うため、CSV行数分のN+1を避けるためループに入る前に1回だけ取得する
+    # （group_active_plan_items_by_lot()参照）。is_already_registered()は
+    # 完了済み計画こそ検出対象のため、include_completed=Trueで取得する
+    # （is_already_registered()のdocstring参照）。
+    plan_items_by_lot = group_active_plan_items_by_lot(include_completed=True)
 
     for i, row in enumerate(rows, start=2):  # 1行目はヘッダーのためCSV上の行番号に合わせる
         lot_no = row.get("lot_no")
@@ -336,26 +462,19 @@ def parse_production_csv_for_staging(file_path, default_worker_id=None):
         report_date = row.get("report_date") or None
         worker_id = row.get("worker_id") or default_worker_id or "CSV_IMPORT"
 
-        product_name_normalized = normalize_product_name(product_name)
-        candidates, matched = find_matching_plan_items(lot_no, product_name_normalized)
+        if is_already_registered(lot_no, product_name, daily_qty, plan_items_by_lot):
+            already_registered_count += 1
+            continue
 
-        if not candidates:
-            status = "no_candidates"
-        else:
-            unique_kitting_nos = {c["kitting_list_no"] for c in matched}
-            status = "auto_resolvable" if len(unique_kitting_nos) == 1 else "needs_selection"
-
-        staged_rows.append({
-            "row": i,
+        upsert_pending_csv_import_row({
+            "csv_row_no": i,
             "lot_no": lot_no,
             "product_name": product_name,
             "daily_qty": daily_qty,
             "report_date": report_date,
             "worker_id": worker_id,
-            "candidates": candidates,
-            "matched": matched,
-            "status": status,
-        })
+        }, import_batch_id=import_batch_id)
+        imported_count += 1
 
     total_rows = len(rows)
     if total_rows > 0 and required_column_skipped_count / total_rows >= 0.9:
@@ -368,4 +487,8 @@ def parse_production_csv_for_staging(file_path, default_worker_id=None):
             "あります。列名をご確認ください。",
         )
 
-    return {"rows": staged_rows, "warnings": warnings}
+    return {
+        "imported_count": imported_count,
+        "already_registered_count": already_registered_count,
+        "warnings": warnings,
+    }
