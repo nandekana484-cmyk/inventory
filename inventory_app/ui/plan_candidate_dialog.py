@@ -72,7 +72,7 @@ def _is_large_qty_diff(candidate, daily_qty):
     return diff > threshold
 
 
-def _show_candidate_list_dialog(parent, title, description, candidates, daily_qty=None):
+def _show_candidate_list_dialog(parent, title, description, candidates, daily_qty=None, report_date=None):
     """
     候補一覧（kitting_plan_itemsの行の辞書のリスト）をTreeviewで一覧表示し、
     ユーザーに1件選ばせるモーダルダイアログの共通実装。
@@ -87,9 +87,23 @@ def _show_candidate_list_dialog(parent, title, description, candidates, daily_qt
 
     daily_qty：CSVの当日実績数（select_plan_candidate_by_lot()経由の場合のみ
     指定される）。指定された場合、各行のplanned_qtyとの差が_QTY_DIFF_WARN_RATIO
-    （20%）を超える候補の背景色を薄く変え（"large_diff"タグ）、視覚的に
+    （20%）を超える候補の背景色を薄く変え（"large_diff"タグ、黄色系）、視覚的に
     注意喚起する。select_plan_candidate()側はdaily_qtyという概念自体が
     無いため、Noneのまま（ハイライト無し）。
+
+    report_date：CSVの払い出し日（同じくselect_plan_candidate_by_lot()経由の
+    場合のみ指定される）。指定された場合、各行のplan_start_datetimeとの日数差
+    が_DATE_DIFF_WARN_DAYS（3日）以上の候補の背景色を変え（"large_date_diff"
+    タグ、オレンジ系）、視覚的に注意喚起する。
+
+    数量差・日付差の両方に該当する候補の扱い：Tkinter Treeviewは1アイテムに
+    複数タグを付けた場合の背景色の優先順位が分かりやすく規定されておらず
+    （tag_configureの呼び出し順・tags指定順のどちらに依存するかが自明でない）、
+    挙動を確実に制御するため、両方に該当する場合は専用の第三のタグ
+    "large_diff_both"（黄色でもオレンジでもない、より強い注意を示す赤系）を
+    単独で割り当てる（3タグを併用しない）。単なる「両方が同時に目立つ」
+    見た目ではなく、「どちらか一方より深刻」という段階（黄色＜オレンジ＜赤、
+    という重大度の直感的な序列）を意図した色選定。
 
     parentが最小化（アイコン化）状態の場合、Tkinter/Windowsの仕様上、
     transient(parent)したダイアログはstate()="withdrawn"のまま実際には
@@ -122,13 +136,24 @@ def _show_candidate_list_dialog(parent, title, description, candidates, daily_qt
         tree.column(col, width=100, anchor=tk.E if col in _RIGHT_ALIGNED else tk.W)
     tree.pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
     tree.tag_configure("large_diff", background="#fff3cd")
+    tree.tag_configure("large_date_diff", background="#ffd9a0")
+    tree.tag_configure("large_diff_both", background="#ffb3b3")
 
     vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
     tree.configure(yscrollcommand=vsb.set)
     vsb.pack(side=tk.RIGHT, fill=tk.Y)
 
     for candidate in candidates:
-        tags = ("large_diff",) if _is_large_qty_diff(candidate, daily_qty) else ()
+        qty_flag = _is_large_qty_diff(candidate, daily_qty)
+        date_flag = _is_large_date_diff(report_date, candidate.get("plan_start_datetime"))
+        if qty_flag and date_flag:
+            tags = ("large_diff_both",)
+        elif qty_flag:
+            tags = ("large_diff",)
+        elif date_flag:
+            tags = ("large_date_diff",)
+        else:
+            tags = ()
         tree.insert("", tk.END, tags=tags, values=(
             candidate.get("lot_no") or "",
             candidate.get("board_name") or "",
@@ -185,13 +210,80 @@ def _parse_plan_start_datetime(value):
         return None
 
 
-def _parse_report_date(value):
+# 払い出し日（report_date）として許容する形式。上から順に試す。
+# "%Y-%m-%d"：以前からの標準形式（例："2026-09-05"）。
+# "%Y/%m/%d"：実運用のCSVで確認された形式（例："2026/9/5"）。strptimeの
+# %m・%dはゼロ埋めの有無を問わず解釈できるため（"9"でも"09"でも可）、
+# 区切り文字（"/"か"-"か）さえ合えばこの2つのフォーマット文字列で
+# ゼロ埋めあり・なしの両方をカバーできる。
+_REPORT_DATE_FORMATS = ("%Y-%m-%d", "%Y/%m/%d")
+
+
+def _parse_flexible_date(value):
+    """
+    払い出し日（report_date）のパースを1箇所に集約した共通関数。
+    _REPORT_DATE_FORMATSを順に試し、最初に成功した結果を返す。
+    どの形式でもパースできない・値が無い場合はNoneを返す。
+
+    以前は"%Y-%m-%d"のみに対応する_parse_report_date()という名前の
+    関数だったが、実運用のCSVでは"%Y/%m/%d"形式（かつ月日がゼロ埋め
+    されていない、例："2026/3/18"）が使われていることが判明し
+    （PRODUCTION_NG_ENHANCEMENTS_NOTES.md等の調査記録参照）、
+    "%Y-%m-%d"のみでは実データに対して常にパース不能になっていた。
+    そのため複数形式に対応させ、関数名も実態に合わせて改称した。
+
+    本関数はui.kitting_production_entry._resolve_csv_report_date()からも
+    importして使う（同じ日付形式の解釈をここに集約し、重複実装を避ける
+    ため）。呼び出し元ごとに戻り値の扱いが異なる点に注意：
+      - 本モジュール内（_sort_candidates_by_closeness()・
+        _compute_date_diff_days()）は、日数差の計算にそのままdatetime
+        オブジェクトとして使う。
+      - _resolve_csv_report_date()は、DBのreport_date列（"YYYY-MM-DD"
+        形式で統一的に保存する必要がある）へ書き込む前提のため、本関数の
+        戻り値（datetime）をさらにstrftime("%Y-%m-%d")で正規化してから
+        使う（入力が"2026/3/18"のような非ゼロ埋め・スラッシュ区切りで
+        あっても、DBには常にゼロ埋め済みのハイフン区切りで保存され、
+        文字列としての日付範囲比較（例：models.production.
+        list_daily_production_range()のWHERE report_date >= ? AND <= ?）
+        が正しく機能するようにするため）。
+    """
     if not value:
         return None
-    try:
-        return datetime.strptime(str(value).strip(), "%Y-%m-%d")
-    except (TypeError, ValueError):
+    text = str(value).strip()
+    for fmt in _REPORT_DATE_FORMATS:
+        try:
+            return datetime.strptime(text, fmt)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+_DATE_DIFF_WARN_DAYS = 3  # 払い出し日と生産予定日の差がこの日数以上の候補を視覚的に注意喚起する閾値
+
+
+def _compute_date_diff_days(report_date, plan_start_datetime):
+    """
+    report_date（CSVの払い出し日）とplan_start_datetime（候補の生産予定日）の
+    差の日数（絶対値）。パース不能・どちらか欠落なら比較不能としてNone。
+    パースロジックは_sort_candidates_by_closeness()内のdate_diff()と同じ
+    _parse_flexible_date()・_parse_plan_start_datetime()をそのまま流用する
+    （日付形式の解釈を1箇所に集約し、ずれが生じないようにするため）。
+    """
+    reference = _parse_flexible_date(report_date)
+    if reference is None:
         return None
+    dt = _parse_plan_start_datetime(plan_start_datetime)
+    if dt is None:
+        return None
+    return abs((dt - reference).days)
+
+
+def _is_large_date_diff(report_date, plan_start_datetime, threshold_days=_DATE_DIFF_WARN_DAYS):
+    """候補一覧で背景色を変えて注意喚起すべきほど、払い出し日と生産予定日の差が大きいか。"""
+    diff = _compute_date_diff_days(report_date, plan_start_datetime)
+    if diff is None:
+        return False
+    return diff >= threshold_days
 
 
 _DATE_DIFF_WEIGHT = 0.7
@@ -235,7 +327,7 @@ def _sort_candidates_by_closeness(candidates, report_date, daily_qty=None):
     - planned_qtyが無い・数値化不能な候補：数量差は「不明」として中立
       （ペナルティ無し＝0.0）に扱う。候補一覧からは除外しない。
     """
-    reference = _parse_report_date(report_date)
+    reference = _parse_flexible_date(report_date)
     has_date_ref = reference is not None
     has_qty_ref = daily_qty is not None
 
@@ -327,4 +419,7 @@ def select_plan_candidate_by_lot(parent, lot_no, product_name, candidates, match
             "ロットNo.が一致する全ての候補を表示しています。"
         )
 
-    return _show_candidate_list_dialog(parent, "計画の選択", description, effective_candidates, daily_qty=daily_qty)
+    return _show_candidate_list_dialog(
+        parent, "計画の選択", description, effective_candidates,
+        daily_qty=daily_qty, report_date=report_date,
+    )

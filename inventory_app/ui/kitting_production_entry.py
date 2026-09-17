@@ -24,9 +24,9 @@ from models.board_structure_master import get_board_structure
 from models.operation_log import log_operation
 from ui.daily_report_window import DailyReportWindow
 from ui.monthly_report_window import MonthlyReportWindow
-from ui.plan_candidate_dialog import select_plan_candidate_by_lot
 from ui.production_import_staging_window import open_or_notify
 from ui.loading_window import LoadingWindow
+from ui.plan_candidate_dialog import _parse_flexible_date
 
 
 def _resolve_csv_report_date(raw_value):
@@ -34,23 +34,28 @@ def _resolve_csv_report_date(raw_value):
     実績CSVステージング一覧経由の払い出し日（raw_value、COLUMN_MAP_PRODUCTIONの
     report_date列からそのまま渡された未検証の文字列）を、register_daily_result()/
     overwrite_daily_result()のreport_date引数（"YYYY-MM-DD"形式を期待）として
-    使える形に検証する。
+    使える形に検証・正規化する。
 
-    値が無い（None・空欄）、または"YYYY-MM-DD"としてパースできない場合は
-    Noneを返す（呼び出し元はreport_date=Noneのまま渡すことになり、
-    register_daily_result()/overwrite_daily_result()側のデフォルト動作
-    （実行日を使う）にフォールバックする）。実際のCSVでの表記が未確認のため、
-    現時点では"YYYY-MM-DD"以外の形式（例："YYYY/MM/DD"）への変換は行わない
-    （誤った日付を採用するより、安全側でフォールバックする方針）。
+    値が無い（None・空欄）、またはui.plan_candidate_dialog._parse_flexible_date()
+    がどの形式でもパースできない場合はNoneを返す（呼び出し元はreport_date=None
+    のまま渡すことになり、register_daily_result()/overwrite_daily_result()側の
+    デフォルト動作（実行日を使う）にフォールバックする）。
+
+    以前は"%Y-%m-%d"としてパースできるかのチェックのみ行い、成功時は入力文字列
+    をそのまま返していたが、実運用のCSVでは"%Y/%m/%d"形式（かつ月日が
+    ゼロ埋めされていない、例："2026/3/18"）が使われていることが判明し、
+    このチェックが常に失敗していた（実質的に本関数が機能していなかった）。
+    _parse_flexible_date()で複数形式に対応させた上で、戻り値は必ず
+    strftime("%Y-%m-%d")でゼロ埋め済みのハイフン区切りに正規化して返す
+    （入力の表記ゆれをそのまま通すと、DBのreport_date列に異なる表記が混在し、
+    models.production.list_daily_production_range()等の文字列比較による
+    日付範囲検索（WHERE report_date >= ? AND report_date <= ?）が正しく
+    機能しなくなるため）。
     """
-    if not raw_value:
+    parsed = _parse_flexible_date(raw_value)
+    if parsed is None:
         return None
-    value = str(raw_value).strip()
-    try:
-        datetime.strptime(value, "%Y-%m-%d")
-    except ValueError:
-        return None
-    return value
+    return parsed.strftime("%Y-%m-%d")
 
 
 class KittingProductionEntryWindow(tk.Toplevel):
@@ -1072,7 +1077,9 @@ class KittingProductionEntryWindow(tk.Toplevel):
         呼び出し元は右ペインの計画一覧の行選択（on_select_plan_list()→
         _on_plan_select_debounced()）、日次実績履歴のダブルクリック
         （on_history_row_double_click()）、または実績CSVステージング一覧
-        （_on_csv_staging_row_confirmed()）のいずれかで、いずれも選択・確定した
+        （ui.production_import_staging_window.ProductionImportStagingWindow.
+        _confirm_candidate()、左ペインの候補ダブルクリック時にself（この
+        インスタンス）へ直接呼ばれる）のいずれかで、いずれも選択・確定した
         時点で既にkitting_list_no・lot_noの両方を把握した上で本関数を呼ぶ
         （キッティングリストNo.欄への直接手入力による検索は廃止し、計画一覧からの
         選択に一本化したため、lot_noが不明なままこの関数が呼ばれることは無くなった。
@@ -1081,11 +1088,11 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
         実績CSVステージング一覧経由の登録待ち（self._pending_csv_row_removal・
         self._pending_csv_report_date）があれば、ここでクリアする：CSV行の
-        候補選択直後は_on_csv_staging_row_confirmed()がこの呼び出しの直後に
-        改めてセットするため影響が無い一方、CSVの選択を経ずに別の計画へ
-        切り替えた場合（計画一覧からの通常の行選択等）に、古いCSV行の
-        remove_callback・払い出し日が無関係な登録で誤って使われてしまう
-        事故を防ぐ。
+        候補選択直後はProductionImportStagingWindow._confirm_candidate()が
+        この呼び出しの直後に改めてセットするため影響が無い一方、CSVの選択を
+        経ずに別の計画へ切り替えた場合（計画一覧からの通常の行選択等）に、
+        古いCSV行のremove_callback・払い出し日が無関係な登録で誤って
+        使われてしまう事故を防ぐ。
         """
         self._pending_csv_row_removal = None
         self._pending_csv_report_date = None
@@ -1306,12 +1313,16 @@ class KittingProductionEntryWindow(tk.Toplevel):
         models.production_import_staging.pending_csv_import_rowsへ永続化される
         （parse_production_csv_for_staging()内部で実施。ステージングデータの
         永続化）。永続化後、open_pending_csv_staging_window()でステージング
-        一覧（ui.production_import_staging_window）を開いて表示し、行を
-        ダブルクリックした際に候補選択ダイアログ（ui.plan_candidate_dialog.
-        select_plan_candidate_by_lot()）→計画確定→実績記入欄への転記、という
-        流れで_on_csv_staging_row_confirmed() に処理を委ねる。実際の登録は
-        既存の「実績記入欄→NG面1→NG面2→登録確認ダイアログ→登録」フロー
-        （_start_registration()）にそのまま乗せる。
+        一覧（ui.production_import_staging_window.ProductionImportStagingWindow、
+        左：候補一覧・右：登録待ち一覧の左右ペイン構成）を開いて表示する。
+        右ペインで行を選択すると左ペインに候補が表示され、候補をダブルクリック
+        すると同ウインドウの_confirm_candidate()がself（このインスタンス）の
+        search_plan()を直接呼んで計画確定→実績記入欄への転記を行う（以前は
+        候補選択ダイアログ ui.plan_candidate_dialog.select_plan_candidate_
+        by_lot() を経由していたが、左右ペイン化に伴いモーダルダイアログを
+        経由しない形にした）。実際の登録は既存の「実績記入欄→NG面1→NG面2→
+        登録確認ダイアログ→登録」フロー（_start_registration()）にそのまま
+        乗せる。
 
         以前はimport_production_csv()で即時登録していたが、CSVの内容を
         確認せずに自動登録されることを避けたいという方針変更により、
@@ -1423,45 +1434,21 @@ class KittingProductionEntryWindow(tk.Toplevel):
         既に開いている場合は多重に開かず前面に出す（_perform_registration()
         末尾のlift()処理（登録完了時にステージング一覧を手前に戻す）が参照する
         self._csv_staging_windowと常に同じインスタンスを指すようにするため）。
+
+        ProductionImportStagingWindow（左右ペイン構成：左＝候補一覧、右＝
+        登録待ち一覧）は、候補確定時にself（このKittingProductionEntryWindow
+        インスタンス）のsearch_plan()・entry_daily_qty・_pending_csv_row_
+        removal・_pending_csv_report_dateへ直接アクセスする（同ウインドウの
+        _confirm_candidate()参照）。以前のように候補選択ダイアログ
+        （ui.plan_candidate_dialog.select_plan_candidate_by_lot()）経由・
+        コールバック（on_row_confirmed）経由で本ウインドウ側のメソッドを
+        呼んでもらう間接的な連携ではなくなったため、open_or_notify()に
+        コールバックを渡す必要は無くなった。
         """
         if self._csv_staging_window is not None and self._csv_staging_window.winfo_exists():
             self._csv_staging_window.lift()
             return
-        self._csv_staging_window = open_or_notify(self, self._on_csv_staging_row_confirmed)
-
-    def _on_csv_staging_row_confirmed(self, row, remove_callback):
-        """
-        実績CSVステージング一覧（ProductionImportStagingWindow）の行が
-        ダブルクリックされた際に呼ばれる。候補選択ダイアログで計画を確定させ、
-        既存のsearch_plan()で計画情報を表示した上で、実績記入欄にCSVの
-        daily_qtyを転記する。
-
-        転記後は既存の一直線フロー（実績記入欄→NG面1→NG面2→登録確認
-        ダイアログ→登録、_start_registration()）にそのまま委ねる（ここでは
-        登録処理を呼ばない）。remove_callbackは_perform_registration()の
-        登録成功時に呼び出し、ステージング一覧から該当行を消す
-        （self._pending_csv_row_removalに保持しておく）。CSV行の払い出し日
-        （row["report_date"]）も同時にself._pending_csv_report_dateへ保持し、
-        _perform_registration()でregister_daily_result()/overwrite_daily_result()の
-        report_dateとして使う。row["daily_qty"]は候補選択ダイアログにも渡し
-        （select_plan_candidate_by_lot()のdaily_qty引数）、日数差だけでなく
-        計画数との数量差も考慮した優先順位付け・表示に使う。
-
-        キャンセル時は何もしない（ステージング一覧の行はそのまま残る）。
-        """
-        chosen = select_plan_candidate_by_lot(
-            self, row["lot_no"], row["product_name"], row["candidates"], row["matched"],
-            row.get("report_date"), row.get("daily_qty"),
-        )
-        if chosen is None:
-            return
-
-        self.search_plan(chosen["kitting_list_no"], chosen["lot_no"])
-        self.entry_daily_qty.delete(0, tk.END)
-        self.entry_daily_qty.insert(0, f"{row['daily_qty']:g}")
-        self._pending_csv_row_removal = remove_callback
-        self._pending_csv_report_date = row.get("report_date")
-        self.entry_daily_qty.focus_set()
+        self._csv_staging_window = open_or_notify(self)
 
     def _on_daily_qty_enter(self, event=None):
         """
@@ -1820,9 +1807,10 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
         # 実績CSVステージング一覧（ui.production_import_staging_window）経由の
         # 登録であれば、実績登録が成功した時点でその行を一覧から消す
-        # （_on_csv_staging_row_confirmed()で転記時にセットされたコールバック）。
-        # NG申告・反対側連動の成否には関係なく、主たる実績登録が成功した
-        # 時点で消す（CSV行が表すのは実績数量そのものであり、NG申告は別枠のため）。
+        # （ProductionImportStagingWindow._confirm_candidate()で転記時に
+        # セットされたコールバック）。NG申告・反対側連動の成否には関係なく、
+        # 主たる実績登録が成功した時点で消す（CSV行が表すのは実績数量そのもの
+        # であり、NG申告は別枠のため）。
         if self._pending_csv_row_removal is not None:
             self._pending_csv_row_removal()
             self._pending_csv_row_removal = None
