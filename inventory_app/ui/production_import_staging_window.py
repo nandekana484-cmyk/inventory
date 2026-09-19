@@ -70,6 +70,7 @@ from ui.plan_candidate_dialog import (
     _is_large_date_diff,
     _compute_date_diff_days,
     _format_qty,
+    _format_planned_qty_cell,
     _format_side,
     _COLS as _CANDIDATE_COLS,
     _HEADERS as _CANDIDATE_HEADERS,
@@ -306,8 +307,12 @@ class ProductionImportStagingWindow(tk.Toplevel):
         )
         for col in _CANDIDATE_COLS:
             self.tree_candidates.heading(col, text=_CANDIDATE_HEADERS[col])
+            # 計画数（planned_qty）は_format_planned_qty_cell()で差分表記
+            # （例："450（差+50）"）が付くことがあるため、他列より幅を広めに取る
+            # （ui.plan_candidate_dialog._show_candidate_list_dialog()と同じ幅）。
+            width = 160 if col == "planned_qty" else 100
             self.tree_candidates.column(
-                col, width=100, anchor=tk.E if col in _CANDIDATE_RIGHT_ALIGNED else tk.W,
+                col, width=width, anchor=tk.E if col in _CANDIDATE_RIGHT_ALIGNED else tk.W,
             )
         # 数量差・日付差が大きい候補の背景色を変える
         # （ui.plan_candidate_dialog._is_large_qty_diff()・_is_large_date_diff()
@@ -477,6 +482,12 @@ class ProductionImportStagingWindow(tk.Toplevel):
             （"auto_confirmable"、_create_candidate_widgets()のtag_configure
             コメント参照：数量差・日付差ハイライトとは数学的に排他のため優先順位の
             衝突は実質発生しないが、念のため最優先で判定する）。
+          - _format_planned_qty_cell()で、計画数（planned_qty）セルに実績数との
+            差分を併記する（例："450（差+50）"）。行全体のlarge_diffタグ
+            （20%超のみ発火）とは独立に、差があれば常に表示する、より細かい
+            粒度の指標。Tkinterの標準Treeviewはセル単位の背景色指定に対応して
+            いないため、色ではなくテキストへの差分埋め込みで実現している
+            （詳細はui.plan_candidate_dialog._format_planned_qty_cell()参照）。
         """
         for item in self.tree_candidates.get_children():
             self.tree_candidates.delete(item)
@@ -528,7 +539,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
                 candidate.get("setup_file_no") or "",
                 _format_side(candidate.get("production_side")),
                 candidate.get("plan_start_datetime") or "",
-                _format_qty(candidate.get("planned_qty")),
+                _format_planned_qty_cell(candidate.get("planned_qty"), daily_qty),
                 _format_qty(candidate.get("order_qty")),
             ))
             self._candidates_by_iid[iid] = candidate
@@ -776,20 +787,74 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
     def _on_close(self):
         """
-        以前は一覧に未登録の行が残っている場合「閉じてもよろしいですか？」の
-        確認ダイアログ（はい/いいえ、キャンセル可能なブロッキングダイアログ）を
-        表示していたが、ステージングデータの永続化（models.production_import_
-        staging.pending_csv_import_rows）により、閉じても未処理行は失われなく
-        なった（メインメニューの「実績CSV取込状況」からいつでも再開できる）ため、
-        確認ゲート自体が不要になった。代わりに、未処理行が残っている場合のみ、
-        閉じる操作自体は妨げない非ブロッキングな案内を表示する
-        （_show_closing_notice()参照）。
+        ウインドウを閉じる前に、失われると困るデータが残っていないか順番に
+        確認する。
+
+        1. 不一致リスト（self._mismatched_rows）：「不一致として除外」した
+           際に入力した理由（自由記述）を含むデータで、対応する
+           pending_csv_import_rowsの行は_apply_mismatch()の時点で既に
+           DBから物理削除済みのため、**このウインドウのメモリ上にしか
+           存在しない**。CSV出力せずに閉じると完全に失われる。そのため、
+           1件以上残っている場合はブロッキングの確認ダイアログ（askyesno）
+           で出力を促す（_confirm_and_export_mismatched_before_close()）。
+           「いいえ」を選んだ場合はテキストの通りデータが失われる前提で
+           閉じる操作を続行する。ファイル選択自体をキャンセルした場合は
+           「出力を促したのに何も出力されないまま閉じる」事故になるため、
+           閉じる操作自体を中止する（ダイアログを閉じずに残す）。
+
+        2. 未登録行（self._row_by_iid、pending_csv_import_rows）：以前は
+           これも確認ダイアログだったが、ステージングデータの永続化により
+           閉じても失われなくなった（メインメニューの「実績CSV取込状況」
+           からいつでも再開できる）ため、確認ゲート自体は不要と判断済み
+           （既存の非ブロッキングな案内のみ、_show_closing_notice()参照）。
+           不一致リストの確認（ブロッキング、ウインドウを閉じる**前**に
+           完結させる必要がある）→ウインドウを閉じる→未登録行の案内
+           （非ブロッキング、閉じた**後**に表示）という順序になる。
+
+        登録不可リスト（self._unregistrable_rows）については、同様の確認は
+        追加しない：不一致リストと異なり、対応するpending_csv_import_rowsの
+        行はCSV出力するまでDBに残ったまま（削除されるのはon_export_
+        unregistrable_csv()の実行時のみ）であり、ウインドウを閉じても実データ
+        は失われず、再度開けば同じ内容（"no_candidates"の行）が再構築される
+        （reasonも人間の自由記述ではなく固定文言REASON_NO_CANDIDATESのため、
+        再現不能な情報が失われる心配も無い）。
         """
+        if self._mismatched_rows:
+            if not self._confirm_and_export_mismatched_before_close():
+                return
+
         remaining = len(self._row_by_iid)
         parent = self._parent
         self.destroy()
         if remaining:
             self._show_closing_notice(parent, remaining)
+
+    def _confirm_and_export_mismatched_before_close(self):
+        """
+        不一致リストが1件以上残っている状態で閉じようとした際に呼ばれる。
+
+        「はい」：on_export_mismatched_csv()をその場で実行する。実際に
+        CSVへ出力できた場合（戻り値True）のみ、閉じる操作を続行してよいと
+        判断する（True）。ファイル選択をキャンセルした・書き込みエラーに
+        なった場合（戻り値False）は、出力を促したのに何も出力されないまま
+        閉じてしまうことになるため、閉じる操作自体を中止する（False）。
+
+        「いいえ」：データが失われることを理解した上での選択として扱い、
+        出力せずに閉じてよい（True）。
+
+        戻り値：True＝このままウインドウを閉じてよい、False＝閉じる操作を
+        中止する（ダイアログを閉じずに残す）。
+        """
+        count = len(self._mismatched_rows)
+        if not messagebox.askyesno(
+            "不一致リスト未出力",
+            f"不一致リストが未出力です（{count}件）。CSV出力しますか？\n"
+            "「いいえ」を選ぶと、このデータは失われます。",
+            parent=self,
+        ):
+            return True
+
+        return self.on_export_mismatched_csv()
 
     @staticmethod
     def _show_closing_notice(parent, remaining_count):
@@ -1020,10 +1085,17 @@ class ProductionImportStagingWindow(tk.Toplevel):
         既にpending_csv_import_rowsからの削除・一覧からの除去は
         _mark_as_mismatched()の時点で完了済みのため、ここではCSVへの書き出しの
         みを行う（on_export_unregistrable_csv()と異なり、削除処理は無い）。
+
+        戻り値：実際にCSVへの書き出しが完了した場合True、それ以外
+        （出力対象が無い・ファイル選択をキャンセルした・書き込みエラー）は
+        False。ボタン押下（既存の呼び出し方）では戻り値は使われないが、
+        _on_close()（ウインドウを閉じる前に未出力の不一致リストがあれば
+        出力を促す、_confirm_and_export_mismatched_before_close()参照）が
+        「実際に出力できたか」を判定するために利用する。
         """
         if not self._mismatched_rows:
             messagebox.showinfo("不一致リスト", "不一致として除外した行はありません。", parent=self)
-            return
+            return True
 
         save_path = filedialog.asksaveasfilename(
             defaultextension=".csv",
@@ -1032,7 +1104,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
             parent=self,
         )
         if not save_path:
-            return
+            return False
 
         try:
             with open(save_path, "w", newline="", encoding="utf-8-sig") as f:
@@ -1048,6 +1120,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
                     ])
         except Exception as e:
             messagebox.showerror("エラー", f"CSV出力に失敗しました：{e}", parent=self)
-            return
+            return False
 
         messagebox.showinfo("完了", f"CSVを保存しました：\n{save_path}", parent=self)
+        return True

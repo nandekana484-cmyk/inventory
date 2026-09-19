@@ -72,6 +72,37 @@ def _is_large_qty_diff(candidate, daily_qty):
     return diff > threshold
 
 
+def _format_planned_qty_cell(planned_qty, daily_qty):
+    """
+    候補一覧の「計画数」（planned_qty）セルの表示文字列を組み立てる。
+
+    Tkinterの標準ttk.Treeviewは行単位のtag_configure()による背景色指定にしか
+    対応しておらず、特定のセル1つだけを別の色にする（行全体の色とは独立した
+    セル単位の色分け）ことはできない。そのため、「数量部分だけを視覚的に
+    強調する」という要件は、色ではなく**セルのテキスト自体に差分を埋め込む**
+    方式で実現する（行全体のハイライトタグ（large_diff等）とは独立した、
+    より細かい粒度の情報として、計画数と実績数の差がある場合は常に併記する。
+    行レベルのlarge_diffは_QTY_DIFF_WARN_RATIO（20%）を超えた場合のみ発火する
+    のに対し、こちらは差があれば（20%未満のわずかな差でも）常に表示する、
+    より高い解像度の指標）。
+
+    表示例：計画数450・実績数400の場合 → "450（差+50）"。差が無い（完全一致）
+    場合や、daily_qty自体が指定されない場合（select_plan_candidate()経由、
+    CSVとの比較という概念自体が無い）は、従来通り計画数のみを表示する
+    （差が無いのに"(差+0)"と表示され続けるのは煩雑なため）。
+    """
+    formatted = _format_qty(planned_qty)
+    if daily_qty is None or planned_qty is None:
+        return formatted
+    try:
+        diff = float(planned_qty) - float(daily_qty)
+    except (TypeError, ValueError):
+        return formatted
+    if diff == 0:
+        return formatted
+    return f"{formatted}（差{diff:+g}）"
+
+
 def _show_candidate_list_dialog(parent, title, description, candidates, daily_qty=None, report_date=None):
     """
     候補一覧（kitting_plan_itemsの行の辞書のリスト）をTreeviewで一覧表示し、
@@ -95,6 +126,15 @@ def _show_candidate_list_dialog(parent, title, description, candidates, daily_qt
     場合のみ指定される）。指定された場合、各行のplan_start_datetimeとの日数差
     が_DATE_DIFF_WARN_DAYS（3日）以上の候補の背景色を変え（"large_date_diff"
     タグ、オレンジ系）、視覚的に注意喚起する。
+
+    計画数セルの差分表記：daily_qty指定時、各行の「計画数」（planned_qty）
+    セルは、実績数との差がある場合に差分を併記した文字列になる（例："450
+    （差+50）"、_format_planned_qty_cell()参照）。行全体のハイライトタグ
+    （large_diff等、_QTY_DIFF_WARN_RATIO=20%を超えた場合のみ発火）とは独立に、
+    差があれば常に（20%未満のわずかな差でも）表示される、より細かい粒度の
+    指標。Tkinterの標準Treeviewは行単位の背景色指定にしか対応しておらず
+    セル単位の色分けができないため、色ではなくテキストへの差分埋め込みで
+    「数量部分だけを強調する」要件を実現した。
 
     数量差・日付差の両方に該当する候補の扱い：Tkinter Treeviewは1アイテムに
     複数タグを付けた場合の背景色の優先順位が分かりやすく規定されておらず
@@ -133,7 +173,10 @@ def _show_candidate_list_dialog(parent, title, description, candidates, daily_qt
     tree = ttk.Treeview(tree_frame, columns=_COLS, show="headings", selectmode="browse")
     for col in _COLS:
         tree.heading(col, text=_HEADERS[col])
-        tree.column(col, width=100, anchor=tk.E if col in _RIGHT_ALIGNED else tk.W)
+        # 計画数（planned_qty）は_format_planned_qty_cell()で差分表記
+        # （例："450（差+50）"）が付くことがあるため、他列より幅を広めに取る。
+        width = 160 if col == "planned_qty" else 100
+        tree.column(col, width=width, anchor=tk.E if col in _RIGHT_ALIGNED else tk.W)
     tree.pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
     tree.tag_configure("large_diff", background="#fff3cd")
     tree.tag_configure("large_date_diff", background="#ffd9a0")
@@ -160,7 +203,7 @@ def _show_candidate_list_dialog(parent, title, description, candidates, daily_qt
             candidate.get("setup_file_no") or "",
             _format_side(candidate.get("production_side")),
             candidate.get("plan_start_datetime") or "",
-            _format_qty(candidate.get("planned_qty")),
+            _format_planned_qty_cell(candidate.get("planned_qty"), daily_qty),
             _format_qty(candidate.get("order_qty")),
         ))
 
