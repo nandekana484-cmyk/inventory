@@ -57,6 +57,7 @@ from models.kitting_plan import find_matching_plan_items
 from models.production_import_staging import (
     list_pending_csv_import_rows,
     delete_pending_csv_import_row,
+    upsert_pending_csv_import_row,
 )
 # ui.plan_candidate_dialog（モーダルダイアログ用の実装）から、候補の並べ替え・
 # ハイライト判定・表示フォーマットのロジックのみをそのまま再利用する。
@@ -187,25 +188,33 @@ def _load_staged_rows_from_db():
     return staged_rows
 
 
-def open_or_notify(parent):
+def open_or_notify(parent, already_registered_rows=None):
     """
-    未処理の保留行（pending_csv_import_rows）が1件でもあればProductionImport
-    StagingWindowを開き、無ければ案内メッセージのみ表示する（新規CSV取込直後
-    ・メインメニューの「実績CSV取込状況」からの再開、両方の入口から使う
-    共通のエントリーポイント）。
+    未処理の保留行（pending_csv_import_rows）が1件でもあれば、または
+    already_registered_rows（直前のCSV取込で「登録済み」と判定された行、
+    parse_production_csv_for_staging()の戻り値）が1件でもあれば
+    ProductionImportStagingWindowを開き、どちらも無ければ案内メッセージ
+    のみ表示する（新規CSV取込直後・「実績CSV取込状況」ボタンからの再開、
+    両方の入口から使う共通のエントリーポイント）。
+
+    already_registered_rowsも判定条件に含める理由：CSVの全行が「登録済み」
+    だった場合（pending_csv_import_rows側は0件）でも、登録済みリストだけは
+    ユーザーに見せる価値がある（本当に想定通りの重複だったか確認できる）
+    ため、この場合も「未処理の取込データはありません」で終わらせず
+    ウインドウを開く。
 
     parent：ui.kitting_production_entry.KittingProductionEntryWindowの
     インスタンスを想定（search_plan()・entry_daily_qty・_pending_csv_row_
     removal・_pending_csv_report_dateを直接呼び出す/参照するため）。
 
-    戻り値：開いたProductionImportStagingWindow、または未処理行が無く
+    戻り値：開いたProductionImportStagingWindow、またはどちらも無く
     開かなかった場合はNone。
     """
     staged_rows = _load_staged_rows_from_db()
-    if not staged_rows:
+    if not staged_rows and not already_registered_rows:
         messagebox.showinfo("実績CSV取込状況", "未処理の取込データはありません。", parent=parent)
         return None
-    return ProductionImportStagingWindow(parent, staged_rows)
+    return ProductionImportStagingWindow(parent, staged_rows, already_registered_rows=already_registered_rows)
 
 
 class ProductionImportStagingWindow(tk.Toplevel):
@@ -215,7 +224,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
     # PLAN_SELECT_DEBOUNCE_MSと同じ値・同じ考え方。
     CANDIDATE_SELECT_DEBOUNCE_MS = 200
 
-    def __init__(self, parent, staged_rows):
+    def __init__(self, parent, staged_rows, already_registered_rows=None):
         """
         parent：ui.kitting_production_entry.KittingProductionEntryWindowの
         インスタンス。左ペインの候補をダブルクリックした際、parent.
@@ -228,6 +237,13 @@ class ProductionImportStagingWindow(tk.Toplevel):
         "report_date"/"worker_id"/"candidates"/"matched"/"status"を持つ）。
         本クラス自体はopen_or_notify()経由で呼ばれる想定で、直接staged_rowsを
         組み立てて渡すのは主にテスト用途。
+
+        already_registered_rows：services.production_import_service.
+        parse_production_csv_for_staging()の戻り値"already_registered_rows"
+        （直前のCSV取込で「登録済み」と判定され、pending_csv_import_rowsへは
+        保存されなかった行の詳細）。省略時（None）は空リストとして扱う
+        （「実績CSV取込状況」ボタン経由など、直近のCSV取込を伴わずに開いた
+        場合はこの情報自体が存在しないため）。
         """
         super().__init__(parent)
         self._parent = parent
@@ -243,10 +259,27 @@ class ProductionImportStagingWindow(tk.Toplevel):
             row for row in staged_rows if row.get("status") == "no_candidates"
         ]
         # 「不一致として除外」（右クリックメニュー）で個別に人間が判断した行を
-        # 保持する別リスト。self._unregistrable_rows（machine判定の"no_candidates"、
-        # CSV出力時にまとめて削除）とは異なり、こちらは除外を選んだ時点で即座に
-        # pending_csv_import_rowsから削除する（_mark_as_mismatched()参照）。
+        # 保持する別リスト。self._unregistrable_rows（機械判定の"no_candidates"
+        # 分はCSV出力時にまとめて削除、人間判断で"候補なしとする"を選んだ分は
+        # _apply_no_candidates()の時点で即座に削除、2026-09-23修正）と同様、
+        # こちらも除外を選んだ時点で即座にpending_csv_import_rowsから削除する
+        # （_mark_as_mismatched()参照）。
         self._mismatched_rows = []
+
+        # 「登録済みリスト」：is_already_registered()が既にproduction_dailyへ
+        # 同じ数量で登録済みと判定し、pending_csv_import_rowsへは一度も
+        # 保存されなかった行（parse_production_csv_for_staging()の戻り値
+        # "already_registered_rows"）。self._unregistrable_rows・
+        # self._mismatched_rowsと異なり、対応するDB行自体がそもそも存在しない
+        # （最初から永続化されていない）ため、CSV出力しても・行を削除しても
+        # DB側で何かを消す操作は発生しない（あくまでメモリ上の一覧表示用）。
+        self._already_registered_rows = list(already_registered_rows or [])
+        # 「登録済みリスト」の詳細表示ウインドウ（on_show_already_registered_
+        # list()で開く、別Toplevel）。一度開いたら使い回し、多重に開かない
+        # （既存の他の一覧画面と同じ多重表示防止の考え方）。
+        self._already_registered_window = None
+        self._already_registered_tree = None
+        self._already_registered_by_iid = {}
 
         # 左ペイン（候補一覧）の状態：右ペインで現在選択中の保留行（iid・row）と、
         # 候補Treeviewのiidからcandidateへのマッピング。
@@ -255,6 +288,11 @@ class ProductionImportStagingWindow(tk.Toplevel):
         self._candidates_by_iid = {}
         self._candidate_select_debounce_id = None
         self._pending_candidate_select_iid = None
+
+        # 右ペイン（登録待ち一覧）の列ソート状態：col -> 次にクリックした時に
+        # 昇順にするかどうか（既存のNG一覧・仕掛一覧のsort_ng_list()/
+        # sort_wip_list()と同じ、列ごとに独立したトグル方式）。
+        self._staging_sort_states = {}
 
         self._create_widgets(staged_rows)
         self._update_status_label()
@@ -293,12 +331,34 @@ class ProductionImportStagingWindow(tk.Toplevel):
         by_lot()がモーダルダイアログとして表示していたものと同一
         （_CANDIDATE_COLS・_CANDIDATE_HEADERS・_CANDIDATE_RIGHT_ALIGNEDを
         そのままimportして使う）。
+
+        pack順序について：右ペイン（_create_staging_widgets()）で発見した
+        「pack順序でTkのcavityが消費される」既知のバグパターンと同じ構造が
+        ここにも存在していたため、同じ対策を適用した。下部のヒントラベルを
+        先に`side=tk.BOTTOM`でpackして領域を確保してから、Treeview＋
+        スクロールバーのフレームを`expand=True, fill=tk.BOTH`で最後にpackする
+        （`lbl_candidate_hint`は元々`tree_frame`より先・`side=tk.TOP`（既定）で
+        packされており、こちらは問題なし：非拡張ウィジェットを拡張ウィジェット
+        より先にTOP側でpackする分には、後続のpack呼び出しで正しく領域が
+        再計算されるため）。`tree_frame`内でも、スクロールバーをTreeviewより
+        先にpackする（同じ理由）。
         """
         self.lbl_candidate_hint = ttk.Label(
             left_frame, foreground="gray", wraplength=420, justify=tk.LEFT,
         )
         self.lbl_candidate_hint.pack(anchor=tk.W, pady=(0, 5))
 
+        # --- 下部のヒントラベルを先にpackし、領域を確保する ---
+        ttk.Label(
+            left_frame,
+            text=(
+                "候補をダブルクリックすると、生産実績入力画面（親ウインドウ）に転記されます。\n"
+                "右クリックすると、確認ダイアログ無しで即座に登録します。"
+            ),
+            foreground="gray",
+        ).pack(side=tk.BOTTOM, anchor=tk.W, pady=(5, 0))
+
+        # --- Treeview＋スクロールバーは、下部の領域確保後に最後にpackする ---
         tree_frame = ttk.Frame(left_frame)
         tree_frame.pack(expand=True, fill=tk.BOTH)
 
@@ -333,67 +393,57 @@ class ProductionImportStagingWindow(tk.Toplevel):
         self.tree_candidates.tag_configure("large_date_diff", background="#ffd9a0")
         self.tree_candidates.tag_configure("large_diff_both", background="#ffb3b3")
         self.tree_candidates.tag_configure("auto_confirmable", background="#c8f7c5")
-        self.tree_candidates.pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
 
-        vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree_candidates.yview)
-        self.tree_candidates.configure(yscrollcommand=vsb.set)
+        # スクロールバーをTreeviewより先にpackする（右ペインと同じ順序）。
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical")
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.tree_candidates.pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
+        self.tree_candidates.configure(yscrollcommand=vsb.set)
+        vsb.configure(command=self.tree_candidates.yview)
 
         self.tree_candidates.bind("<Double-1>", self._on_candidate_double_click)
         self.tree_candidates.bind("<Button-3>", self._on_candidate_right_click)
 
-        ttk.Label(
-            left_frame,
-            text=(
-                "候補をダブルクリックすると、生産実績入力画面（親ウインドウ）に転記されます。\n"
-                "右クリックすると、確認ダイアログ無しで即座に登録します。"
-            ),
-            foreground="gray",
-        ).pack(anchor=tk.W, pady=(5, 0))
-
     def _create_staging_widgets(self, right_frame, staged_rows):
-        """右ペイン（登録待ち一覧）。以前の単一ペイン版のTreeview・件数表示・CSV出力ボタンをそのまま移設。"""
-        tree_frame = ttk.Frame(right_frame)
-        tree_frame.pack(expand=True, fill=tk.BOTH)
+        """
+        右ペイン（登録待ち一覧）。以前の単一ペイン版のTreeview・件数表示・CSV出力ボタンをそのまま移設。
 
+        pack順序について（重要）：Tkの`pack()`はpackを呼んだ順にcavity（配置可能領域）を
+        消費するため、`expand=True, fill=tk.BOTH`のTreeviewを他の兄弟ウィジェットより先に
+        packすると、Treeviewが領域を先取りしてしまい、後からpackする縦スクロールバー・
+        下部のラベル/ボタン類に割り当てる余地が残らなくなる（ラベル・ボタン自体は表示される
+        場合もあるが、狭い右ペインではスクロールバーが1×1に潰れ`winfo_ismapped()`が
+        Falseになる形で顕在化した）。`ui/kitting_production_entry.py`の計画一覧
+        （`bottom_btn_frame`→`hsb_plan`→`vsb_plan`→`tree_plan_list`の順）・
+        `ui/ng_input_window.py`のNG一覧と同じ対策として、下部に配置するウィジェット
+        （ヒントラベル・件数ラベル・ボタン行）を先に`side=tk.BOTTOM`でpackして
+        その分の領域を確保してから、Treeview＋スクロールバーのフレームを
+        `expand=True, fill=tk.BOTH`で最後にpackする順序に変更した。
+        `side=tk.BOTTOM`は「後から呼んだものほど内側（上）に積まれる」ため、
+        最終的な見た目の並び順（Treeview→ヒント→件数→ボタン、上から下へ）を
+        維持するには、下部要素は見た目と逆順（ボタン→件数→ヒントの順）でpackする。
+        """
         cols = ("lot_no", "product_name", "report_date", "worker_id", "daily_qty", "status")
-        # selectmode="extended"：Ctrl+クリック・Shift+クリックでの複数選択に対応する
-        # （ttk.Treeviewのデフォルトも"extended"だが、複数選択対応であることを
-        # 明示するため明記する）。一括登録（Shift+S）・一括不一致マーク
-        # （複数選択時の右クリック）で使う。
-        self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings", selectmode="extended")
-        self.tree.heading("lot_no", text="ロットNo")
-        self.tree.heading("product_name", text="製品名")
-        self.tree.heading("report_date", text="払い出し日（参考）")
-        self.tree.heading("worker_id", text="作業者")
-        self.tree.heading("daily_qty", text="実績数")
-        self.tree.heading("status", text="状態")
-        self.tree.column("lot_no", width=100, anchor=tk.W)
-        self.tree.column("product_name", width=180, anchor=tk.W)
-        self.tree.column("report_date", width=120, anchor=tk.CENTER)
-        self.tree.column("worker_id", width=90, anchor=tk.W)
-        self.tree.column("daily_qty", width=70, anchor=tk.E)
-        self.tree.column("status", width=160, anchor=tk.W)
-        self.tree.pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
 
-        vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=vsb.set)
-        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        # --- 下部に配置するウィジェットを先に生成・packし、領域を確保する ---
+        action_frame = ttk.Frame(right_frame)
+        action_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Button(action_frame, text="登録不可リストをCSV出力", command=self.on_export_unregistrable_csv).pack(
+            side=tk.LEFT, padx=(0, 5),
+        )
+        ttk.Button(action_frame, text="不一致リストをCSV出力", command=self.on_export_mismatched_csv).pack(
+            side=tk.LEFT, padx=(0, 5),
+        )
+        ttk.Button(action_frame, text="登録済みリストを表示", command=self.on_show_already_registered_list).pack(
+            side=tk.LEFT,
+        )
 
-        for row in staged_rows:
-            iid = self.tree.insert("", tk.END, values=(
-                row.get("lot_no", ""),
-                row.get("product_name", ""),
-                row.get("report_date") or "",
-                row.get("worker_id", ""),
-                row.get("daily_qty", ""),
-                STAGING_STATUS_LABELS.get(row.get("status"), row.get("status", "")),
-            ))
-            self._row_by_iid[iid] = row
-
-        self.tree.bind("<<TreeviewSelect>>", self._on_staging_select)
-        self.tree.bind("<Button-3>", self._on_right_click)
-        self.tree.bind("<Shift-S>", self._on_bulk_register)
+        # 登録不可（machine判定）・不一致（人間の判断で除外）、それぞれの件数を
+        # 分かりやすく常時表示する。件数が変わるたび_update_status_label()で
+        # 更新する。
+        self.lbl_status = ttk.Label(right_frame, foreground="gray")
+        self.lbl_status.pack(side=tk.BOTTOM, anchor=tk.W, pady=(2, 5))
 
         ttk.Label(
             right_frame,
@@ -403,31 +453,115 @@ class ProductionImportStagingWindow(tk.Toplevel):
                 "複数選択してShift+Sを押すと、要件を満たす行のみ一括で即時登録します。"
             ),
             foreground="gray",
-        ).pack(anchor=tk.W, pady=(5, 0))
+        ).pack(side=tk.BOTTOM, anchor=tk.W, pady=(5, 0))
 
-        # 登録不可（machine判定）・不一致（人間の判断で除外）、それぞれの件数を
-        # 分かりやすく常時表示する。件数が変わるたび_update_status_label()で
-        # 更新する。
-        self.lbl_status = ttk.Label(right_frame, foreground="gray")
-        self.lbl_status.pack(anchor=tk.W, pady=(2, 5))
+        # --- Treeview＋スクロールバーは、下部の領域確保後に最後にpackする ---
+        tree_frame = ttk.Frame(right_frame)
+        tree_frame.pack(expand=True, fill=tk.BOTH)
 
-        action_frame = ttk.Frame(right_frame)
-        action_frame.pack(fill=tk.X)
-        ttk.Button(action_frame, text="登録不可リストをCSV出力", command=self.on_export_unregistrable_csv).pack(
-            side=tk.LEFT, padx=(0, 5),
-        )
-        ttk.Button(action_frame, text="不一致リストをCSV出力", command=self.on_export_mismatched_csv).pack(
-            side=tk.LEFT,
-        )
+        # selectmode="extended"：Ctrl+クリック・Shift+クリックでの複数選択に対応する
+        # （ttk.Treeviewのデフォルトも"extended"だが、複数選択対応であることを
+        # 明示するため明記する）。一括登録（Shift+S）・一括不一致マーク
+        # （複数選択時の右クリック）で使う。
+        self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings", selectmode="extended")
+        # 列ヘッダークリックでのソート：既存のNG一覧（sort_ng_list()）・仕掛一覧
+        # （sort_wip_list()）と同じ、command=lambda c=...: self.sort_staging_list(c)
+        # というパターンをそのまま踏襲する。
+        self.tree.heading("lot_no", text="ロットNo", command=lambda c="lot_no": self.sort_staging_list(c))
+        self.tree.heading("product_name", text="製品名", command=lambda c="product_name": self.sort_staging_list(c))
+        self.tree.heading("report_date", text="払い出し日（参考）", command=lambda c="report_date": self.sort_staging_list(c))
+        self.tree.heading("worker_id", text="作業者", command=lambda c="worker_id": self.sort_staging_list(c))
+        self.tree.heading("daily_qty", text="実績数", command=lambda c="daily_qty": self.sort_staging_list(c))
+        self.tree.heading("status", text="状態", command=lambda c="status": self.sort_staging_list(c))
+        self.tree.column("lot_no", width=100, anchor=tk.W)
+        self.tree.column("product_name", width=180, anchor=tk.W)
+        self.tree.column("report_date", width=120, anchor=tk.CENTER)
+        self.tree.column("worker_id", width=90, anchor=tk.W)
+        self.tree.column("daily_qty", width=70, anchor=tk.E)
+        self.tree.column("status", width=160, anchor=tk.W)
+
+        # スクロールバーをTreeviewより先にpackする（vsb_plan→tree_plan_listと同じ
+        # 順序）。同じtree_frame内の兄弟同士でも、Treeview（expand=True, fill=BOTH）を
+        # 先にpackするとスクロールバー分の領域が残らないため、この順序が必須。
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical")
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.tree.pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
+        self.tree.configure(yscrollcommand=vsb.set)
+        vsb.configure(command=self.tree.yview)
+
+        for row in staged_rows:
+            self._insert_staging_row(row)
+
+        self.tree.bind("<<TreeviewSelect>>", self._on_staging_select)
+        self.tree.bind("<Button-3>", self._on_right_click)
+        self.tree.bind("<Shift-S>", self._on_bulk_register)
+
+    def _insert_staging_row(self, row):
+        """
+        右ペイン（登録待ち一覧）へ1行挿入する共通処理。_create_staging_
+        widgets()の初期表示・_revert_already_registered_rows()（登録済み
+        リストから戻す訂正操作）の両方から呼ぶ（挿入ロジックの複製を避ける）。
+        """
+        iid = self.tree.insert("", tk.END, values=(
+            row.get("lot_no", ""),
+            row.get("product_name", ""),
+            row.get("report_date") or "",
+            row.get("worker_id", ""),
+            row.get("daily_qty", ""),
+            STAGING_STATUS_LABELS.get(row.get("status"), row.get("status", "")),
+        ))
+        self._row_by_iid[iid] = row
+        return iid
 
     def _update_status_label(self):
-        """登録不可・不一致、それぞれの件数表示を最新化する。"""
+        """
+        表示中（登録待ち一覧に現在残っている件数）・登録不可・不一致・
+        登録済み、それぞれの件数表示を最新化する。「表示中」は既存の他一覧
+        （例：ui.kitting_plan_import.KittingPlanImportWindow.lbl_status）と
+        同じ「〜件」形式で、self.treeから都度実カウントする（絞り込み機能が
+        本画面には無いため、常に「現在一覧に残っている件数」＝登録・除外で
+        減っていく件数と一致する）。
+        """
         self.lbl_status.config(
             text=(
+                f"表示中：{len(self.tree.get_children())}件　"
                 f"登録不可：{len(self._unregistrable_rows)}件　"
-                f"不一致として除外：{len(self._mismatched_rows)}件"
+                f"不一致として除外：{len(self._mismatched_rows)}件　"
+                f"登録済み：{len(self._already_registered_rows)}件"
             )
         )
+
+    def sort_staging_list(self, col):
+        """
+        右ペイン（登録待ち一覧）の列ヘッダークリックによる昇順/降順ソート。
+        既存のNG一覧（ui.ng_input_window.NgInputWindow.sort_ng_list()）・
+        仕掛一覧（ui.wip_expansion_window.WipExpansionWindow.sort_wip_list()）
+        と全く同じパターン（列ごとの昇順/降順トグル、Treeview.move()での
+        並べ替え）をそのまま踏襲する。
+        """
+        numeric_cols = {"daily_qty"}
+
+        def sort_key(value):
+            if col in numeric_cols:
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    return float("-inf")
+            return value
+
+        ascending = self._staging_sort_states.get(col, True)
+
+        items = [
+            (self.tree.set(iid, col), iid)
+            for iid in self.tree.get_children("")
+        ]
+        items.sort(key=lambda t: sort_key(t[0]), reverse=not ascending)
+
+        for index, (_, iid) in enumerate(items):
+            self.tree.move(iid, "", index)
+
+        self._staging_sort_states[col] = not ascending
 
     # ------------------------------------------------------------------
     # 左ペイン（候補一覧）
@@ -586,6 +720,11 @@ class ProductionImportStagingWindow(tk.Toplevel):
                 # （存在しなくなった行の候補を表示し続けないため）。
                 if self._current_staging_iid == staging_iid:
                     self._clear_candidate_pane()
+                # 登録により一覧から1行減るため、件数表示（「表示中：N件」）を
+                # 最新化する（単一登録・一括登録（Shift+S）いずれもこの
+                # remove_callback経由で行が消えるため、ここ1箇所への追加で
+                # 両方に反映される）。
+                self._update_status_label()
 
         return remove_callback
 
@@ -989,10 +1128,18 @@ class ProductionImportStagingWindow(tk.Toplevel):
                 label=f"不一致として除外（選択中の{len(target_iids)}件）",
                 command=lambda: self._mark_multiple_as_mismatched(target_iids),
             )
+            menu.add_command(
+                label=f"候補なしとする（選択中の{len(target_iids)}件）",
+                command=lambda: self._mark_multiple_as_no_candidates(target_iids),
+            )
         else:
             menu.add_command(
                 label="不一致として除外",
                 command=lambda: self._mark_as_mismatched(target_iids[0]),
+            )
+            menu.add_command(
+                label="候補なしとする",
+                command=lambda: self._mark_as_no_candidates(target_iids[0]),
             )
         try:
             menu.tk_popup(event.x_root, event.y_root)
@@ -1004,8 +1151,9 @@ class ProductionImportStagingWindow(tk.Toplevel):
         1行を「不一致として除外」する共通処理（理由の入力は含まない）。
         一覧（self.tree・self._row_by_iid）・DB（pending_csv_import_rows）から
         即座に削除し、self._mismatched_rows（不一致リストCSV出力用、ウインドウを
-        閉じるまで保持）へ追加する。self._unregistrable_rows（machine判定の
-        "no_candidates"、CSV出力時にまとめて削除）とは別枠で管理する
+        閉じるまで保持）へ追加する。self._unregistrable_rows（機械判定の
+        "no_candidates"分はCSV出力時にまとめて削除、人間判断"候補なしとする"分は
+        _apply_no_candidates()の時点で即座に削除）とは別枠で管理する
         （__init__()のコメント参照。既存の登録不可リストと混同しないため）。
         _mark_as_mismatched()（単一行）・_mark_multiple_as_mismatched()
         （複数行一括）の両方から、理由決定後に呼ばれる。
@@ -1074,6 +1222,98 @@ class ProductionImportStagingWindow(tk.Toplevel):
             self._apply_mismatch(iid, reason)
         self._update_status_label()
 
+    def _apply_no_candidates(self, iid):
+        """
+        1行を人間判断で「候補なしとする」（登録不可リストへ移動）共通処理。
+
+        既存の機械判定によるself._unregistrable_rows（"no_candidates"、
+        find_matching_plan_items()の候補が実際に0件だった行）と**同じ
+        リストにそのまま統合する**。CSV出力時（on_export_unregistrable_csv()）の
+        理由欄は、機械判定・人間判断のいずれもREASON_NO_CANDIDATESという同じ
+        固定文言になる（両者を区別する専用の理由文言は導入しなかった。
+        _unregistrable_rowsは元々「reasonは1種類の固定文言のみ」という前提の
+        設計（_apply_mismatch()のdocstring参照）で、区別を導入するには
+        行ごとに理由を保持する形へ拡張する必要があり実装コストが上がるため、
+        今回は既存のREASON_NO_CANDIDATESをそのまま流用する方を選んだ）。
+
+        対応するpending_csv_import_rowsのDB行は、_apply_mismatch()と同様に
+        ここで即座に物理削除する（2026-09-23修正：以前は「CSV出力時にのみ
+        削除」としていたが、ウインドウを閉じて再度開くと、この関数で一覧
+        （self._row_by_iid）からは消したのにDB行は残ったままだったため、
+        find_matching_plan_items()の再照合で通常の登録待ち一覧へ復活して
+        しまう不具合があった。機械判定の"no_candidates"（このメソッドを
+        経由しない、_load_staged_rows_from_db()がstatus="no_candidates"と
+        判定した行）は元々候補が無いため再照合しても復活せず、CSV出力時に
+        削除する従来方針のままで問題ないが、こちらの人間判断による除外は
+        候補が実在する行にも適用され得るため、即座に削除しないと復活する
+        リスクがあった）。CSV出力（on_export_unregistrable_csv()）側は
+        まだ一覧に残っている（＝機械判定分の）行だけをDBから削除する処理の
+        ままのため、ここで既に削除済みの行に対して重複して削除を試みる
+        ことはない（該当行は既にself._row_by_iidに存在しないため対象外）。
+        """
+        row = self._row_by_iid.get(iid)
+        if row is None:
+            return
+
+        pending_row_id = row.get("pending_row_id")
+        self.tree.delete(iid)
+        del self._row_by_iid[iid]
+        if pending_row_id is not None:
+            delete_pending_csv_import_row(pending_row_id)
+        # 削除された行が左ペインの候補表示元だった場合、候補表示をクリアする。
+        if self._current_staging_iid == iid:
+            self._clear_candidate_pane()
+
+        self._unregistrable_rows.append(row)
+
+    def _mark_as_no_candidates(self, iid):
+        """
+        人間が「この行には対応する計画が無いものとして扱ってよい」と判断
+        した場合の、単一行の登録不可リストへの移動。理由は固定文言
+        （REASON_NO_CANDIDATES）のため自由記述の入力は求めないが、
+        誤クリックによる意図しない移動を避けるため確認ダイアログを挟む
+        （_mark_as_mismatched()が自由記述の入力自体を実質的な確認として
+        機能させているのと同じ考え方）。
+        """
+        row = self._row_by_iid.get(iid)
+        if row is None:
+            return
+
+        if not messagebox.askyesno(
+            "候補なしとする",
+            f"ロットNo. {row.get('lot_no')} を候補なしとして登録不可リストに移動します。よろしいですか？",
+            parent=self,
+        ):
+            return
+
+        self._apply_no_candidates(iid)
+        self._update_status_label()
+
+    def _mark_multiple_as_no_candidates(self, iids):
+        """
+        複数選択された行を一括で「候補なしとする」（登録不可リストへ移動）。
+        _mark_multiple_as_mismatched()と同様、複数選択中の右クリックから
+        呼ばれる。理由の自由記述は無いため1回の確認ダイアログのみで済ませる。
+        """
+        valid_iids = [iid for iid in iids if iid in self._row_by_iid]
+        if not valid_iids:
+            return
+
+        lot_no_preview = "、".join(self._row_by_iid[iid].get("lot_no", "") for iid in valid_iids[:5])
+        if len(valid_iids) > 5:
+            lot_no_preview += " 他"
+        if not messagebox.askyesno(
+            "候補なしとする",
+            f"選択中の{len(valid_iids)}件（ロットNo: {lot_no_preview}）を"
+            "まとめて候補なしとして登録不可リストに移動します。よろしいですか？",
+            parent=self,
+        ):
+            return
+
+        for iid in valid_iids:
+            self._apply_no_candidates(iid)
+        self._update_status_label()
+
     def on_export_mismatched_csv(self):
         """
         「不一致として除外」された行（self._mismatched_rows）をCSV出力する。
@@ -1124,3 +1364,244 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
         messagebox.showinfo("完了", f"CSVを保存しました：\n{save_path}", parent=self)
         return True
+
+    # ------------------------------------------------------------------
+    # 登録済みリスト（is_already_registered()がTrueと判定した行）
+    # ------------------------------------------------------------------
+
+    def add_already_registered_rows(self, rows):
+        """
+        新たなCSV取込で見つかった「登録済み」行を、既存のself._already_
+        registered_rowsへ追記する。ui.kitting_production_entry.
+        KittingProductionEntryWindow.open_pending_csv_staging_window()が、
+        本ウインドウが既に開いている状態でもう一度CSV取込された場合に呼ぶ
+        （lift()するだけでは今回の判定結果が失われてしまうため）。
+
+        件数表示・詳細一覧ウインドウ（開いていれば）の両方を最新化する。
+        """
+        if not rows:
+            return
+        self._already_registered_rows.extend(rows)
+        self._update_status_label()
+        if self._already_registered_window is not None and self._already_registered_window.winfo_exists():
+            self._populate_already_registered_tree()
+
+    def on_show_already_registered_list(self):
+        """
+        「登録済みリストを表示」ボタン。既に開いていれば前面に出すだけ
+        （多重に開かない、既存の他画面と同じ考え方）。1度目はここで
+        Toplevel・Treeview・CSV出力ボタン・右クリックメニューを構築する。
+        """
+        if self._already_registered_window is not None and self._already_registered_window.winfo_exists():
+            self._already_registered_window.lift()
+            return
+
+        window = tk.Toplevel(self)
+        window.title("実績CSV取込：登録済みリスト（重複取込のためスキップ）")
+        window.geometry("900x400")
+        window.transient(self)
+        # 親（本ウインドウ）が最小化状態だとtransientウインドウが実際には
+        # 表示されない既知の問題（UI_WORKFLOW_FIXES_NOTES.mdグループO参照）
+        # への対策。
+        if self.state() == "iconic":
+            self.deiconify()
+
+        ttk.Label(
+            window,
+            text=(
+                "既にproduction_dailyへ同じ数量で登録済みと判定され、"
+                "通常のステージング一覧には表示されなかった行です。\n"
+                "右クリックで通常の一覧に戻して訂正できます（複数選択中は選択中の全行が対象）。"
+            ),
+            foreground="gray", padding=(10, 10, 10, 0),
+        ).pack(anchor=tk.W)
+
+        action_frame = ttk.Frame(window, padding=(10, 5, 10, 10))
+        action_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Button(
+            action_frame, text="登録済みリストをCSV出力", command=self.on_export_already_registered_csv,
+        ).pack(side=tk.LEFT)
+
+        tree_frame = ttk.Frame(window, padding=(10, 5, 10, 0))
+        tree_frame.pack(expand=True, fill=tk.BOTH)
+
+        cols = ("lot_no", "product_name", "daily_qty", "report_date", "matched_kitting_list_no", "existing_qty")
+        tree = ttk.Treeview(tree_frame, columns=cols, show="headings", selectmode="extended")
+        tree.heading("lot_no", text="ロットNo")
+        tree.heading("product_name", text="製品名")
+        tree.heading("daily_qty", text="CSVの実績数")
+        tree.heading("report_date", text="払い出し日（参考）")
+        tree.heading("matched_kitting_list_no", text="一致した計画（キッティングリストNo）")
+        tree.heading("existing_qty", text="既存の実績累計値")
+        tree.column("lot_no", width=100, anchor=tk.W)
+        tree.column("product_name", width=180, anchor=tk.W)
+        tree.column("daily_qty", width=90, anchor=tk.E)
+        tree.column("report_date", width=120, anchor=tk.CENTER)
+        tree.column("matched_kitting_list_no", width=170, anchor=tk.W)
+        tree.column("existing_qty", width=100, anchor=tk.E)
+
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical")
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        tree.pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
+        tree.configure(yscrollcommand=vsb.set)
+        vsb.configure(command=tree.yview)
+
+        tree.bind("<Button-3>", self._on_already_registered_right_click)
+
+        self._already_registered_window = window
+        self._already_registered_tree = tree
+        self._populate_already_registered_tree()
+
+    def _populate_already_registered_tree(self):
+        """
+        self._already_registered_rowsの内容で、登録済みリスト詳細ウインドウの
+        Treeviewを作り直す（全件クリア→再挿入）。add_already_registered_
+        rows()・_revert_already_registered_rows()（戻す操作）の後に呼ぶ。
+        """
+        tree = self._already_registered_tree
+        for item in tree.get_children():
+            tree.delete(item)
+        self._already_registered_by_iid = {}
+
+        for entry in self._already_registered_rows:
+            iid = tree.insert("", tk.END, values=(
+                entry.get("lot_no", ""),
+                entry.get("product_name", ""),
+                entry.get("daily_qty", ""),
+                entry.get("report_date") or "",
+                entry.get("matched_kitting_list_no") or "",
+                entry.get("existing_qty") if entry.get("existing_qty") is not None else "",
+            ))
+            self._already_registered_by_iid[iid] = entry
+
+    def _on_already_registered_right_click(self, event):
+        """
+        登録済みリスト詳細ウインドウの右クリックメニュー。「通常の一覧に
+        戻す（訂正する）」の1操作のみを提供する（ui.production_import_
+        staging_window.ProductionImportStagingWindow._on_right_click()と
+        同じ、複数選択時は選択中の全行が対象になる判定ロジック）。
+
+        「候補なしとする」「不一致として除外」相当の操作について：ユーザー
+        指示では両方の名称が挙がっていたが、実際にこの一覧の行に必要なのは
+        「この判定は違う、通常の一覧に戻して確認・訂正させてほしい」という
+        単一の操作であり、戻した後は通常のステージング一覧側の既存機能
+        （右クリックの「不一致として除外」「候補なしとする」）でそのまま
+        対応できる。そのため、この一覧専用の別々の2操作としては実装せず、
+        「通常の一覧に戻す」1操作に統一した（判定しやすい方を選んだ、との
+        指示に基づく判断）。
+        """
+        tree = self._already_registered_tree
+        clicked_iid = tree.identify_row(event.y)
+        if not clicked_iid:
+            return
+
+        current_selection = tree.selection()
+        if len(current_selection) > 1 and clicked_iid in current_selection:
+            target_iids = list(current_selection)
+        else:
+            tree.selection_set(clicked_iid)
+            target_iids = [clicked_iid]
+
+        menu = tk.Menu(self._already_registered_window, tearoff=0)
+        label = "通常の一覧に戻す（訂正する）"
+        if len(target_iids) > 1:
+            label += f"（選択中の{len(target_iids)}件）"
+        menu.add_command(label=label, command=lambda: self._revert_already_registered_rows(target_iids))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _revert_already_registered_rows(self, iids):
+        """
+        登録済みリストの行を、通常のpending_csv_import_rows（候補未確定の
+        状態）へ再度INSERTし、右ペイン（登録待ち一覧）へ戻す。
+
+        実装方法（判定しやすい方を選択）：対象行ごとにupsert_pending_csv_
+        import_row()を呼んでDBへ書き戻した上で、右ペインは全件を_load_
+        staged_rows_from_db()で読み直す（対象行だけを個別にTreeviewへ
+        差し込むより、既存の全件再読み込みロジックをそのまま再利用する方が
+        単純で、本操作の頻度（稀な訂正操作）であれば性能上の懸念も無いため）。
+        """
+        entries = [self._already_registered_by_iid[iid] for iid in iids if iid in self._already_registered_by_iid]
+        if not entries:
+            return
+
+        count = len(entries)
+        lot_no_preview = "、".join(e.get("lot_no", "") for e in entries[:5])
+        if count > 5:
+            lot_no_preview += " 他"
+        if not messagebox.askyesno(
+            "通常の一覧に戻す",
+            f"選択中の{count}件（ロットNo: {lot_no_preview}）を通常の登録待ち一覧に戻します。"
+            "よろしいですか？",
+            parent=self._already_registered_window,
+        ):
+            return
+
+        for entry in entries:
+            upsert_pending_csv_import_row({
+                "csv_row_no": entry.get("csv_row_no"),
+                "lot_no": entry["lot_no"],
+                "product_name": entry["product_name"],
+                "daily_qty": entry["daily_qty"],
+                "report_date": entry.get("report_date"),
+                "worker_id": entry.get("worker_id"),
+            }, import_batch_id=entry.get("import_batch_id"))
+            self._already_registered_rows.remove(entry)
+
+        # 右ペイン（登録待ち一覧）を全件読み直す（戻した行を候補付きで表示
+        # するには、他の保留行と同じくfind_matching_plan_items()での
+        # 再照合が必要なため、_load_staged_rows_from_db()をそのまま使う）。
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        self._row_by_iid = {}
+        for row in _load_staged_rows_from_db():
+            self._insert_staging_row(row)
+
+        self._populate_already_registered_tree()
+        self._update_status_label()
+
+    def on_export_already_registered_csv(self):
+        """
+        登録済みリスト（self._already_registered_rows）をCSV出力する。
+        on_export_unregistrable_csv()・on_export_mismatched_csv()と同じ形式
+        （utf-8-sig）だが、対応するpending_csv_import_rowsの行がそもそも
+        存在しない（最初から永続化されていない）ため、出力後に一覧・DBから
+        何かを削除する処理は無い（あくまでスナップショットの保存であり、
+        出力後も一覧から消えず、必要なら引き続き「戻す」操作が行える）。
+        """
+        if not self._already_registered_rows:
+            messagebox.showinfo("登録済みリスト", "登録済みと判定された行はありません。", parent=self._already_registered_window)
+            return
+
+        save_path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            initialfile="production_import_already_registered.csv",
+            filetypes=[("CSV files", "*.csv")],
+            parent=self._already_registered_window,
+        )
+        if not save_path:
+            return
+
+        try:
+            with open(save_path, "w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    "lot_no", "product_name", "daily_qty", "report_date",
+                    "matched_kitting_list_no", "existing_qty",
+                ])
+                for entry in self._already_registered_rows:
+                    writer.writerow([
+                        entry.get("lot_no", ""),
+                        entry.get("product_name", ""),
+                        entry.get("daily_qty", ""),
+                        entry.get("report_date") or "",
+                        entry.get("matched_kitting_list_no") or "",
+                        entry.get("existing_qty") if entry.get("existing_qty") is not None else "",
+                    ])
+        except Exception as e:
+            messagebox.showerror("エラー", f"CSV出力に失敗しました：{e}", parent=self._already_registered_window)
+            return
+
+        messagebox.showinfo("完了", f"CSVを保存しました：\n{save_path}", parent=self._already_registered_window)

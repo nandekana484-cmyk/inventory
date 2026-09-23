@@ -17,6 +17,7 @@ from services.production_service import (
     delete_daily_result,
 )
 from services.production_import_service import parse_production_csv_for_staging
+from models.production_import_staging import list_pending_csv_import_rows
 from models.kitting_plan import list_active_plan_items, find_opposite_side_plan, find_plan_item_by_kitting_no
 from models.production import list_daily_production_today
 from models.ng_declarations import save_ng_declaration, get_ng_declaration
@@ -117,7 +118,8 @@ class KittingProductionEntryWindow(tk.Toplevel):
         # - _plan_checkbox_buttons：列key -> ▼ボタンウィジェット（絞り込み中の見た目切替用）。
         # - _plan_col_index：列key -> rowタプル内でのインデックス（cols_plan準拠）。
         # - _hide_completed_var：「入力済みを隠す」チェックボックスの状態。
-        #   order_qty・actual_qtyという2列をまたいだ判定のため、他の列単位フィルタ
+        #   calculate_lot_completion()（ファイルNo・面単位で複数kitting_list_noの
+        #   実績を合算する正しいロジック）による判定のため、他の列単位フィルタ
         #   （_plan_filter_predicates()）とは別立てでapply_plan_filters()内で適用する。
         #   デフォルトはFalse（完了済みも含めて表示）。
         # - _plan_date_from_entry/_plan_date_to_entry：「実装開始予定日」の期間指定用
@@ -355,8 +357,9 @@ class KittingProductionEntryWindow(tk.Toplevel):
         for col_key in row2_cols:
             self._add_plan_filter_entry(filter_row2, col_key, self._plan_filter_labels[col_key], width=8)
 
-        # order_qty・actual_qtyという2列をまたいだ判定のため、他の列単位フィルタ
-        # （_plan_filter_predicates()）とは別に、apply_plan_filters()内で追加適用する。
+        # calculate_lot_completion()によるファイルNo・面単位の合算判定のため、
+        # 他の列単位フィルタ（_plan_filter_predicates()）とは別に、
+        # apply_plan_filters()内で追加適用する。
         ttk.Checkbutton(
             filter_row2, text="入力済みを隠す", variable=self._hide_completed_var,
             command=self.apply_plan_filters,
@@ -437,6 +440,18 @@ class KittingProductionEntryWindow(tk.Toplevel):
             bottom_btn_frame, text="実績CSV取込", command=self.on_production_csv_import
         )
         self.btn_production_csv_import.pack(side=tk.LEFT, expand=True, fill=tk.X)
+
+        # 以前はメインメニュー側にあった「実績CSV取込状況」ボタン（新規CSV取込を
+        # 経由せず、既存の未処理データのみでステージング一覧を開く機能）を、
+        # 本画面側（実績CSV取込ボタンの隣）へ移設した。ステージング画面は
+        # 本画面のsearch_plan()等へ直接アクセスする設計のため、そもそも
+        # 本画面が開いている状態でしか意味を持たない機能であり、本画面に
+        # 配置する方が自然と判断した。処理自体はopen_pending_csv_staging_window()
+        # （既存、新規CSV取込直後にも使われる共通の入口）をそのまま呼ぶ。
+        self.btn_csv_staging_status = ttk.Button(
+            bottom_btn_frame, text="実績CSV取込状況", command=self.open_pending_csv_staging_window
+        )
+        self.btn_csv_staging_status.pack(side=tk.LEFT, expand=True, fill=tk.X)
 
         hsb_plan.pack(side=tk.BOTTOM, fill=tk.X)
         vsb_plan.pack(side=tk.RIGHT, fill=tk.Y)
@@ -714,6 +729,12 @@ class KittingProductionEntryWindow(tk.Toplevel):
                 f"{diff:.0f}",
                 f"{lot_completed:.0f}",
                 f"{lot_remaining:.0f}",
+                # 表示列（cols_plan）には含まれない末尾の隠し要素。
+                # 「入力済みを隠す」フィルタ（apply_plan_filters()）が、この行の
+                # (setup_file_no, production_side)を鍵にcalculate_lot_completion()の
+                # file_actualsを引く際に使う。_populate_plan_list_tree()でTreeviewへ
+                # 渡す際はcols_plan分だけにスライスして渡すため、画面上の列には現れない。
+                str(plan_item.get("production_side") or ""),
             ))
 
         return rows
@@ -734,8 +755,12 @@ class KittingProductionEntryWindow(tk.Toplevel):
             self.tree_plan_list.delete(item)
 
         self._plan_row_iid_by_kitting_no = {}
+        # rowsの各要素はcols_plan（表示列）に加え、末尾にフィルタ専用の隠し要素
+        # （production_side、_fetch_plan_list_rows()参照）を持つ場合がある。
+        # Treeviewへはcols_plan分だけをスライスして渡す（余分な値を渡さない）。
+        col_count = len(self._plan_col_index)
         for values in rows:
-            iid = self.tree_plan_list.insert("", tk.END, values=values)
+            iid = self.tree_plan_list.insert("", tk.END, values=values[:col_count])
             self._plan_row_iid_by_kitting_no[(values[0], values[1])] = iid
 
     def load_plan_list(self):
@@ -823,6 +848,8 @@ class KittingProductionEntryWindow(tk.Toplevel):
                 f"{diff:.0f}",
                 f"{lot_completed:.0f}",
                 f"{lot_remaining:.0f}",
+                # _fetch_plan_list_rows()と同じ末尾の隠し要素（production_side）。
+                str(plan_item.get("production_side") or ""),
             )
 
             key = (kitting_list_no, lot_no)
@@ -875,9 +902,15 @@ class KittingProductionEntryWindow(tk.Toplevel):
         self._all_plan_rows に対して現在の全フィルタ条件をAND条件で適用し、
         結果をTreeviewへ反映する（DBへは一切アクセスしない）。
 
-        「入力済みを隠す」（order_qty・actual_qtyという2列をまたいだ判定）は、
-        列単位の述語（_plan_filter_predicates()）の形に馴染まないため、
-        列フィルタ適用後の結果に対して別立てで追加適用する。
+        「入力済みを隠す」は、列単位の述語（_plan_filter_predicates()）の形に
+        馴染まないため、列フィルタ適用後の結果に対して別立てで追加適用する。
+
+        判定基準はcalculate_lot_completion()（ファイルNo・面単位で複数の
+        kitting_list_noの実績を合算する、月報・日報側と同じ正しいロジック）に
+        統一する。以前の実装は行単位（kitting_list_no単位）のorder_qty・
+        actual_qty比較のみで判定しており、同一lot_no・同一file_noを複数の
+        kitting_list_noが分担しているケース（合算すれば発注数に到達している）を
+        正しく「入力済み」と判定できなかった（実データで確認済みの不具合）。
         """
         predicates = self._plan_filter_predicates()
         if not predicates:
@@ -886,12 +919,29 @@ class KittingProductionEntryWindow(tk.Toplevel):
             filtered = [row for row in self._all_plan_rows if self._plan_row_matches(row, predicates)]
 
         if self._hide_completed_var.get():
-            order_index = self._plan_col_index["order_qty"]
-            actual_index = self._plan_col_index["actual_qty"]
-            filtered = [
-                row for row in filtered
-                if float(row[actual_index]) < float(row[order_index])
-            ]
+            lot_no_index = self._plan_col_index["lot_no"]
+            file_no_index = self._plan_col_index["file_no"]
+
+            # _fetch_plan_list_rows()のlot単位キャッシュと同じパターン。
+            # このapply_plan_filters()呼び出し1回の中でのみ有効な使い捨てキャッシュ
+            # のため、複数のkitting_list_noが同一lot_noを共有していても
+            # calculate_lot_completion()は対象lot_noにつき1回しか呼ばれない。
+            lot_completion_cache = {}
+
+            def is_row_completed(row):
+                lot_no = row[lot_no_index]
+                if lot_no not in lot_completion_cache:
+                    lot_completion_cache[lot_no] = calculate_lot_completion(lot_no)
+                lot_info = lot_completion_cache[lot_no]
+                # 末尾の隠し要素（production_side、_fetch_plan_list_rows()参照）。
+                file_no = row[file_no_index]
+                production_side = row[-1]
+                file_actual = lot_info["file_actuals"].get((file_no, production_side), 0)
+                # この行のfile_no・面が属する合算実績が、ロットの完成数
+                # （lot_completed列と同じ値）に到達していれば入力済みとみなす。
+                return file_actual >= lot_info["completed_quantity"]
+
+            filtered = [row for row in filtered if not is_row_completed(row)]
 
         self._populate_plan_list_tree(filtered)
 
@@ -1343,6 +1393,21 @@ class KittingProductionEntryWindow(tk.Toplevel):
         if not file_path:
             return
 
+        # 前回（以前）の取込データが未処理のまま残っている場合、気づかず
+        # 続けて取り込んでしまう事故を避けるため確認する。「はい」を選んだ
+        # 場合の取込自体の挙動（同一lot_no+製品名の行は新しい方が古い保留行を
+        # 上書きする、upsert_pending_csv_import_row()のdelete-then-insert）は
+        # 変更しない（既存ルールのまま）。「いいえ」の場合はファイル選択が
+        # 済んでいても取込処理自体を開始しない。
+        pending_count = len(list_pending_csv_import_rows())
+        if pending_count > 0:
+            if not messagebox.askyesno(
+                "実績CSV取込",
+                f"前回の取込データが{pending_count}件残っています。続けて取り込みますか？",
+                parent=self.winfo_toplevel(),
+            ):
+                return
+
         worker_id = self.current_worker.get("worker_id", "SYSTEM")
 
         self.btn_production_csv_import.config(state=tk.DISABLED)
@@ -1410,23 +1475,31 @@ class KittingProductionEntryWindow(tk.Toplevel):
                 parent=self.winfo_toplevel(),
             )
 
-        if imported_count == 0:
-            # このCSVからは1件も保留行を追加できなかった、という意味の
-            # メッセージ（以前から残っている未処理行の有無とは別の話）。
-            # 過去の未処理行を確認したい場合は、メインメニューの
-            # 「実績CSV取込状況」から改めて開いてもらう。
+        already_registered_rows = payload.get("already_registered_rows") or []
+
+        if imported_count == 0 and not already_registered_rows:
+            # このCSVからは1件も保留行を追加できず、登録済みリストへ回す
+            # 行も無かった、という意味のメッセージ（以前から残っている
+            # 未処理行の有無とは別の話）。過去の未処理行を確認したい場合は、
+            # 隣の「実績CSV取込状況」ボタン（本画面）から改めて開いてもらう。
             messagebox.showinfo("実績CSV取込", "登録対象の行がありませんでした。", parent=self.winfo_toplevel())
             return
 
-        self.open_pending_csv_staging_window()
+        # imported_count==0でもalready_registered_rowsがあれば、登録済み
+        # リストだけでもユーザーに見せるためウインドウを開く（open_or_notify()
+        # 側もこの条件で判定する、そちらのdocstring参照）。
+        self.open_pending_csv_staging_window(already_registered_rows=already_registered_rows)
 
-    def open_pending_csv_staging_window(self):
+    def open_pending_csv_staging_window(self, already_registered_rows=None):
         """
         実績CSV取込状況（未処理のステージング行、models.production_import_
         staging.list_pending_csv_import_rows()）を開く。新規CSV取込直後
-        （_poll_csv_import_queue()）・メインメニューの「実績CSV取込状況」
-        （ui.main_window.MainWindow.open_production_import_staging()、新規
-        CSV取込を経由しない再開）の両方から呼ばれる共通の入口。
+        （_poll_csv_import_queue()）・本画面右下の「実績CSV取込状況」ボタン
+        （btn_csv_staging_status、新規CSV取込を経由しない再開）の両方から
+        呼ばれる共通の入口。以前はメインメニュー側にこの機能のボタン
+        （ui.main_window.MainWindow.open_production_import_staging()）が
+        あったが、生産実績入力画面が既に開いている必要がある機能のため、
+        本画面側（実績CSV取込ボタンの隣）へ移設し、メインメニュー側は削除した。
 
         未処理行が1件も無ければui.production_import_staging_window.
         open_or_notify()が案内メッセージのみ表示し、ウインドウは開かない。
@@ -1444,11 +1517,28 @@ class KittingProductionEntryWindow(tk.Toplevel):
         コールバック（on_row_confirmed）経由で本ウインドウ側のメソッドを
         呼んでもらう間接的な連携ではなくなったため、open_or_notify()に
         コールバックを渡す必要は無くなった。
+
+        already_registered_rows：直前のCSV取込（_poll_csv_import_queue()）で
+        「登録済み」と判定された行の詳細情報リスト（services.production_import_
+        service.parse_production_csv_for_staging()の戻り値
+        "already_registered_rows"、既に登録済みのためpending_csv_import_rows
+        へは保存されなかった行）。DBに永続化されないため、「実績CSV取込状況」
+        ボタン経由（新規取込を伴わない再開）で呼ばれた場合は常にNone（空）に
+        なる（本画面のdocstring・CANONICAL_DESIGN_DECISIONS.md参照）。
+        - 新規ウインドウを開く場合：ProductionImportStagingWindow()の
+          コンストラクタへそのまま渡し、self._already_registered_rows の
+          初期値にする。
+        - 既にウインドウが開いている場合：新しいCSV取込で新たに見つかった
+          分を、既存ウインドウのadd_already_registered_rows()で追記する
+          （lift()するだけでは、このCSVの登録済み判定結果が失われてしまう
+          ため）。
         """
         if self._csv_staging_window is not None and self._csv_staging_window.winfo_exists():
+            if already_registered_rows:
+                self._csv_staging_window.add_already_registered_rows(already_registered_rows)
             self._csv_staging_window.lift()
             return
-        self._csv_staging_window = open_or_notify(self)
+        self._csv_staging_window = open_or_notify(self, already_registered_rows=already_registered_rows)
 
     def _on_daily_qty_enter(self, event=None):
         """

@@ -380,3 +380,33 @@ NG入力画面の一括展開・登録機能（AP-1〜AP-5）と同じ設計で�
 ### 動作確認
 
 lot_no=110068（未生産のファイルNoがあるロット）で、修正後の日報結果（`0/120/120.0`）が、生産実績入力画面の`calculate_lot_completion()`直接呼び出し結果と完全一致することを確認。正常系（全ファイルNo生産済み）・同一lot_noに複数行がある場合の重複計算の排除・面1/面2不整合警告（§5参照）・発注数不一致警告への無影響も確認済み。`build_wip_extraction_rows()`（仕掛数量抽出）は元々`calculate_lot_completion()`ベースの正しいロジックだったため無修正。
+
+---
+
+## 15. 計画一覧「入力済みを隠す」フィルタの根本ロジック不一致（同種バグの3件目、修正済み、2026-09-23）
+
+（§14で確立した「実績・完成数に関わる判定は必ず`calculate_lot_completion()`を経由する」という方針が、生産実績入力画面自体の中にも未適用の箇所として残っていたことが判明した事例。`UI_WORKFLOW_FIXES_NOTES.md`のI-3〜I-5（面1省略ロジックが日報・月報に未適用だった件）・本ファイル§14（日報・月報の独自ロジック）に続く、**3件目の同種の発見**。）
+
+### 発見の経緯
+
+計画一覧の「入力済みを隠す」チェック（`P-view-4`、本ファイル§3グループP-view参照）が、複数バッチ（キッティングNo.）に分割されたロットで正しく機能しないケースがあるかを調査した結果、判定ロジック自体が古いままであることが判明した。
+
+### 原因
+
+`ui/kitting_production_entry.py::apply_plan_filters()`内の「入力済みを隠す」判定が、`order_qty`・`actual_qty`という**行単位（単一kitting_list_no単位）**の単純比較（`actual_qty < order_qty`なら表示継続）のままだった。`actual_qty`の実体は`plan_item["app_cumulative_qty"]`（`models/kitting_plan.py::list_active_plan_items()`が計算する`(kitting_list_no, lot_no)`単位の累計）であり、同一lot_no・同一setup_file_noを複数のkitting_list_noが分担するケースで正しく合算しない`calculate_lot_completion()`以前の粒度のままだった。
+
+実データと同じ状況（キッティングNo.A：発注500・実績498、キッティングNo.B：発注2・実績2、合算500=完了）を隔離DBコピー上で再現した結果、キッティングNo.Bの合算後もキッティングNo.A単体では498<500のままのため、「入力済みを隠す」をONにしてもキッティングNo.Aの行が表示され続ける不具合を実機確認した。一方、同じ行の`lot_completed`/`lot_remaining`列（表示のみ、`calculate_lot_completion()`ベース）は既に正しく完了（`remaining_quantity=0`）と表示しており、**同一画面内で新旧2つの完成判定ロジックが矛盾したまま併存していた**。
+
+### 対応
+
+`apply_plan_filters()`の判定を`calculate_lot_completion(lot_no)`の`file_actuals[(setup_file_no, production_side)]`（そのファイルNo・面の合算実績）と`completed_quantity`の比較に統一した（「行の合算実績がそのファイルNoの完成数以上であれば入力済みとみなす」、`lot_completed`列と同じ判定基準）。`production_side`は表示列（`cols_plan`）に含まれていなかったため、行データの末尾に非表示要素として追加した上でTreeview挿入時にはスライスして画面には出さない形にした。`_fetch_plan_list_rows()`のlot単位キャッシュと同じパターンで、`apply_plan_filters()`呼び出し1回の中でのみ有効な使い捨てキャッシュを設け、同一lot_noへの`calculate_lot_completion()`重複呼び出しを避けている。
+
+なお、この判定基準は**実績数（生産実績の合算）のみで発注数に達しているかを見るものであり、NG数は意図的に考慮しない**（NG込みの完了判定は別の発展的なアイデアとして今回は見送り、ユーザー確認済み）。
+
+### 動作確認
+
+上記の複数バッチ分割シナリオ（キッティングNo.A＋B、合算500=完了）で、ONにすると両方とも正しく非表示になることを確認。単一バッチの通常の完了済み計画も引き続き正しく非表示になることを確認。実DBの計画一覧全553件に対する処理時間は約0.26秒（lot_no単位キャッシュにより`calculate_lot_completion()`の重複呼び出しは発生しない）。`python -m pytest tests/`にも影響無し（1 passed）。
+
+### 教訓
+
+「同種のロジック不一致が複数箇所で繰り返し発見されている」（§14→本節で3件目）という事実を踏まえ、「実績・完成数に関わる新しい判定ロジックを実装する際は、必ず`calculate_lot_completion()`を経由すること、独自の行単位比較を実装してはならない」という原則を`CANONICAL_DESIGN_DECISIONS.md` D-21に記録した。

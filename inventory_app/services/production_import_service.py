@@ -117,15 +117,17 @@ def is_already_registered(lot_no, product_name, daily_qty, plan_items_by_lot=Non
     このCSV行（lot_no・product_name・daily_qty）が指す計画について、
     production_dailyへ既に同じ数量で登録済みかどうかを判定する。
     実績CSVステージング一覧（parse_production_csv_for_staging()）で、
-    重複登録の必要が無い行を一覧から除外するために使う。
+    重複登録の必要が無い行を一覧から除外し、代わりに「登録済みリスト」
+    （ui.production_import_staging_window.ProductionImportStagingWindow.
+    self._already_registered_rows）へ振り分けるために使う。
 
     対象計画の特定：find_matching_plan_items(lot_no, 正規化済み
     product_name, plan_items_by_lot)を呼び、製品名まで一致した計画
     （matched）がちょうど1件に定まる場合のみ判定を行う。0件（該当計画なし）
     または複数件（lot_no+製品名だけでは一意特定できない、あいまい）の
-    場合は「判定不可」としてFalseを返す（＝一覧からは除外しない。誤って
-    有効な行を隠してしまうことを避けるため、判定できない場合は常に
-    「未登録」側に倒す）。
+    場合は「判定不可」として`already_registered=False`を返す（＝一覧からは
+    除外しない。誤って有効な行を隠してしまうことを避けるため、判定できない
+    場合は常に「未登録」側に倒す）。
 
     判定：matchedの1件について、models.production.get_app_cumulative_qty(
     kitting_list_no, lot_no)（既存の実績取得関数、production_dailyの
@@ -149,6 +151,15 @@ def is_already_registered(lot_no, product_name, daily_qty, plan_items_by_lot=Non
     呼び出し（候補選択・自動確定判定用）がinclude_completed=Falseを
     要求する理由（models.kitting_plan.list_active_plan_items()のdocstring
     参照）とは目的が異なるため、本関数専用に別のグルーピング結果を使う。
+
+    戻り値：{"already_registered": bool, "matched_kitting_list_no": str|None,
+    "existing_qty": float|None, "daily_qty": daily_qty}のdict。
+    以前はbool一つだけを返していたが、「登録済みリスト」で判定根拠
+    （どの計画のどの実績値と一致したためスキップされたのか）を表示できる
+    ようにするため、判定に使った詳細情報も返すよう拡張した。呼び出し元は
+    引き続き`result["already_registered"]`だけを見ればbool時代と同じ判定に
+    使える。matched_kitting_list_no・existing_qtyは、判定不可
+    （matchedが1件に定まらない）の場合はNoneになる。
     """
     if plan_items_by_lot is None:
         plan_items_by_lot = group_active_plan_items_by_lot(include_completed=True)
@@ -156,11 +167,21 @@ def is_already_registered(lot_no, product_name, daily_qty, plan_items_by_lot=Non
     product_name_normalized = normalize_product_name(product_name)
     _, matched = find_matching_plan_items(lot_no, product_name_normalized, plan_items_by_lot)
     if len(matched) != 1:
-        return False
+        return {
+            "already_registered": False,
+            "matched_kitting_list_no": None,
+            "existing_qty": None,
+            "daily_qty": daily_qty,
+        }
 
     plan = matched[0]
     existing_qty = get_app_cumulative_qty(plan["kitting_list_no"], lot_no)
-    return existing_qty == daily_qty
+    return {
+        "already_registered": existing_qty == daily_qty,
+        "matched_kitting_list_no": plan["kitting_list_no"],
+        "existing_qty": existing_qty,
+        "daily_qty": daily_qty,
+    }
 
 
 def import_production_csv(file_path, default_worker_id=None):
@@ -415,11 +436,25 @@ def parse_production_csv_for_staging(file_path, default_worker_id=None):
     戻り値：{
         "imported_count": 保留行として保存した件数,
         "already_registered_count": 既に登録済み（数量一致）と判定してスキップした件数,
+        "already_registered_rows": [既に登録済みと判定された行の詳細（下記参照）],
         "warnings": [CSV解析時点の警告メッセージ（必須列欠落・数値変換エラー等）],
     }
     "report_date"はCSVの「払い出し日」相当の値をそのまま保持するが、
     参考情報としての表示用であり、実際の登録時（呼び出し元がこのモジュールの
     外で行う）にはこの値を使わない方針（登録ボタンを押した日を使うため）。
+
+    "already_registered_rows"の各要素：{"csv_row_no", "lot_no", "product_name",
+    "daily_qty", "report_date", "worker_id", "matched_kitting_list_no",
+    "existing_qty", "import_batch_id"}。is_already_registered()が返す詳細
+    情報（判定に使った一致計画・既存実績値）に、通常の保留行と同じCSV由来の
+    フィールドを合わせたもの。ui.production_import_staging_window.
+    ProductionImportStagingWindow.self._already_registered_rows（「登録済み
+    リスト」）の元データとして使う。pending_csv_import_rowsへは保存しない
+    （本関数のdocstring既存部分の通り）ため、この戻り値がこの情報の唯一の
+    持ち出し口である。"訂正する"（登録済みリストから通常のステージング一覧へ
+    戻す）操作のためにcsv_row_no・worker_id・import_batch_idも保持しておき、
+    通常の保留行と同じ形でupsert_pending_csv_import_row()へ再投入できるように
+    している。
     """
     rows = parse_csv_generic(file_path, COLUMN_MAP_PRODUCTION)
 
@@ -427,6 +462,7 @@ def parse_production_csv_for_staging(file_path, default_worker_id=None):
     required_column_skipped_count = 0
     imported_count = 0
     already_registered_count = 0
+    already_registered_rows = []
 
     import_batch_id = create_csv_import_batch(file_path, imported_by=default_worker_id)
 
@@ -462,8 +498,20 @@ def parse_production_csv_for_staging(file_path, default_worker_id=None):
         report_date = row.get("report_date") or None
         worker_id = row.get("worker_id") or default_worker_id or "CSV_IMPORT"
 
-        if is_already_registered(lot_no, product_name, daily_qty, plan_items_by_lot):
+        registration_check = is_already_registered(lot_no, product_name, daily_qty, plan_items_by_lot)
+        if registration_check["already_registered"]:
             already_registered_count += 1
+            already_registered_rows.append({
+                "csv_row_no": i,
+                "lot_no": lot_no,
+                "product_name": product_name,
+                "daily_qty": daily_qty,
+                "report_date": report_date,
+                "worker_id": worker_id,
+                "matched_kitting_list_no": registration_check["matched_kitting_list_no"],
+                "existing_qty": registration_check["existing_qty"],
+                "import_batch_id": import_batch_id,
+            })
             continue
 
         upsert_pending_csv_import_row({
@@ -490,5 +538,6 @@ def parse_production_csv_for_staging(file_path, default_worker_id=None):
     return {
         "imported_count": imported_count,
         "already_registered_count": already_registered_count,
+        "already_registered_rows": already_registered_rows,
         "warnings": warnings,
     }

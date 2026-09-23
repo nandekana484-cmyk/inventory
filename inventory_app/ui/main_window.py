@@ -31,7 +31,6 @@ from ui.db_delete_helper import confirm_and_delete_database
 from services.db_migration_carryover import carry_over_incomplete_lots
 from services.unprocessed_check_service import check_unprocessed_items
 from services.app_settings_service import load_last_db_path
-from models.production_import_staging import list_pending_csv_import_rows
 
 
 class MainWindow(tk.Tk):
@@ -274,13 +273,6 @@ class MainWindow(tk.Tk):
         )
         btn_operation_log.pack(fill=tk.X, pady=5)
 
-        # 実績CSV取込のステージングデータ（models.production_import_staging）は
-        # 月次DBに同居し、項目8・9と同じ理由（末尾追加）でこの位置に配置した。
-        btn_csv_staging = ttk.Button(
-            monthly_frame, text="10. 実績CSV取込状況", command=self.open_production_import_staging
-        )
-        btn_csv_staging.pack(fill=tk.X, pady=5)
-
         ttk.Label(master_frame, text="共通マスタ", font=("Helvetica", 11, "bold")).pack(anchor=tk.W, pady=(0, 5))
 
         btn_board_structure_import = ttk.Button(
@@ -488,10 +480,14 @@ class MainWindow(tk.Tk):
 
         on_ready：ウインドウの用意ができた時点（既存流用・新規作成いずれも）で
         呼ばれるコールバック（引数：KittingProductionEntryWindowインスタンス）。
-        open_production_import_staging()が、生産実績入力画面を開いた直後に
-        続けてステージング一覧を開くために使う（非同期のため、単純に
-        open_kitting_production_entry()の直後に処理を続けることができない）。
-        省略時（None）は何もしない（従来通りの呼び出し）。
+        非同期のため、単純にopen_kitting_production_entry()の直後に処理を
+        続けることができない場面向けの汎用フック。省略時（None）は何もしない
+        （従来通りの呼び出し）。（旧：メインメニュー「実績CSV取込状況」ボタンが
+        生産実績入力画面を開いた直後に続けてステージング一覧を開くために使って
+        いたが、同ボタンは生産実績入力画面側（KittingProductionEntryWindowの
+        「実績CSV取込状況」ボタン）へ移設され、直接その画面のインスタンス上で
+        open_pending_csv_staging_window()を呼ぶだけで済むようになったため、
+        現在この引数を使う呼び出し元は無い）
         """
         key = "kitting_production_entry"
         existing = self._open_windows.get(key)
@@ -634,29 +630,6 @@ class MainWindow(tk.Tk):
 
     def open_operation_log(self):
         self._open_singleton_window("operation_log", lambda: OperationLogWindow(self))
-
-    def open_production_import_staging(self):
-        """
-        実績CSV取込状況（未処理のステージング行、models.production_import_
-        staging.pending_csv_import_rows）を、新規CSV取込を経由せず開く
-        （ステージングデータの永続化に伴い新設）。
-
-        ステージング画面（ui.production_import_staging_window.
-        ProductionImportStagingWindow）は、行確定時にui.kitting_production_
-        entry.KittingProductionEntryWindow.on_row_confirmed()経由で実績記入欄へ
-        転記する仕様のため、生産実績入力画面自体が開いている必要がある。
-        未処理行が1件も無い場合は、生産実績入力画面（非同期・やや重い読み込み）を
-        開くだけ無駄なため、先にlist_pending_csv_import_rows()で判定する。
-
-        生産実績入力画面が既に開いていればそのままステージング一覧を開き、
-        未オープンであればopen_kitting_production_entry()の非同期読み込み完了後に
-        続けて開く（on_readyコールバック）。
-        """
-        if not list_pending_csv_import_rows():
-            messagebox.showinfo("実績CSV取込状況", "未処理の取込データはありません。", parent=self)
-            return
-
-        self.open_kitting_production_entry(on_ready=lambda w: w.open_pending_csv_staging_window())
 
     def on_logout(self):
         """
