@@ -368,7 +368,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
         for col in _CANDIDATE_COLS:
             self.tree_candidates.heading(col, text=_CANDIDATE_HEADERS[col])
             # 計画数（planned_qty）は_format_planned_qty_cell()で差分表記
-            # （例："450（差+50）"）が付くことがあるため、他列より幅を広めに取る
+            # （例："450（差-50）"）が付くことがあるため、他列より幅を広めに取る
             # （ui.plan_candidate_dialog._show_candidate_list_dialog()と同じ幅）。
             width = 160 if col == "planned_qty" else 100
             self.tree_candidates.column(
@@ -617,7 +617,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
             コメント参照：数量差・日付差ハイライトとは数学的に排他のため優先順位の
             衝突は実質発生しないが、念のため最優先で判定する）。
           - _format_planned_qty_cell()で、計画数（planned_qty）セルに実績数との
-            差分を併記する（例："450（差+50）"）。行全体のlarge_diffタグ
+            差分を併記する（例："450（差-50）"）。行全体のlarge_diffタグ
             （20%超のみ発火）とは独立に、差があれば常に表示する、より細かい
             粒度の指標。Tkinterの標準Treeviewはセル単位の背景色指定に対応して
             いないため、色ではなくテキストへの差分埋め込みで実現している
@@ -810,6 +810,22 @@ class ProductionImportStagingWindow(tk.Toplevel):
         組み立て、_perform_registration()へ直接渡す）ことで、確認ダイアログを
         自然にスキップできる。
 
+        登録後の数量差チェック（2026-09-24追加）：右クリック即時登録は
+        is_auto_confirmable()のような数量完全一致要件を課さないため（要件を
+        満たさない候補でも即座に登録できる、AB-7参照）、実績数（daily_qty）と
+        計画数（candidate["planned_qty"]）が異なる登録が発生しうる。この場合、
+        従来の完了メッセージ（messagebox.showinfo）をそのまま出さず、完了内容に
+        「数量を修正しますか？」という選択肢を追加したaskyesnoに差し替える。
+        「はい」を選ぶと該当計画を再度開き、登録済みの実績数を実績記入欄へ
+        転記してフォーカスを移す（そこから訂正して通常の一直線Enterフローで
+        再登録すればoverwrite_daily_result()により上書きされる）。数量が一致
+        していた場合、または「いいえ」を選んだ場合は、従来通りの完了メッセージ
+        （元のmessagebox.showinfo()の内容をそのまま流用）のみ表示する。
+        一括登録（Shift+S、_on_bulk_register()）はis_auto_confirmable()で
+        数量完全一致の候補のみを対象にするため、この経路でここに到達する
+        candidateは常にplanned_qty == daily_qtyであり、この分岐が発火する
+        ことはない。
+
         NG面1・面2は対象にしない（save_qty_by_side={}で登録する）。
         is_auto_confirmable()の自動確定要件はNG数量を考慮しない実績数量・
         日付のみの判定であり、即時登録もその範囲（実績数量の登録のみ）に
@@ -825,15 +841,82 @@ class ProductionImportStagingWindow(tk.Toplevel):
         """
         parent = self._parent
         daily_qty = row["daily_qty"]
+        kitting_list_no = candidate["kitting_list_no"]
+        lot_no = candidate["lot_no"]
+        planned_qty = candidate.get("planned_qty")
+        # 登録（＝staging_iidの行削除）が成功した後に選択し直す「次の行」を、
+        # 削除前のうちに記録しておく（削除後にtree.next()を呼んでも、既に
+        # ツリーから消えたiidを起点にはできないため）。次の行が無い場合は
+        # 空文字列（Treeview.next()の仕様通り）になる。
+        next_iid = self.tree.next(staging_iid)
 
-        parent.search_plan(candidate["kitting_list_no"], lot_no=candidate["lot_no"])
+        parent.search_plan(kitting_list_no, lot_no=lot_no)
         parent.entry_daily_qty.delete(0, tk.END)
         parent.entry_daily_qty.insert(0, f"{daily_qty:g}")
         parent._pending_csv_row_removal = self._make_remove_callback(staging_iid)
         parent._pending_csv_report_date = row.get("report_date")
 
         preview = parent._build_registration_preview(daily_qty, {})
-        parent._perform_registration(daily_qty, preview)
+
+        # _perform_registration()は登録完了のたびにmessagebox.showinfo()で
+        # 完了メッセージ（アプリ入力累計・反対側連動・NG申告・エラー等を含む）
+        # を表示するが、数量差があった場合はこれをそのまま出さず、修正への
+        # 選択肢を追加したダイアログに差し替えたい。そのため、_on_bulk_
+        # register()と同じ手法（messagebox.showinfo()の一時的な無効化、
+        # try/finallyで必ず復元）で、いったん元の完了メッセージの内容だけを
+        # 捕捉し、実際の表示は本メソッド側で行う（内容そのものは捨てず、
+        # 数量が一致していた場合はそのまま流用する＝「従来通りの完了メッセージ
+        # のみ表示」という要件を満たす）。
+        captured = []
+        original_showinfo = messagebox.showinfo
+        messagebox.showinfo = lambda title, message, **kw: captured.append((title, message))
+        try:
+            parent._perform_registration(daily_qty, preview)
+        finally:
+            messagebox.showinfo = original_showinfo
+
+        if captured:
+            completion_title, completion_message = captured[0]
+        else:
+            # _perform_registration()がエラー等でmessagebox.showinfo()に
+            # 到達しなかった場合（実績登録自体に失敗した場合）のフォールバック。
+            completion_title, completion_message = "登録完了", f"実績を登録しました（実績数：{daily_qty:g}）。"
+
+        try:
+            mismatch = planned_qty is not None and float(daily_qty) != float(planned_qty)
+        except (TypeError, ValueError):
+            mismatch = False
+
+        if not mismatch:
+            messagebox.showinfo(completion_title, completion_message, parent=parent.winfo_toplevel())
+        else:
+            diff = float(daily_qty) - float(planned_qty)
+            message = (
+                f"{completion_message}\n\n"
+                f"実績数（{daily_qty:g}）が計画数（{planned_qty:g}、差{diff:+g}）と異なります。"
+                "数量を修正しますか？"
+            )
+            if messagebox.askyesno(completion_title, message, parent=parent.winfo_toplevel()):
+                # 該当計画を再度開き、登録済みの実績数（daily_qty）を実績記入欄へ
+                # 転記した上でフォーカスを移す。ユーザーがここから値を訂正し、
+                # 通常の一直線Enterフロー（Enter→確認ダイアログ→登録）で
+                # 再登録すればoverwrite_daily_result()により上書きされる。
+                parent.search_plan(kitting_list_no, lot_no=lot_no)
+                parent.entry_daily_qty.delete(0, tk.END)
+                parent.entry_daily_qty.insert(0, f"{daily_qty:g}")
+                parent.entry_daily_qty.focus_set()
+
+        # 登録した行が右ペインから消えた後（remove_callback実行済み）、次の行を
+        # 自動選択する。修正ダイアログ（上記）で「はい」を選んだ場合も、それとは
+        # 独立に右ペイン側のカーソルは次の行へ進めておく（生産実績入力画面での
+        # 訂正作業と、ステージング一覧での次の登録作業は並行して進められるため）。
+        # staging_iidが削除されていない（登録自体が失敗した等）場合は何もしない。
+        # next_iidが存在しない（最後の行だった、または対象自体だった等）場合も
+        # 何もしない＝選択状態は空のままになる（tk.Treeviewは削除された行を
+        # 選択状態から自動的に除くため、エラーにはならない）。
+        if staging_iid not in self._row_by_iid and next_iid and self.tree.exists(next_iid):
+            self.tree.selection_set(next_iid)
+            self.tree.see(next_iid)
 
     def _on_bulk_register(self, event=None):
         """
@@ -871,10 +954,33 @@ class ProductionImportStagingWindow(tk.Toplevel):
         登録成功の判定：_perform_registration()自体は成功/失敗を戻り値で
         知らせないため、呼び出し後にiidがself._row_by_iidから消えているか
         （remove_callbackが実行されたか）で判定する。
+
+        完了後の自動選択（2026-09-24追加）：複数行が同時に削除されるため、
+        「対象行のうちTreeview上で最後だった行の次の行（対象行以外で最初に
+        来る後続行）」を選択する方針を採用した（対象行が最初に選択されていた
+        中の生き残りではなく、常に「一括処理した範囲の直後」を選ぶ方が、
+        次にどこから作業を再開すべきかが分かりやすいと判断したため）。
+        対象行は_register_candidate_immediately()呼び出しのたびに個別の
+        「次の行」選択も行うが、本メソッドの末尾で改めてselection_set()に
+        より上書きするため、最終的な選択状態はこの方針の通りになる。
         """
         selected_iids = list(self.tree.selection())
         if not selected_iids:
             return
+
+        # 削除が始まる前に、対象行のうちTreeview上で最後の位置にある行を
+        # 特定し、その直後（対象行を除く）を「一括処理後に選ぶべき行」として
+        # 記録しておく（削除が進むとtree.next()等で辿れなくなるため）。
+        ordered_all = list(self.tree.get_children())
+        selected_set = set(selected_iids)
+        indices = [ordered_all.index(iid) for iid in selected_iids if iid in ordered_all]
+        next_after_batch_iid = None
+        if indices:
+            last_index = max(indices)
+            for cand in ordered_all[last_index + 1:]:
+                if cand not in selected_set:
+                    next_after_batch_iid = cand
+                    break
 
         plan_items_by_lot = group_active_plan_items_by_lot()
 
@@ -919,6 +1025,14 @@ class ProductionImportStagingWindow(tk.Toplevel):
         if failed_count:
             message += f"\n{failed_count}件は登録中にエラーが発生しました（詳細は個別のエラーダイアログを参照）。"
         messagebox.showinfo("一括登録完了", message, parent=self)
+
+        # 事前に記録しておいた「一括処理範囲の直後の行」を選択する。存在しない
+        # （末尾の行まで含む一括登録だった等）場合は選択状態を空にする。
+        if next_after_batch_iid and self.tree.exists(next_after_batch_iid):
+            self.tree.selection_set(next_after_batch_iid)
+            self.tree.see(next_after_batch_iid)
+        else:
+            self.tree.selection_set(())
 
     # ------------------------------------------------------------------
     # ウインドウを閉じる

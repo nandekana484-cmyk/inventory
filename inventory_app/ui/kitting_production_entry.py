@@ -17,6 +17,11 @@ from services.production_service import (
     delete_daily_result,
 )
 from services.production_import_service import parse_production_csv_for_staging
+from services.csv_format_detection import (
+    read_csv_header, detect_format_mismatch_warnings,
+    PRODUCTION_CSV_SIGNATURE_COLUMNS, PRODUCTION_CSV_FORMAT_LABEL,
+    PLAN_CSV_SIGNATURE_COLUMNS, PLAN_CSV_FORMAT_LABEL,
+)
 from models.production_import_staging import list_pending_csv_import_rows
 from models.kitting_plan import list_active_plan_items, find_opposite_side_plan, find_plan_item_by_kitting_no
 from models.production import list_daily_production_today
@@ -905,12 +910,15 @@ class KittingProductionEntryWindow(tk.Toplevel):
         「入力済みを隠す」は、列単位の述語（_plan_filter_predicates()）の形に
         馴染まないため、列フィルタ適用後の結果に対して別立てで追加適用する。
 
-        判定基準はcalculate_lot_completion()（ファイルNo・面単位で複数の
-        kitting_list_noの実績を合算する、月報・日報側と同じ正しいロジック）に
-        統一する。以前の実装は行単位（kitting_list_no単位）のorder_qty・
-        actual_qty比較のみで判定しており、同一lot_no・同一file_noを複数の
-        kitting_list_noが分担しているケース（合算すれば発注数に到達している）を
-        正しく「入力済み」と判定できなかった（実データで確認済みの不具合）。
+        判定基準はcalculate_lot_completion()のfile_actuals（ファイルNo・面単位で
+        複数のkitting_list_noの実績を合算する、月報・日報側と同じ正しいロジック）
+        を使いつつ、比較対象は同関数のcompleted_quantity（ロット内の全file_no・
+        面の実績の最小値）ではなく、**この行自身のorder_qty（発注数）**にする。
+        以前はcompleted_quantityと比較していたが、ロット全体が未登録（実績0）の
+        場合はcompleted_quantityも0になり、0 >= 0で未登録の計画まで誤って
+        「完了済み」と判定してしまう境界条件のバグがあった（実データで確認済み、
+        2026-09-24修正）。order_qtyとの比較に変更することで、この境界ケースを
+        正しく「未完了」と判定できるようにする。
         """
         predicates = self._plan_filter_predicates()
         if not predicates:
@@ -921,6 +929,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         if self._hide_completed_var.get():
             lot_no_index = self._plan_col_index["lot_no"]
             file_no_index = self._plan_col_index["file_no"]
+            order_qty_index = self._plan_col_index["order_qty"]
 
             # _fetch_plan_list_rows()のlot単位キャッシュと同じパターン。
             # このapply_plan_filters()呼び出し1回の中でのみ有効な使い捨てキャッシュ
@@ -937,9 +946,14 @@ class KittingProductionEntryWindow(tk.Toplevel):
                 file_no = row[file_no_index]
                 production_side = row[-1]
                 file_actual = lot_info["file_actuals"].get((file_no, production_side), 0)
-                # この行のfile_no・面が属する合算実績が、ロットの完成数
-                # （lot_completed列と同じ値）に到達していれば入力済みとみなす。
-                return file_actual >= lot_info["completed_quantity"]
+                # completed_quantity（ロット内の全file_no・面の最小値）との比較では、
+                # ロット全体が未登録（実績0）の場合にcompleted_quantityも0になり、
+                # 0 >= 0で誤って「完了済み」と判定されてしまう境界条件のバグが
+                # あった（実データで確認済み）。この行自身のorder_qty（発注数）との
+                # 比較に変更し、未登録（file_actual=0 < order_qty>0）を正しく
+                # 「未完了」と判定できるようにする。
+                order_qty = float(row[order_qty_index])
+                return file_actual >= order_qty
 
             filtered = [row for row in filtered if not is_row_completed(row)]
 
@@ -1167,16 +1181,6 @@ class KittingProductionEntryWindow(tk.Toplevel):
         self.lbl_lot_completed.config(text=f"{plan['lot_completed_quantity']:.0f}")
         self.lbl_lot_remaining.config(text=f"{plan['lot_remaining_quantity']:.0f}")
 
-        # 構成基板数マスタ（models.board_structure_master、CSVインポートのみで
-        # 更新される参照専用マスタ）から、board_nameで検索して表示する。
-        # 表記ゆれ（全角/半角・大小文字・空白）は get_board_structure() 側で
-        # 正規化して吸収するため、ここでは plan["board_name"] をそのまま渡す。
-        board_structure = get_board_structure(plan["board_name"]) if plan.get("board_name") else None
-        if board_structure and board_structure.get("board_count") is not None:
-            self.lbl_board_structure_count.config(text=f"{board_structure['board_count']:g}")
-        else:
-            self.lbl_board_structure_count.config(text="未登録")
-
         # 同一setup_file_noで面2が存在する場合、面1は完成品ではないため表示から
         # 除外する（models.kitting_plan.list_active_plan_items()の
         # 「2回目計画があれば1回目除外」ロジックと同じ考え方）。
@@ -1192,12 +1196,43 @@ class KittingProductionEntryWindow(tk.Toplevel):
             file_no for (file_no, side) in plan["lot_file_actuals"]
             if str(side).strip() == "2"
         }
+        visible_file_nos = {
+            file_no
+            for (file_no, side) in plan["lot_file_actuals"]
+            if not (str(side).strip() == "1" and file_no in second_side_setup_files)
+        }
         file_actuals_text = "\n".join(
             f"{file_no}（面{side}）: {qty:.0f}"
             for (file_no, side), qty in plan["lot_file_actuals"].items()
             if not (str(side).strip() == "1" and file_no in second_side_setup_files)
         )
         self.lbl_lot_file_actuals.config(text=file_actuals_text or "-")
+
+        # 構成基板数マスタ（models.board_structure_master、CSVインポートのみで
+        # 更新される参照専用マスタ）から、board_nameで検索して表示する。
+        # 表記ゆれ（全角/半角・大小文字・空白）は get_board_structure() 側で
+        # 正規化して吸収するため、ここでは plan["board_name"] をそのまま渡す。
+        #
+        # 照合機能（2026-09-24追加）：マスタの構成基板数（board_count）と、
+        # 「基板別実績（file_no）」欄に実際に表示されるfile_no（面2があれば
+        # 面1を隠す既存ロジック適用後）のdistinct数を突き合わせ、一致しない
+        # 場合はマスタ登録漏れ・計画データ側の異常等の可能性があるため、
+        # ラベルを赤字にして注意喚起する（未登録の場合も同様に赤字、既存の
+        # 「未登録」表示文言自体は維持する）。一致する場合は通常の色
+        # （_add_info_row()のデフォルト色）に戻す。
+        distinct_file_no_count = len(visible_file_nos)
+        board_structure = get_board_structure(plan["board_name"]) if plan.get("board_name") else None
+        default_color = "blue"
+        if board_structure and board_structure.get("board_count") is not None:
+            board_count = board_structure["board_count"]
+            if float(board_count) == distinct_file_no_count:
+                self.lbl_board_structure_count.config(text=f"{board_count:g}", foreground=default_color)
+            else:
+                self.lbl_board_structure_count.config(
+                    text=f"{board_count:g}（実際: {distinct_file_no_count}）", foreground="red",
+                )
+        else:
+            self.lbl_board_structure_count.config(text="未登録", foreground="red")
 
         self.btn_register.config(state=tk.NORMAL)
         self.btn_correction.config(state=tk.NORMAL)
@@ -1393,6 +1428,9 @@ class KittingProductionEntryWindow(tk.Toplevel):
         if not file_path:
             return
 
+        if not self._confirm_csv_format_for_production_import(file_path):
+            return
+
         # 前回（以前）の取込データが未処理のまま残っている場合、気づかず
         # 続けて取り込んでしまう事故を避けるため確認する。「はい」を選んだ
         # 場合の取込自体の挙動（同一lot_no+製品名の行は新しい方が古い保留行を
@@ -1416,6 +1454,37 @@ class KittingProductionEntryWindow(tk.Toplevel):
             target=self._run_csv_parse_in_thread, args=(file_path, worker_id), daemon=True,
         ).start()
         self.after(200, self._poll_csv_import_queue)
+
+    def _confirm_csv_format_for_production_import(self, file_path):
+        """
+        実績CSV取込に、誤ってキッティング計画CSVを読み込ませていないか、
+        ヘッダー行の固有列で簡易チェックする（2026-09-24発生、実際に
+        キッティング計画CSVを実績CSV取込に読み込ませてしまい、report_date
+        （払い出し日）等が全行空欄のまま457件が混入した事故を踏まえた対策、
+        案C：自フォーマット固有列の欠如検知＋他フォーマット固有列の混入検知）。
+
+        ヘッダー読み込み自体に失敗した場合（文字コード判定不能等）は、
+        後続のparse_production_csv_for_staging()側で改めてエラーとして
+        検知・報告されるため、ここでは警告を出さずそのまま続行する。
+
+        戻り値：True＝そのまま続行してよい（警告なし、またはユーザーが
+        「はい」を選択）、False＝取込を中止する（ユーザーが「いいえ」を選択）。
+        強制ブロックはしない。
+        """
+        try:
+            header = read_csv_header(file_path)
+        except Exception:
+            return True
+
+        warnings = detect_format_mismatch_warnings(
+            header, PRODUCTION_CSV_SIGNATURE_COLUMNS, PRODUCTION_CSV_FORMAT_LABEL,
+            PLAN_CSV_SIGNATURE_COLUMNS, PLAN_CSV_FORMAT_LABEL,
+        )
+        if not warnings:
+            return True
+
+        message = "\n".join(warnings) + "\n\nこのまま取り込みを続けますか？"
+        return messagebox.askyesno("CSVフォーマットの確認", message, parent=self.winfo_toplevel())
 
     def _run_csv_parse_in_thread(self, file_path, worker_id):
         """

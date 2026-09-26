@@ -18,6 +18,7 @@ from models.production import (
     list_daily_production_today,
     list_daily_production_range,
 )
+from models.board_structure_master import get_board_structure
 
 
 class DailyResultAlreadyExists(Exception):
@@ -336,11 +337,66 @@ def _build_report_rows(records):
     調査により確認済み）。面2計画が存在しない（片面のみの計画）場合は、
     比較対象が無いため除外・警告いずれも行わない。
 
-    戻り値：(report_rows, inconsistency_warnings) のタプル。
-      report_rows：[{"seq", "kitting_list_no", ...}, ...]（面1省略後、seqは
-                    表示される行のみで1から振り直す）
+    構成基板数チェック（2026-09-26追加）：ロットごとに、マスタ（models.
+    board_structure_master）の構成基板数と、実際のfile_no数（面1省略後の
+    distinct数、ui.kitting_production_entry.pyの計画情報欄と同じ考え方）を
+    突き合わせる。判定は各lot_noにつき1回、既にlot_completion_cacheへ取得済み
+    のfile_actualsを流用して行う（DBへの追加問い合わせは発生しない）。
+
+    - マスタ未登録（board_structure_masterにboard_nameが無い）：仮想行は
+      追加せず、戻り値のunregistered_board_warningsに記録するのみに留める。
+      理由：実データで調査したところ、アクティブなロット693件中226件
+      （約33%）がマスタ未登録であり、これを構成基板数不足と同列に警告
+      すると、真に構成基板数が不足している64件の異常が226件のノイズに
+      埋もれてしまう（2026-09-25の調査報告参照）。
+    - マスタに登録済みで構成基板数 > 実file_no数：不足分（構成基板数－
+      実file_no数）だけ「未確定」の仮想行を追加する。仮想行は
+      kitting_list_no=""（既存のon_row_double_click()の「kitting_list_noが
+      空なら何もしない」ガードがそのまま機能する）、数量系フィールド
+      （daily_qty・order_qty・lot_completed・surplus_qty・lot_remaining）は
+      全て0とする（ui.daily_report_window._row_to_values()が":.0f"で書式化
+      するため、文字列を入れるとCSV/PDF/Treeview表示のいずれでも
+      ValueErrorになる。行構造自体は実データの行と同じ9キーの辞書のまま
+      とし、既存のCSV出力・PDF出力・印刷プレビューへの影響を無くす）。
+      構成基板数 < 実file_no数（マスタ側の登録漏れ・計画側の重複等が
+      考えられる、実データで3件確認済み）の場合は、今回のスコープでは
+      仮想行の追加・警告のいずれも行わない（要求されていないため）。
+    - 一致する場合：追加処理なし。
+
+    仮想行はreport_rows構築の本ループの後、lot_completion_cacheに登場した
+    distinctなlot_no単位で追加する（report_rowsはproduction_dailyのレコード
+    順であり、同一lot_noの行が連続して並ぶ保証が無いため、特定の行の
+    直後に挿入するのではなく、全ての実データ行を構築し終えた後にlot_no単位で
+    まとめて追加する方式とした）。seqは本ループで使ったカウンタをそのまま
+    引き継いで連番を振る。
+
+    order_qty_inconsistent（発注数がfile_no間で不一致、_compute_lot_
+    completion()が既に算出済み）を、この機会に戻り値へ追加した
+    （2026-09-26）。以前はui.monthly_report_window._collect_order_qty_
+    inconsistencies()が、report_rowsのdistinctなlot_noに対しcalculate_lot_
+    completion()を再度呼び出して同じ情報を得ていたが、本関数が既に
+    lot_completion_cacheとして持っている値をそのまま使えば二重計算を
+    避けられるため、ここでorder_qty_inconsistency_warningsとして算出する。
+
+    戻り値：(report_rows, inconsistency_warnings, order_qty_inconsistency_warnings,
+             unregistered_board_warnings, excess_file_no_warnings) のタプル。
+      report_rows：[{"seq", "kitting_list_no", ...}, ...]（面1省略・構成基板数
+                    チェックの仮想行追加後、seqは表示される行のみで1から
+                    振り直す）
       inconsistency_warnings：[{"lot_no", "setup_file_no", "side1_kitting_list_no",
                                  "side1_qty", "side2_kitting_list_no", "side2_qty"}, ...]
+      order_qty_inconsistency_warnings：[{"lot_no", "order_qty_values"}, ...]
+      unregistered_board_warnings：[{"lot_no", "board_name", "file_nos"}, ...]
+                                    （file_nosは面1省略後のdistinct file_no
+                                    集合をソート済みリストにしたもの、
+                                    2026-09-26追加、ui.monthly_report_window.py
+                                    のCSV出力機能で使用）
+      excess_file_no_warnings：[{"lot_no", "board_name", "board_count", "file_nos"}, ...]
+                                （構成基板数チェックの逆方向の不整合、実際の
+                                file_no数がマスタの構成基板数を上回るケース。
+                                2026-09-26追加。unregistered_board_warningsとは
+                                意味が異なる別カテゴリのため、混同しないよう
+                                別リストとした）
     """
     enriched = []
     for rec in records:
@@ -390,6 +446,7 @@ def _build_report_rows(records):
     report_rows = []
     seq = 1
     lot_completion_cache = {}
+    lot_board_name = {}
     for idx, item in enumerate(enriched):
         if idx in excluded_indices:
             continue
@@ -406,6 +463,9 @@ def _build_report_rows(records):
             except ValueError:
                 lot_completion_cache[lot_no] = None
         lot_info = lot_completion_cache[lot_no]
+
+        if plan is not None and lot_no not in lot_board_name:
+            lot_board_name[lot_no] = plan["board_name"]
 
         file_actual = None
         if lot_info is not None and plan is not None:
@@ -439,13 +499,95 @@ def _build_report_rows(records):
         })
         seq += 1
 
-    return report_rows, inconsistency_warnings
+    # 構成基板数チェック（2026-09-26追加）・発注数不一致の収集（docstring参照）。
+    # lot_completion_cacheに登場した（＝この帳票に実データ行が1件以上あった）
+    # distinctなlot_no単位で判定する。
+    order_qty_inconsistency_warnings = []
+    unregistered_board_warnings = []
+    excess_file_no_warnings = []
+    for lot_no, lot_info in lot_completion_cache.items():
+        if lot_info is None:
+            continue  # 計画自体が現存しない（ValueError）→ 判定不能としてスキップ
+
+        if lot_info["order_qty_inconsistent"]:
+            order_qty_inconsistency_warnings.append({
+                "lot_no": lot_no, "order_qty_values": lot_info["order_qty_values"],
+            })
+
+        board_name = lot_board_name.get(lot_no)
+        if not board_name:
+            continue  # このlot_noの実データ行に対応する計画が1件も見つからなかった（理論上稀）
+
+        # 面1省略後のdistinct file_no集合（ui.kitting_production_entry.pyの
+        # 計画情報欄の照合ロジックと同じ考え方）。
+        second_side_setup_files = {
+            file_no for (file_no, side) in lot_info["file_actuals"]
+            if str(side).strip() == "2"
+        }
+        visible_file_nos = {
+            file_no for (file_no, side) in lot_info["file_actuals"]
+            if not (str(side).strip() == "1" and file_no in second_side_setup_files)
+        }
+
+        board_structure = get_board_structure(board_name)
+        if board_structure is None or board_structure.get("board_count") is None:
+            unregistered_board_warnings.append({
+                "lot_no": lot_no,
+                "board_name": board_name,
+                "file_nos": sorted(visible_file_nos),
+            })
+            continue
+
+        board_count = board_structure["board_count"]
+        shortfall = int(round(board_count)) - len(visible_file_nos)
+        if shortfall == 0:
+            continue  # 一致
+
+        if shortfall < 0:
+            # 逆方向の不整合（実際のfile_no数がマスタの構成基板数を上回る、
+            # 2026-09-26追加）。マスタ側の登録漏れ・計画側の重複等が考えられる
+            # （実データで3件確認済み）。不足ではなく過剰なため「未確定」仮想行は
+            # 追加せず、別カテゴリの警告（excess_file_no_warnings）にのみ記録する
+            # （マスタ未登録警告と意味が異なるため、unregistered_board_warnings
+            # とは混同しない別リストとする）。
+            excess_file_no_warnings.append({
+                "lot_no": lot_no,
+                "board_name": board_name,
+                "board_count": board_count,
+                "file_nos": sorted(visible_file_nos),
+            })
+            continue
+
+        for _ in range(shortfall):
+            report_rows.append({
+                "seq": seq,
+                "kitting_list_no": "",
+                "file_no": "未確定",
+                "board_name": board_name,
+                "production_side": None,
+                "mounting_line": None,
+                "lot_no": lot_no,
+                "daily_qty": 0,
+                "app_cumulative_qty": 0,
+                "order_qty": 0,
+                "lot_completed": 0,
+                "surplus_qty": 0,
+                "lot_remaining": 0,
+            })
+            seq += 1
+
+    return (
+        report_rows, inconsistency_warnings, order_qty_inconsistency_warnings,
+        unregistered_board_warnings, excess_file_no_warnings,
+    )
 
 
 def build_daily_report():
     """
     本日（report_date = 今日）入力された実績を元に、日報表示用のデータを構築する。
-    戻り値は_build_report_rows()と同じ (report_rows, inconsistency_warnings) タプル。
+    戻り値は_build_report_rows()と同じ (report_rows, inconsistency_warnings,
+    order_qty_inconsistency_warnings, unregistered_board_warnings,
+    excess_file_no_warnings) タプル。
     """
     records = list_daily_production_today()
     return _build_report_rows(records)
@@ -455,7 +597,9 @@ def build_monthly_report(from_date: str, to_date: str):
     """
     指定期間（report_date が from_date～to_date、両端含む）の実績を元に、
     月報表示用のデータを構築する。列構成・集計ロジックは日報（build_daily_report）と共通。
-    戻り値は_build_report_rows()と同じ (report_rows, inconsistency_warnings) タプル。
+    戻り値は_build_report_rows()と同じ (report_rows, inconsistency_warnings,
+    order_qty_inconsistency_warnings, unregistered_board_warnings,
+    excess_file_no_warnings) タプル。
     """
     records = list_daily_production_range(from_date, to_date)
     return _build_report_rows(records)
@@ -592,6 +736,173 @@ def list_incomplete_lots():
             "completed_quantity": info["completed_quantity"],
             "remaining_quantity": info["remaining_quantity"],
         })
+
+    results.sort(key=lambda r: r["lot_no"])
+    return results
+
+
+def check_lot_progress():
+    """
+    日報・月報（production_dailyの実績データ、report_date範囲に依存する
+    _build_report_rows()）とは独立に、**現在アクティブな全ロット**を対象に、
+    構成基板数チェック（一致/不足/超過/未登録）とロット進捗（引落・仕掛・
+    未生産）をまとめて算出する（2026-09-26追加、調査結果に基づく新機能）。
+
+    経緯：_build_report_rows()の構成基板数チェックは、その帳票の対象期間に
+    production_dailyの実績があるlot_noのみを起点にループしていたため、
+    (a)対象期間に実績が無いロットは構成基板数の不足・未登録があっても一切
+    検知されない、(b)同一lot_no内に複数のboard_nameが存在する場合、最初に
+    見つかった1件（代表）のみしかチェックされず、他のboard_nameが未登録でも
+    見逃される、という2つの問題が実データで確認されている（2026-09-26の
+    調査報告参照）。本関数はこの2点を解消するため、(a)実績データではなく
+    list_plan_items_for_all_lots()（現在アクティブな全計画の一括取得）を
+    起点にし、(b)lot_no単位ではなく(lot_no, board_name)単位でチェックする。
+
+    パフォーマンス設計：list_incomplete_lots()と同じ「全計画行を1回のSELECT
+    （list_plan_items_for_all_lots()）＋アプリ内累計を1回（〜数回）のバルク
+    クエリ（get_app_cumulative_qty_bulk()）でまとめて取得し、Python側で
+    lot_noごとにグルーピングして_compute_lot_completion()に渡す」という
+    既存の最適化パターンをそのまま踏襲した。calculate_lot_completion()を
+    lot_no件数分ループ呼び出す（実測693ロットで約0.9秒、lot_no件数分の
+    get_app_cumulative_qty_bulk()呼び出しが発生するN+1相当）よりも、この
+    一括方式の方がDB問い合わせ回数の観点でさらに効率的なため、あえて
+    calculate_lot_completion()は使わず_compute_lot_completion()を直接呼ぶ
+    （list_incomplete_lots()と同じ構成）。
+
+    構成基板数の判定（(lot_no, board_name)単位）：
+      - 面1省略後のdistinct setup_file_no集合（visible_file_nos、
+        ui.kitting_production_entry.py・_build_report_rows()と同じロジック）
+        の件数と、get_board_structure(board_name)のboard_countを比較する。
+      - 未登録（board_structure_master に該当board_nameが無い、または
+        空文字列・None）：status="unregistered"。
+      - 一致：status="match"。
+      - 不足（board_count > 実file_no数）：status="shortfall"、
+        shortfall_count（不足数）を設定。
+      - 超過（board_count < 実file_no数）：status="excess"、
+        excess_file_nos（実際のfile_no一覧、_build_report_rows()の
+        excess_file_no_warningsと同じ形式）を設定。
+
+    ファイルNo単位の進捗（引落・仕掛・未生産）：
+      - 引落（lot_completed）：**構成基板数チェックと連動**させる。
+        status=="match"の場合のみ、そのロット全体の完成数
+        （lot_info["completed_quantity"]、全setup_file_no×面の実績最小値、
+        既存のcalculate_lot_completion()と同じ値）を使う。match以外
+        （shortfall/excess/unregistered）の場合は、構成基板数の整合性が
+        取れていない＝完成の判定自体を信頼できないとみなし、一律0とする。
+      - 仕掛（surplus_qty）：そのfile_no・面の合算実績（file_actual、
+        同一file_no・面に複数バッチが同時にアクティブな場合は加算済みの値、
+        calculate_lot_completion()と同じ集計方法）から引落を差し引いた値。
+      - 未生産（not_produced_qty）：そのfile_no・面のorder_qty（複数バッチが
+        存在する場合はそれらのorder_qtyを合算した値、file_actualと同じ
+        集計単位に揃えるための判断）から、file_actualを差し引いた値。
+      - 「未確定」（構成基板数はあるが計画自体が存在しないfile_no、shortfall
+        の場合のみ）：shortfall_count件だけ、setup_file_no="未確定"の仮想
+        エントリを追加する。実体が無いため引落0・仕掛0・未生産はそのロットの
+        代表order_qty（lot_info["order_quantity"]、file_no単位のorder_qtyが
+        存在しないための代替）とする。
+
+    戻り値：[{"lot_no": str, "boards": [
+        {"board_name": str, "status": "match"|"shortfall"|"excess"|"unregistered",
+         "board_count": float|None, "visible_file_nos": [str, ...],
+         "shortfall_count": int|None, "excess_file_nos": [str, ...]|None,
+         "files": [{"setup_file_no", "production_side", "order_qty",
+                    "file_actual", "lot_completed", "surplus_qty",
+                    "not_produced_qty"}, ...]},
+        ...]}, ...]（lot_no昇順）。
+    """
+    plan_items = list_plan_items_for_all_lots()
+
+    items_by_lot = {}
+    for item in plan_items:
+        items_by_lot.setdefault(item["lot_no"], []).append(item)
+
+    kitting_list_no_lot_pairs = [
+        (item["kitting_list_no"], item["lot_no"]) for item in plan_items
+    ]
+    cumulative_by_pair = get_app_cumulative_qty_bulk(kitting_list_no_lot_pairs)
+
+    results = []
+    for lot_no, items in items_by_lot.items():
+        lot_info = _compute_lot_completion(lot_no, items, cumulative_by_pair)
+
+        items_by_board = {}
+        for item in items:
+            items_by_board.setdefault(item["board_name"], []).append(item)
+
+        boards = []
+        for board_name, board_items in items_by_board.items():
+            second_side_setup_files = {
+                it["setup_file_no"] for it in board_items
+                if str(it["production_side"]).strip() == "2"
+            }
+            visible_items = [
+                it for it in board_items
+                if not (str(it["production_side"]).strip() == "1" and it["setup_file_no"] in second_side_setup_files)
+            ]
+            visible_file_nos = sorted({it["setup_file_no"] for it in visible_items})
+
+            board_structure = get_board_structure(board_name) if board_name else None
+            if board_structure is None or board_structure.get("board_count") is None:
+                status, board_count, shortfall_count, excess_file_nos = "unregistered", None, None, None
+            else:
+                board_count = board_structure["board_count"]
+                diff = int(round(board_count)) - len(visible_file_nos)
+                if diff == 0:
+                    status, shortfall_count, excess_file_nos = "match", None, None
+                elif diff > 0:
+                    status, shortfall_count, excess_file_nos = "shortfall", diff, None
+                else:
+                    status, shortfall_count, excess_file_nos = "excess", None, visible_file_nos
+
+            # 同一setup_file_no・面に複数バッチ（kitting_list_no違い）が同時に
+            # アクティブな場合があるため（実データで222件確認済み）、
+            # (setup_file_no, production_side)単位でグルーピングしてから
+            # 1エントリにまとめる（file_actualは既にcalculate_lot_completion()と
+            # 同じ集計方法で加算済みの値をそのまま使い、order_qtyはこの関数
+            # 独自にバッチ分を合算する）。
+            files_grouped = {}
+            for it in visible_items:
+                key = (it["setup_file_no"], it["production_side"])
+                files_grouped.setdefault(key, []).append(it)
+
+            files = []
+            for (setup_file_no, side), batch_items in files_grouped.items():
+                file_actual = lot_info["file_actuals"].get((setup_file_no, side), 0)
+                order_qty = sum(bi["order_qty"] for bi in batch_items)
+                lot_completed = lot_info["completed_quantity"] if status == "match" else 0
+                files.append({
+                    "setup_file_no": setup_file_no,
+                    "production_side": side,
+                    "order_qty": order_qty,
+                    "file_actual": file_actual,
+                    "lot_completed": lot_completed,
+                    "surplus_qty": file_actual - lot_completed,
+                    "not_produced_qty": order_qty - file_actual,
+                })
+
+            if status == "shortfall":
+                for _ in range(shortfall_count):
+                    files.append({
+                        "setup_file_no": "未確定",
+                        "production_side": None,
+                        "order_qty": None,
+                        "file_actual": None,
+                        "lot_completed": 0,
+                        "surplus_qty": 0,
+                        "not_produced_qty": lot_info["order_quantity"],
+                    })
+
+            boards.append({
+                "board_name": board_name,
+                "status": status,
+                "board_count": board_count,
+                "visible_file_nos": visible_file_nos,
+                "shortfall_count": shortfall_count,
+                "excess_file_nos": excess_file_nos,
+                "files": files,
+            })
+
+        results.append({"lot_no": lot_no, "boards": boards})
 
     results.sort(key=lambda r: r["lot_no"])
     return results

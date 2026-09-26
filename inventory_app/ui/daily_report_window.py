@@ -18,19 +18,86 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 from reportlab.lib.styles import getSampleStyleSheet
 
 from services.production_service import build_daily_report, build_monthly_report
+from models.board_structure_master import get_board_structure
 
 JP_FONT = "HeiseiKakuGo-W5"
 registerFont(UnicodeCIDFont(JP_FONT))
 
-REPORT_HEADERS = ["No", "ファイルNo", "基板名", "ロットNo", "生産数", "注文数",
+REPORT_HEADERS = ["No", "ファイルNo", "基板名", "構成基板数", "ロットNo", "生産数", "注文数",
                    "引落数量", "仕掛数量", "未完了数"]
+
+# ロット単位の縞模様表示（2026-09-26追加）で使うTreeviewタグ名・背景色。
+# 既存の警告色（赤・オレンジ・黄・緑等、生産実績入力画面等で使用）と衝突しない
+# よう、彩度の無い薄いグレー系の2色のみを使う（判断しやすさを優先し、色数は
+# 2色に留めた）。
+_LOT_STRIPE_TAG_A = "lot_stripe_a"
+_LOT_STRIPE_TAG_B = "lot_stripe_b"
+_LOT_STRIPE_COLOR_A = "#ffffff"  # 白（無色、既定の背景と同じ）
+_LOT_STRIPE_COLOR_B = "#e6e6e6"  # 薄いグレー
+
+
+def configure_lot_stripe_tags(tree):
+    """
+    Treeviewにロット単位の縞模様タグを設定する（2026-09-26追加）。Treeview
+    生成直後に1回だけ呼び出す（tag_configure()自体はタグの見た目を定義する
+    だけで、行ごとの呼び出しは不要なため）。
+    """
+    tree.tag_configure(_LOT_STRIPE_TAG_A, background=_LOT_STRIPE_COLOR_A)
+    tree.tag_configure(_LOT_STRIPE_TAG_B, background=_LOT_STRIPE_COLOR_B)
+
+
+def populate_report_tree(tree, report_rows):
+    """
+    report_rowsをTreeviewへ挿入する（2026-09-26追加、日報・月報で共通化）。
+    lot_noごとに縞模様タグ（lot_stripe_a/b）を割り当てる。
+
+    割り当て方法：単純に「直前の行とlot_noが変わったら切り替える」方式では
+    なく、**lot_no単位で色を1回だけ確定し、以降その色を使い回す**辞書
+    （lot_tag_map）方式を採用した。理由：report_rowsの並び順は
+    production_dailyのレコード順であり、同一lot_noの行が必ず連続して
+    並ぶ保証が無い（他のlot_noの行が間に挟まることがある）ため、単純な
+    「直前行との比較」方式では同じlot_noなのに離れた位置にある行同士が
+    別の色になってしまう。また、構成基板数チェックで追加される「未確定」
+    仮想行（services.production_service._build_report_rows()参照）は、
+    元のlot_noの実データ行とは異なる位置（末尾にまとめて追加される）に
+    挿入されるため、この辞書方式でなければ仮想行を元のロットと同じ色に
+    揃えることができない。
+
+    色の割り当て順は、report_rows内でそのlot_noが最初に登場した順（＝
+    新しいlot_noに出会うたびに交互に切り替え）とする。
+    """
+    lot_tag_map = {}
+    use_tag_b = False
+    for row in report_rows:
+        lot_no = row["lot_no"]
+        if lot_no not in lot_tag_map:
+            use_tag_b = not use_tag_b
+            lot_tag_map[lot_no] = _LOT_STRIPE_TAG_B if use_tag_b else _LOT_STRIPE_TAG_A
+        tree.insert("", tk.END, values=_row_to_values(row), tags=(lot_tag_map[lot_no],))
+
+
+def _format_board_count(board_name):
+    """
+    board_nameから構成基板数マスタ（models.board_structure_master）を検索し、
+    表示用の文字列を返す（2026-09-26追加）。未登録の場合は「未登録」を返す
+    （ui.kitting_production_entry.py計画情報欄の「未登録」表示と同じ文言に
+    揃えた）。「未確定」仮想行のboard_nameには実際の基板名がそのまま入って
+    いる（services.production_service._build_report_rows()参照）ため、
+    他の行と全く同じ処理で構成基板数がそのまま表示される。
+    """
+    if not board_name:
+        return "未登録"
+    board_structure = get_board_structure(board_name)
+    if board_structure is None or board_structure.get("board_count") is None:
+        return "未登録"
+    return f"{board_structure['board_count']:g}"
 
 
 def _row_to_values(row):
     # 数量項目は生産実績入力画面の計画一覧（load_plan_list()）と同様に整数表示に揃える
     # （DB上はREAL/INTEGER混在のため、無加工だと"100.0"のように小数点が出てしまう）。
     return [
-        row["seq"], row["file_no"], row["board_name"], row["lot_no"],
+        row["seq"], row["file_no"], row["board_name"], _format_board_count(row["board_name"]), row["lot_no"],
         f"{row['daily_qty']:.0f}", f"{row['order_qty']:.0f}",
         f"{row['lot_completed']:.0f}", f"{row['surplus_qty']:.0f}", f"{row['lot_remaining']:.0f}",
     ]
@@ -94,7 +161,7 @@ class ReportPreviewWindow(tk.Toplevel):
     ROWS_PER_PAGE = 35
 
     COL_HEADERS = REPORT_HEADERS
-    COL_WIDTHS = [25, 55, 80, 55, 45, 45, 50, 50, 50]
+    COL_WIDTHS = [25, 55, 80, 60, 55, 45, 45, 50, 50, 50]
 
     def __init__(self, parent, report_rows, report_date, title_prefix="日報",
                  headers=None, col_widths=None, row_to_values=None):
@@ -184,7 +251,10 @@ class DailyReportWindow(tk.Toplevel):
         # inconsistency_warnings（面1・面2の実績不整合）は月報画面（ui/monthly_report_window.py）
         # 側でのみ警告表示する（要求スコープ）。日報側はタプルを正しく受け取り
         # 保持するに留める。
-        self.report_rows, self.inconsistency_warnings = build_daily_report()
+        # order_qty_inconsistency_warnings・unregistered_board_warnings
+        # （2026-09-26追加）は月報限定の警告のため（面1/面2不整合警告と同じ
+        # 既存方針）、日報側では受け取るのみでダイアログ表示等は行わない。
+        self.report_rows, self.inconsistency_warnings, _, _, _ = build_daily_report()
 
         self.title(f"日報出力（{self.report_date}）")
         self.geometry("1020x500")
@@ -201,15 +271,15 @@ class DailyReportWindow(tk.Toplevel):
         tree_frame = ttk.Frame(self, padding=10)
         tree_frame.pack(expand=True, fill=tk.BOTH)
 
-        cols = ("seq", "file_no", "board_name", "lot_no", "daily_qty", "order_qty",
+        cols = ("seq", "file_no", "board_name", "board_count", "lot_no", "daily_qty", "order_qty",
                 "lot_completed", "surplus_qty", "lot_remaining")
         headers = dict(zip(cols, REPORT_HEADERS))
         widths = {
-            "seq": 50, "file_no": 100, "board_name": 160, "lot_no": 110,
+            "seq": 50, "file_no": 100, "board_name": 160, "board_count": 80, "lot_no": 110,
             "daily_qty": 80, "order_qty": 80,
             "lot_completed": 80, "surplus_qty": 80, "lot_remaining": 80,
         }
-        left_aligned = {"file_no", "board_name", "lot_no"}
+        left_aligned = {"file_no", "board_name", "board_count", "lot_no"}
 
         self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings")
         for c in cols:
@@ -217,9 +287,9 @@ class DailyReportWindow(tk.Toplevel):
             self.tree.column(c, width=widths[c], anchor=tk.W if c in left_aligned else tk.E)
         self.tree.pack(expand=True, fill=tk.BOTH)
         self.tree.bind("<Double-1>", self.on_row_double_click)
+        configure_lot_stripe_tags(self.tree)
 
-        for row in self.report_rows:
-            self.tree.insert("", tk.END, values=_row_to_values(row))
+        populate_report_tree(self.tree, self.report_rows)
 
         btn_frame = ttk.Frame(self, padding=10)
         btn_frame.pack(fill=tk.X)
@@ -233,7 +303,7 @@ class DailyReportWindow(tk.Toplevel):
         selected_date = self.date_entry.get()
 
         try:
-            self.report_rows, self.inconsistency_warnings = build_monthly_report(selected_date, selected_date)
+            self.report_rows, self.inconsistency_warnings, _, _, _ = build_monthly_report(selected_date, selected_date)
         except Exception as e:
             messagebox.showerror("エラー", f"集計に失敗しました：{e}", parent=self.winfo_toplevel())
             return
@@ -243,8 +313,7 @@ class DailyReportWindow(tk.Toplevel):
 
         for item in self.tree.get_children():
             self.tree.delete(item)
-        for row in self.report_rows:
-            self.tree.insert("", tk.END, values=_row_to_values(row))
+        populate_report_tree(self.tree, self.report_rows)
 
     def on_row_double_click(self, event):
         """
@@ -275,11 +344,10 @@ class DailyReportWindow(tk.Toplevel):
 
     def refresh_report(self):
         """実績修正後に日報の一覧を再取得して表示を更新する。"""
-        self.report_rows, self.inconsistency_warnings = build_monthly_report(self.report_date, self.report_date)
+        self.report_rows, self.inconsistency_warnings, _, _, _ = build_monthly_report(self.report_date, self.report_date)
         for item in self.tree.get_children():
             self.tree.delete(item)
-        for row in self.report_rows:
-            self.tree.insert("", tk.END, values=_row_to_values(row))
+        populate_report_tree(self.tree, self.report_rows)
 
     def on_preview(self):
         ReportPreviewWindow(self, self.report_rows, self.report_date)

@@ -86,16 +86,20 @@ def _format_planned_qty_cell(planned_qty, daily_qty):
     のに対し、こちらは差があれば（20%未満のわずかな差でも）常に表示する、
     より高い解像度の指標）。
 
-    表示例：計画数450・実績数400の場合 → "450（差+50）"。差が無い（完全一致）
-    場合や、daily_qty自体が指定されない場合（select_plan_candidate()経由、
-    CSVとの比較という概念自体が無い）は、従来通り計画数のみを表示する
-    （差が無いのに"(差+0)"と表示され続けるのは煩雑なため）。
+    表示例：計画数450・実績数400（実績不足）の場合 → "450（差-50）"、
+    計画数400・実績数450（実績超過）の場合 → "400（差+50）"。差分は
+    daily_qty - planned_qty（実績数-計画数）で計算する（2026-09-24修正：
+    以前はplanned_qty - daily_qtyだったため符号が逆で、実績不足が「+」、
+    実績超過が「-」と表示される直感に反する仕様になっていた）。差が無い
+    （完全一致）場合や、daily_qty自体が指定されない場合（select_plan_
+    candidate()経由、CSVとの比較という概念自体が無い）は、従来通り計画数の
+    みを表示する（差が無いのに"(差+0)"と表示され続けるのは煩雑なため）。
     """
     formatted = _format_qty(planned_qty)
     if daily_qty is None or planned_qty is None:
         return formatted
     try:
-        diff = float(planned_qty) - float(daily_qty)
+        diff = float(daily_qty) - float(planned_qty)
     except (TypeError, ValueError):
         return formatted
     if diff == 0:
@@ -128,8 +132,9 @@ def _show_candidate_list_dialog(parent, title, description, candidates, daily_qt
     タグ、オレンジ系）、視覚的に注意喚起する。
 
     計画数セルの差分表記：daily_qty指定時、各行の「計画数」（planned_qty）
-    セルは、実績数との差がある場合に差分を併記した文字列になる（例："450
-    （差+50）"、_format_planned_qty_cell()参照）。行全体のハイライトタグ
+    セルは、実績数との差がある場合に差分を併記した文字列になる（例：計画450・
+    実績400なら"450（差-50）"、_format_planned_qty_cell()参照）。行全体の
+    ハイライトタグ
     （large_diff等、_QTY_DIFF_WARN_RATIO=20%を超えた場合のみ発火）とは独立に、
     差があれば常に（20%未満のわずかな差でも）表示される、より細かい粒度の
     指標。Tkinterの標準Treeviewは行単位の背景色指定にしか対応しておらず
@@ -174,7 +179,7 @@ def _show_candidate_list_dialog(parent, title, description, candidates, daily_qt
     for col in _COLS:
         tree.heading(col, text=_HEADERS[col])
         # 計画数（planned_qty）は_format_planned_qty_cell()で差分表記
-        # （例："450（差+50）"）が付くことがあるため、他列より幅を広めに取る。
+        # （例："450（差-50）"）が付くことがあるため、他列より幅を広めに取る。
         width = 160 if col == "planned_qty" else 100
         tree.column(col, width=width, anchor=tk.E if col in _RIGHT_ALIGNED else tk.W)
     tree.pack(side=tk.LEFT, expand=True, fill=tk.BOTH)

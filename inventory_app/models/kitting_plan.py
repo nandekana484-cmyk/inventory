@@ -286,10 +286,13 @@ def list_plan_items_for_all_lots():
     list_plan_items_by_lot()と同じWHERE条件（delete_flag=0・COALESCE(is_active,1)=1）
     で、lot_noによる絞り込み無しに全件を返す。
 
-    唯一の呼び出し元はservices.production_service.list_incomplete_lots()。
-    lot_no全件についてcalculate_lot_completion()相当の計算をN+1（lot_no件数分の
-    SELECT）にせず、1回のSELECTで全lot_no分の計画行をまとめて取得した上で、
-    呼び出し側でlot_noごとにグルーピングして使うためのもの。
+    呼び出し元はservices.production_service.list_incomplete_lots()・
+    check_lot_progress()（2026-09-26追加、構成基板数チェック・ロット進捗を
+    日報・月報の実績データに依存せず全アクティブロット横断で算出する関数）。
+    いずれもlot_no全件についてcalculate_lot_completion()相当の計算をN+1
+    （lot_no件数分のSELECT）にせず、1回のSELECTで全lot_no分の計画行を
+    まとめて取得した上で、呼び出し側でlot_noごとにグルーピングして使うための
+    もの。
 
     lot_noがNULL・空文字の行（万一存在した場合）は対象外とする（lot単位の
     完成数計算という概念自体が成立しないため。calculate_lot_completion(None)や
@@ -297,13 +300,15 @@ def list_plan_items_for_all_lots():
     ValueErrorになる）。
 
     戻り値：[{"kitting_list_no", "lot_no", "setup_file_no", "production_side",
-              "order_qty"}, ...]（list_plan_items_by_lot()と異なり、呼び出し側の
-              用途（lot単位の集計）に必要な列のみに絞っている）。
+              "order_qty", "board_name"}, ...]（list_plan_items_by_lot()と
+              異なり、呼び出し側の用途（lot単位の集計、構成基板数チェック）に
+              必要な列のみに絞っている。board_nameはcheck_lot_progress()の
+              構成基板数チェックで使うため2026-09-26に追加した）。
     """
     with get_connection() as con:
         cur = con.cursor()
         cur.execute("""
-            SELECT kitting_list_no, lot_no, setup_file_no, production_side, order_qty
+            SELECT kitting_list_no, lot_no, setup_file_no, production_side, order_qty, board_name
             FROM kitting_plan_items
             WHERE delete_flag = 0 AND COALESCE(is_active, 1) = 1
               AND lot_no IS NOT NULL AND lot_no != ''

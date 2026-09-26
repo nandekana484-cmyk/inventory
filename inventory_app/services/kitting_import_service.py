@@ -9,6 +9,7 @@ from models.kitting_plan import (
     upsert_pending_kitting_plan_item, find_pending_kitting_plan_item,
     delete_pending_kitting_plan_item,
 )
+from models.board_structure_master import normalize_board_name
 
 # 保留（pending_kitting_plan_items）から確定へ引き継ぐ際、現在のCSV行の値が
 # 空欄・未設定であれば保留側の値で補う対象フィールド。識別キー自体
@@ -91,10 +92,14 @@ def import_kitting_plan_csv(
     （delete-then-insertではなく、識別キー(lot_no, setup_file_no,
     production_side, order_qty)が一致する既存行があれば上書き、無ければ新規
     追加）。逆に、キッティングNo.が付与された行を処理する際は、その行の
-    識別キーが保留テーブルに一致する行として存在するか確認し、存在すれば
+    識別キーが保留テーブルに一致する行として存在するか確認し、**かつ
+    board_name（表記ゆれはnormalize_board_name()で吸収）も一致する場合のみ**
     「未確定期間からの確定」として扱う：保留側の行を削除した上で、現在行の
     値（保留側にしか無かった値があれば_merge_from_pending()で補完）を使って
-    通常通りcreate_plan_version()で正式登録する。
+    通常通りcreate_plan_version()で正式登録する。識別キーは一致してもboard_name
+    が異なる場合は別の計画とみなし、保留行は削除せず残したまま、現在行は
+    通常の新規計画としてそのまま登録する（識別キー4項目だけでは実データ上
+    一意性が保証されないことが判明したための安全策、2026-09-24修正）。
 
     戻り値：{
         "batch_id": int,
@@ -181,11 +186,24 @@ def import_kitting_plan_csv(
 
         # キッティングNo.が付与された行の識別キーが、以前保留登録された行と
         # 一致するか確認する（「未確定期間からの確定」の検知）。
+        # 識別キー(lot_no, setup_file_no, production_side, order_qty)だけでは
+        # 実データ上一意性が保証されない（同一ロット・同一ファイルNo・同一面・
+        # 同一発注数量で、実装予定日だけが異なる別バッチが正規に存在するケースを
+        # 実データで確認済み）ため、board_nameも一致することを追加で確認してから
+        # マージする（2026-09-24修正、調査記録参照）。normalize_board_name()で
+        # 表記ゆれ（全角/半角等）を吸収した上で比較する。
         pending_match = find_pending_kitting_plan_item(
             item["lot_no"], item["setup_file_no"], item["production_side"], item["order_qty"],
         )
         if pending_match is not None:
-            item = _merge_from_pending(item, pending_match)
+            if normalize_board_name(item.get("board_name")) == normalize_board_name(pending_match.get("board_name")):
+                item = _merge_from_pending(item, pending_match)
+            else:
+                # board_nameが一致しないため、識別キーの一致は偶然（別の計画）と
+                # 判断し、マージ対象から外す。保留行は削除せずそのまま残し
+                # （本来の確定候補が後日別のCSV行として来る可能性があるため）、
+                # 現在のCSV行は通常の新規計画としてそのまま登録する。
+                pending_match = None
 
         try:
             # Create new version (this does an INSERT and handles versioning)

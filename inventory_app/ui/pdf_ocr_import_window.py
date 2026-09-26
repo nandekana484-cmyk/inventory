@@ -2,11 +2,16 @@
 import os
 import queue
 import threading
+import time
+import traceback
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
-from services.pdf_ocr_service import extract_pdf_rows, write_rows_to_csv, match_against_inventory
+from services.pdf_ocr_service import (
+    extract_pdf_rows, write_rows_to_csv, match_against_inventory,
+    get_pdf_page_count, log_ocr_start, log_ocr_complete, log_ocr_error,
+)
 from ui.loading_window import LoadingWindow
 
 # 信頼度（0〜100）がこの値未満の行は、左ペインで警告色に強調表示する。
@@ -166,12 +171,38 @@ class PdfOcrImportWindow(tk.Toplevel):
         self.after(200, self._poll_result_queue)
 
     def _run_convert_in_thread(self, pdf_path):
+        """
+        処理開始時・完了時・エラー発生時にconfig.LOG_DIR配下のログファイル
+        （pdf_ocr_YYYYMMDD.log）へ記録する（2026-09-25追加）。ダイアログ表示
+        （self._result_queueへのput、_poll_result_queue側で処理）は既存の
+        挙動のまま変更していない。
+
+        開始時点ではまだextract_pdf_rows()を呼んでいないためページ数が
+        分からず、get_pdf_page_count()で個別に取得する（失敗してもログ用途
+        のみなので握りつぶし、page_countはNoneのまま「不明」として記録する。
+        本処理（extract_pdf_rows）自体の成否には影響させない）。これにより、
+        extract_pdf_rows()が途中で例外を送出した場合でも、エラーログに
+        ページ数を残せる（BrokenProcessPool等、OCRのワーカープロセスが
+        異常終了した場合の原因調査の手がかりにするため）。
+        """
+        start_time = time.perf_counter()
+        try:
+            page_count = get_pdf_page_count(pdf_path)
+        except Exception:
+            page_count = None
+        log_ocr_start(pdf_path, page_count)
+
         try:
             result = extract_pdf_rows(pdf_path)
+            elapsed = time.perf_counter() - start_time
+            log_ocr_complete(
+                pdf_path, result["page_count"], elapsed, result["method"], len(result["rows"]),
+            )
             self._result_queue.put((True, result))
         except Exception as e:
-            import traceback
+            elapsed = time.perf_counter() - start_time
             tb = traceback.format_exc()
+            log_ocr_error(pdf_path, page_count, elapsed, tb)
             self._result_queue.put((False, f"{e}\n{tb}"))
 
     def _poll_result_queue(self):

@@ -4,6 +4,11 @@ import queue
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from services.kitting_import_service import import_kitting_plan_csv
+from services.csv_format_detection import (
+    read_csv_header, detect_format_mismatch_warnings,
+    PLAN_CSV_SIGNATURE_COLUMNS, PLAN_CSV_FORMAT_LABEL,
+    PRODUCTION_CSV_SIGNATURE_COLUMNS, PRODUCTION_CSV_FORMAT_LABEL,
+)
 import config
 import sqlite3
 import os
@@ -111,6 +116,10 @@ class KittingPlanImportWindow(tk.Toplevel):
         if not file_path or not os.path.isfile(file_path):
             messagebox.showwarning("入力エラー", "CSVファイルを選択してください。", parent=self.winfo_toplevel())
             return
+
+        if not self._confirm_csv_format(file_path):
+            return
+
         self.btn_import.config(state=tk.DISABLED)
         self.lbl_status.config(text="状態: 取込中...")
         self.result_label.config(text="")
@@ -118,6 +127,39 @@ class KittingPlanImportWindow(tk.Toplevel):
         worker_id = self.current_worker.get("worker_id", "SYSTEM")
         t = threading.Thread(target=self._run_import_in_thread, args=(file_path, worker_id), daemon=True)
         t.start()
+
+    def _confirm_csv_format(self, file_path):
+        """
+        キッティング計画CSV取込に、誤って実績CSVを読み込ませていないか、
+        ヘッダー行の固有列で簡易チェックする（2026-09-24発生、実績CSV取込側に
+        キッティング計画CSVを誤って読み込ませ457件の不正データが混入した
+        事故の逆方向のケースに対する対策、案C）。
+
+        ヘッダー読み込み自体に失敗した場合（文字コード判定不能等）は、
+        後続のimport_kitting_plan_csv()側で改めてエラーとして検知・報告
+        されるため、ここでは警告を出さずそのまま続行する（フォーマット
+        チェック自体はあくまで補助的な注意喚起であり、本来の取込処理の
+        エラーハンドリングを代替するものではない）。
+
+        戻り値：True＝そのまま続行してよい（警告なし、またはユーザーが
+        「はい」を選択）、False＝取込を中止する（ユーザーが「いいえ」を選択）。
+        強制ブロックはしない（警告を出すのみで、続行するかどうかは
+        ユーザーの判断に委ねる）。
+        """
+        try:
+            header = read_csv_header(file_path)
+        except Exception:
+            return True
+
+        warnings = detect_format_mismatch_warnings(
+            header, PLAN_CSV_SIGNATURE_COLUMNS, PLAN_CSV_FORMAT_LABEL,
+            PRODUCTION_CSV_SIGNATURE_COLUMNS, PRODUCTION_CSV_FORMAT_LABEL,
+        )
+        if not warnings:
+            return True
+
+        message = "\n".join(warnings) + "\n\nこのまま取り込みを続けますか？"
+        return messagebox.askyesno("CSVフォーマットの確認", message, parent=self.winfo_toplevel())
 
     def _run_import_in_thread(self, file_path, worker_id):
         try:
