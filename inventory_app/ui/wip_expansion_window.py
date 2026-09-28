@@ -146,11 +146,27 @@ class WipExpansionWindow(tk.Toplevel):
         """
         仕掛一覧の行をダブルクリックすると、その行のfile_no・生産面・
         mounting_line・surplus_qty（仕掛数量）を使ってBOM展開する。
+
+        STATUS_CONFIRMED_ORPHAN（スナップショットに対応行が無い確定済み行）は
+        基板名・実装ライン・仕掛数量等のスナップショット由来の情報を持たないため
+        展開できない。誤って空欄のsurplus_qtyでBOM展開しようとして分かりにくい
+        エラー（「仕掛数量を数値として解釈できません」等）になるのを避け、
+        「実績修正」を案内する専用メッセージを表示して処理を打ち切る。
         """
         row_id = self.tree_wip_list.identify_row(event.y)
         if not row_id:
             return
         values = self.tree_wip_list.item(row_id, "values")
+
+        status = values[self._wip_col_index["status"]]
+        if status == self.STATUS_CONFIRMED_ORPHAN:
+            messagebox.showinfo(
+                "展開できません",
+                "スナップショットに存在しないため展開できません。"
+                "『実績修正』で確認・訂正してください。",
+                parent=self.winfo_toplevel(),
+            )
+            return
 
         kitting_list_no = values[self._wip_col_index["kitting_list_no"]]
         board_name = values[self._wip_col_index["board_name"]]
@@ -178,9 +194,17 @@ class WipExpansionWindow(tk.Toplevel):
         一致する行が無い場合はエラーダイアログを表示してFalseを返す
         （呼び出し時点でwip_board_snapshotの内容が変わっている等、
         通常は起こらないはずだが念のため）。
+
+        STATUS_CONFIRMED_ORPHAN（スナップショットに対応行が無い確定済み行）は
+        検索対象から除外する。この行はboard_name・surplus_qty等のスナップショット
+        由来の情報を持たず展開できないため（on_wip_list_double_click()と同じ理由）、
+        また呼び出し元（仕掛製品レポートのダブルクリック）の動作は今回変更しない
+        方針のため、従来通り「見つからない」場合と同じエラー扱いにする。
         """
         idx = self._wip_col_index
         for row in self._all_wip_rows:
+            if row[idx["status"]] == self.STATUS_CONFIRMED_ORPHAN:
+                continue
             if row[idx["kitting_list_no"]] != kitting_list_no:
                 continue
             if lot_no is not None and (row[idx["lot_no"]] or None) != lot_no:
@@ -812,6 +836,11 @@ class WipExpansionWindow(tk.Toplevel):
         self.tree_wip_list.column("created_at", width=140, anchor=tk.W)
         self.tree_wip_list.column("excluded", width=70, anchor=tk.CENTER)
 
+        # スナップショットに対応行が無い確定済み行（STATUS_CONFIRMED_ORPHAN）を、
+        # 状態列の文字だけでなく文字色でも区別できるようにする
+        # （このTreeviewでは他にタグを使っていないため、名前の衝突は無い）。
+        self.tree_wip_list.tag_configure("confirmed_orphan", foreground="#b30000")
+
         vsb_wip = ttk.Scrollbar(right_frame, orient="vertical", command=self.tree_wip_list.yview)
         self.tree_wip_list.configure(yscrollcommand=vsb_wip.set)
 
@@ -979,6 +1008,12 @@ class WipExpansionWindow(tk.Toplevel):
 
         return popup
 
+    # スナップショットに対応行が無い確定済みwip_scrap_recordsを一覧に追加する際の
+    # 状態文字列。「確定済み」「未確定」とは別の値にして、既存の判定（一括展開・登録の
+    # 対象抽出、services.unprocessed_check_service.check_unprocessed_items()の
+    # 未確定件数カウント等）が誤って対象に含めないようにする。
+    STATUS_CONFIRMED_ORPHAN = "確定済み(スナップショットなし)"
+
     @staticmethod
     def _fetch_wip_list_rows():
         """
@@ -998,10 +1033,27 @@ class WipExpansionWindow(tk.Toplevel):
         突き合わせて「対象外」列を付与する。ui.ng_input_window._fetch_ng_list_rows()
         と同じ方針で、対象外にした行も一覧からは除外せず「対象外」列で区別表示する
         （一覧から消すと対象外にした事実・解除の導線が失われるため）。
+
+        スナップショットに存在しない確定済み行（wip_scrap_recordsに登録済みだが、
+        月報の「仕掛数量抽出」が再実行される等でwip_board_snapshotから当該ロットが
+        消えたケース）も、末尾に追加で一覧に含める。ui.ng_input_window._fetch_ng_list_rows()の
+        「申告(ng_declarations) ∪ 展開済み(scrap_records)」という和集合方式と同じ考え方を
+        採用し、確定登録の後にスナップショットが入れ替わっても、実績修正の対象として
+        見つけられるようにするため（本来はwip_board_snapshotに無い時点で「実績修正」で
+        訂正すべき状態のため、正常フローでは滅多に発生しないはずだが、発生した場合に
+        一覧・実績修正ボタンから見失われないようにする）。
+
+        この追加行は、状態列にSTATUS_CONFIRMED_ORPHAN（「確定済み(スナップショットなし)」）を
+        設定し、既存の「確定済み」「未確定」とは区別する。基板名・実装ライン・仕掛数量・
+        抽出日時はスナップショット由来の情報のため、対応する行が無いこの追加行では
+        空欄のままとする（list_wip_scrap_summary()のtotal_qtyは消費数量であり
+        仕掛数量とは意味が異なるため、surplus_qty列には入れない）。file_noのみ
+        list_wip_scrap_summary()が返す値をそのまま使う。
         """
+        summaries = list_wip_scrap_summary()
         confirmed_keys = {
             (s["kitting_list_no"], s["lot_no"] or "", str(s["production_side"]))
-            for s in list_wip_scrap_summary()
+            for s in summaries
         }
         excluded_keys = {
             (e["kitting_list_no"], e["lot_no"] or "", e["file_no"], str(e["production_side"]))
@@ -1009,8 +1061,10 @@ class WipExpansionWindow(tk.Toplevel):
         }
 
         rows = []
+        snapshot_keys = set()
         for row in list_wip_snapshot():
             key = (row["kitting_list_no"], row["lot_no"] or "", str(row["production_side"]))
+            snapshot_keys.add(key)
             status = "確定済み" if key in confirmed_keys else "未確定"
             exclusion_key = (row["kitting_list_no"], row["lot_no"] or "", row["file_no"], str(row["production_side"]))
             rows.append((
@@ -1025,13 +1079,36 @@ class WipExpansionWindow(tk.Toplevel):
                 row["created_at"] or "",
                 "対象外" if exclusion_key in excluded_keys else "",
             ))
+
+        for s in summaries:
+            key = (s["kitting_list_no"], s["lot_no"] or "", str(s["production_side"]))
+            if key in snapshot_keys:
+                continue
+            exclusion_key = (s["kitting_list_no"], s["lot_no"] or "", s["file_no"], str(s["production_side"]))
+            rows.append((
+                s["kitting_list_no"],
+                "",
+                s["file_no"],
+                str(s["production_side"]),
+                s["lot_no"] or "",
+                "",
+                "",
+                WipExpansionWindow.STATUS_CONFIRMED_ORPHAN,
+                "",
+                "対象外" if exclusion_key in excluded_keys else "",
+            ))
         return rows
 
     def _populate_wip_tree(self, rows):
+        status_index = self._wip_col_index["status"]
         for item in self.tree_wip_list.get_children():
             self.tree_wip_list.delete(item)
         for values in rows:
-            self.tree_wip_list.insert("", tk.END, values=values)
+            is_orphan = values[status_index] == self.STATUS_CONFIRMED_ORPHAN
+            self.tree_wip_list.insert(
+                "", tk.END, values=values,
+                tags=("confirmed_orphan",) if is_orphan else (),
+            )
 
     def load_wip_list(self):
         """DB取得とTreeview更新をまとめて同期的に行う（「更新」ボタン・画面表示時から使用）。"""

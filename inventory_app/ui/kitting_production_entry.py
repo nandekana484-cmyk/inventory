@@ -30,6 +30,7 @@ from models.board_structure_master import get_board_structure
 from models.operation_log import log_operation
 from ui.daily_report_window import DailyReportWindow
 from ui.monthly_report_window import MonthlyReportWindow
+from ui.lot_progress_window import LotProgressWindow
 from ui.production_import_staging_window import open_or_notify
 from ui.loading_window import LoadingWindow
 from ui.plan_candidate_dialog import _parse_flexible_date
@@ -113,6 +114,12 @@ class KittingProductionEntryWindow(tk.Toplevel):
         # パターンで本ウィンドウ自体の計画一覧取得を非同期化している）。
         self._csv_import_queue = queue.Queue()
         self._csv_import_loading_window = None
+
+        # ロット進捗チェック画面（ui.lot_progress_window.LotProgressWindow）の
+        # インスタンス参照。多重表示防止は_csv_staging_windowと同じパターン
+        # （open_lot_progress()でwinfo_exists()を確認し、開いていればlift()の
+        # みで新規生成しない）。
+        self._lot_progress_window = None
 
         # 計画一覧の絞り込み基盤：
         # - _all_plan_rows：_fetch_plan_list_rows() の全件結果（フィルタ前）。
@@ -440,6 +447,11 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
         self.btn_monthly_report = ttk.Button(bottom_btn_frame, text="月報出力", command=self.open_monthly_report)
         self.btn_monthly_report.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 5))
+
+        self.btn_lot_progress = ttk.Button(
+            bottom_btn_frame, text="ロット進捗チェック", command=self.open_lot_progress
+        )
+        self.btn_lot_progress.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 5))
 
         self.btn_production_csv_import = ttk.Button(
             bottom_btn_frame, text="実績CSV取込", command=self.on_production_csv_import
@@ -1390,6 +1402,18 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
     def open_monthly_report(self):
         MonthlyReportWindow(self, current_worker=self.current_worker)
+
+    def open_lot_progress(self):
+        """
+        多重表示防止：self._csv_staging_window と同じパターン
+        （属性にウインドウ参照を保持し、開く前にwinfo_exists()を確認して
+        既に開いていればlift()するだけにする）。
+        """
+        if self._lot_progress_window is not None and self._lot_progress_window.winfo_exists():
+            self._lot_progress_window.lift()
+            self._lot_progress_window.focus_force()
+            return
+        self._lot_progress_window = LotProgressWindow(self)
 
     def on_production_csv_import(self):
         """

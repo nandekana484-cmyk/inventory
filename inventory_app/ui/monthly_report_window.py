@@ -5,14 +5,19 @@ from tkinter import ttk, messagebox, filedialog
 
 from tkcalendar import DateEntry
 
-from services.production_service import build_monthly_report, build_wip_extraction_rows
+from services.production_service import (
+    build_monthly_report, build_wip_extraction_rows, evaluate_lot_status,
+)
 from ui.daily_report_window import (
     REPORT_HEADERS,
     _row_to_values,
     build_daily_report_pdf,
     ReportPreviewWindow,
     configure_lot_stripe_tags,
+    configure_status_color_tags,
     populate_report_tree,
+    PDF_COL_WIDTHS,
+    PDF_WRAP_COLUMN_INDICES,
 )
 from models.wip_board_snapshot import save_wip_snapshot
 from models.operation_log import log_operation
@@ -33,6 +38,7 @@ class MonthlyReportWindow(tk.Toplevel):
         self.order_qty_inconsistency_warnings = []
         self.unregistered_board_warnings = []
         self.excess_file_no_warnings = []
+        self.board_count_inconsistency_warnings = []
 
         self.title("月報出力")
         self.geometry("1020x560")
@@ -71,6 +77,7 @@ class MonthlyReportWindow(tk.Toplevel):
             self.tree.column(c, width=widths[c], anchor=tk.W if c in left_aligned else tk.E)
         self.tree.pack(expand=True, fill=tk.BOTH)
         configure_lot_stripe_tags(self.tree)
+        configure_status_color_tags(self.tree)
         self.tree.bind("<Double-1>", self.on_row_double_click)
 
         btn_frame = ttk.Frame(self, padding=10)
@@ -94,6 +101,12 @@ class MonthlyReportWindow(tk.Toplevel):
         ttk.Button(
             btn_frame, text="構成基板数超過リストをCSV出力", command=self.on_export_excess_file_no_csv,
         ).pack(side=tk.LEFT, padx=5)
+        # 構成基板数不一致リストのCSV出力（2026-09-28追加、登録済みboard_countが
+        # 同一ロット内のboard_name間で複数種類に分かれているケース）。上記2つと
+        # 同じ「常時有効＋空なら案内メッセージ」の方針を踏襲する。
+        ttk.Button(
+            btn_frame, text="構成基板数不一致リストをCSV出力", command=self.on_export_board_count_inconsistency_csv,
+        ).pack(side=tk.LEFT, padx=5)
 
     def on_aggregate(self):
         from_date = self.from_date_entry.get()
@@ -103,7 +116,7 @@ class MonthlyReportWindow(tk.Toplevel):
             (
                 self.report_rows, self.inconsistency_warnings,
                 self.order_qty_inconsistency_warnings, self.unregistered_board_warnings,
-                self.excess_file_no_warnings,
+                self.excess_file_no_warnings, self.board_count_inconsistency_warnings,
             ) = build_monthly_report(from_date, to_date)
         except Exception as e:
             messagebox.showerror("エラー", f"集計に失敗しました：{e}", parent=self.winfo_toplevel())
@@ -121,6 +134,7 @@ class MonthlyReportWindow(tk.Toplevel):
         self._show_order_qty_inconsistency_warning_if_any()
         self._show_unregistered_board_warning_if_any()
         self._show_excess_file_no_warning_if_any()
+        self._show_board_count_inconsistency_warning_if_any()
 
     def _show_order_qty_inconsistency_warning_if_any(self):
         """
@@ -247,6 +261,38 @@ class MonthlyReportWindow(tk.Toplevel):
             parent=self.winfo_toplevel(),
         )
 
+    def _show_board_count_inconsistency_warning_if_any(self):
+        """
+        self.board_count_inconsistency_warnings（同一ロット内で、登録済みの
+        board_nameのboard_countが複数種類に分かれているケース）を警告する
+        （2026-09-28追加）。unregistered_board_warnings（マスタ未登録＝判定
+        自体が不能）・excess_file_no_warnings（判定した結果、実際に超過して
+        いる）とは意味が異なる別カテゴリの警告であり、混同しないよう別
+        メソッド・別ダイアログ・別CSV出力ボタンとして扱う。このケースは
+        構成基板数の比較自体を行っていない（どの値と比較すべきか判断できない
+        ため）ため、引落は実績ベースの値のまま変わらない。
+        """
+        if not self.board_count_inconsistency_warnings:
+            return
+
+        lines = "\n".join(
+            f"・lot_no={w['lot_no']}（基板名: {w['board_name']}、"
+            f"構成基板数: {w['board_count']:g}、"
+            f"ロット内の値一覧: {', '.join(f'{v:g}' for v in w['board_count_values'])}）"
+            for w in self.board_count_inconsistency_warnings
+        )
+        messagebox.showwarning(
+            "構成基板数不一致の警告",
+            "以下のロットは、同一ロット内の基板名ごとに構成基板数マスタの"
+            "登録値が異なっています。どちらの値を基準にすべきか判断できない"
+            "ため、構成基板数の比較・自動判定は行っていません。マスタの"
+            "登録内容をご確認ください。\n"
+            "このダイアログを閉じた後、画面下部の「構成基板数不一致リストを"
+            "CSV出力」ボタンから一覧をCSVで保存できます。\n\n"
+            f"{lines}",
+            parent=self.winfo_toplevel(),
+        )
+
     def on_row_double_click(self, event):
         """
         選択行に対応する実績（kitting_list_no・lot_no）を実績修正ウインドウ
@@ -281,7 +327,7 @@ class MonthlyReportWindow(tk.Toplevel):
         (
             self.report_rows, self.inconsistency_warnings,
             self.order_qty_inconsistency_warnings, self.unregistered_board_warnings,
-            self.excess_file_no_warnings,
+            self.excess_file_no_warnings, self.board_count_inconsistency_warnings,
         ) = build_monthly_report(self.from_date, self.to_date)
         for item in self.tree.get_children():
             self.tree.delete(item)
@@ -319,7 +365,10 @@ class MonthlyReportWindow(tk.Toplevel):
             return
 
         try:
-            build_daily_report_pdf(self.report_rows, self._period_label(), save_path, title_prefix="月報")
+            build_daily_report_pdf(
+                self.report_rows, self._period_label(), save_path, title_prefix="月報",
+                col_widths=PDF_COL_WIDTHS, wrap_column_indices=PDF_WRAP_COLUMN_INDICES,
+            )
         except Exception as e:
             messagebox.showerror("エラー", f"PDF出力に失敗しました：{e}", parent=self.winfo_toplevel())
             return
@@ -462,6 +511,67 @@ class MonthlyReportWindow(tk.Toplevel):
 
         messagebox.showinfo("完了", f"CSVを保存しました：\n{save_path}", parent=self.winfo_toplevel())
 
+    def on_export_board_count_inconsistency_csv(self):
+        """
+        self.board_count_inconsistency_warnings（同一ロット内でboard_countが
+        複数種類に分かれているロット一覧、board_name単位で1件）を、
+        on_export_unregistered_board_csv()・on_export_excess_file_no_csv()と
+        一貫性を持たせた形（board_name単位への集約、utf-8-sig、ファイル選択
+        ダイアログ、成功・失敗のmessagebox）でCSV出力する（2026-09-28追加）。
+
+        列構成：board_name, lot_nos（該当する全ロットNo.、カンマ区切り）,
+        file_nos（該当する全ファイルNo.の重複無しリスト、カンマ区切り）,
+        board_count（そのboard_name自身の登録値）, board_count_values
+        （そのロット内の値一覧、カンマ区切り）。board_count_valuesは同じ
+        board_nameでもロットによって異なり得る（ロットが違えば別の食い違い
+        パターンのため）ため、他の2つのCSV出力と異なりlot_no単位の値を
+        単純平坦化して連結する（1つのboard_nameが複数ロットにまたがる場合、
+        セル内で「;」区切りにしてロットごとの値一覧を区別する）。
+        """
+        if not self.board_count_inconsistency_warnings:
+            messagebox.showinfo(
+                "構成基板数不一致リスト", "構成基板数が不一致のロットはありません。",
+                parent=self.winfo_toplevel(),
+            )
+            return
+
+        default_name = f"board_count_inconsistency_{self._file_stub()}.csv"
+        save_path = filedialog.asksaveasfilename(
+            defaultextension=".csv", initialfile=default_name,
+            filetypes=[("CSV files", "*.csv")],
+        parent=self.winfo_toplevel())
+        if not save_path:
+            return
+
+        grouped = {}
+        for w in self.board_count_inconsistency_warnings:
+            entry = grouped.setdefault(
+                w["board_name"], {"lot_nos": [], "file_nos": set(), "board_count": w["board_count"], "value_sets": []},
+            )
+            entry["lot_nos"].append(w["lot_no"])
+            entry["file_nos"].update(w["file_nos"])
+            values_str = ", ".join(f"{v:g}" for v in w["board_count_values"])
+            if values_str not in entry["value_sets"]:
+                entry["value_sets"].append(values_str)
+
+        try:
+            with open(save_path, "w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.writer(f)
+                writer.writerow(["board_name", "lot_nos", "file_nos", "board_count", "board_count_values"])
+                for board_name, entry in grouped.items():
+                    writer.writerow([
+                        board_name,
+                        ", ".join(entry["lot_nos"]),
+                        ", ".join(sorted(entry["file_nos"])),
+                        f"{entry['board_count']:g}",
+                        "; ".join(entry["value_sets"]),
+                    ])
+        except Exception as e:
+            messagebox.showerror("エラー", f"CSV出力に失敗しました：{e}", parent=self.winfo_toplevel())
+            return
+
+        messagebox.showinfo("完了", f"CSVを保存しました：\n{save_path}", parent=self.winfo_toplevel())
+
     def on_extract_wip(self):
         """
         self.report_rows（既に集計済みの月報データ）に含まれるdistinctなlot_noに
@@ -481,12 +591,47 @@ class MonthlyReportWindow(tk.Toplevel):
         save_wip_snapshot()はテーブル全体差し替え方式のため、押すたびに
         直前の抽出結果が今回の内容で完全に置き換わる（前回の集計期間で
         仕掛だった基板が、今回の期間の集計結果に含まれなければ残らない）。
+
+        保存前の確認（2026-09-28追加）：wip_board_snapshotはこの後、仕掛展開・
+        在庫差異レポートで使われる。抽出対象のlot_nosに、構成基板数の
+        「確認・修正が必要」な状態（evaluate_lot_status()の
+        status_color_category=="needs_review"、unregistered・
+        board_count_inconsistent・excess・一部未登録のいずれか）のロットが
+        含まれる場合、そのロットの引落は未検証のまま算出された仕掛数量である
+        ため、件数とロットNo（多い場合は先頭数件＋総数）を示した上で
+        「このまま保存しますか」の確認を挟む。該当ロットが無ければ、従来
+        通り確認無しで保存する。
         """
         if not self.report_rows:
             messagebox.showwarning("警告", "先に集計を実行してください。", parent=self.winfo_toplevel())
             return
 
         lot_nos = sorted({row["lot_no"] for row in self.report_rows if row["lot_no"]})
+
+        needs_review_lot_nos = []
+        for lot_no in lot_nos:
+            try:
+                lot_eval = evaluate_lot_status(lot_no)
+            except ValueError:
+                continue
+            if lot_eval["status_color_category"] == "needs_review":
+                needs_review_lot_nos.append(lot_no)
+
+        if needs_review_lot_nos:
+            preview = "、".join(needs_review_lot_nos[:10])
+            if len(needs_review_lot_nos) > 10:
+                preview += f" 他{len(needs_review_lot_nos) - 10}件"
+            proceed = messagebox.askyesno(
+                "仕掛数量抽出の確認",
+                f"抽出対象に、構成基板数の確認・修正が必要な状態のロットが"
+                f"{len(needs_review_lot_nos)}件含まれています（{preview}）。\n"
+                "これらのロットは引落が未検証のまま仕掛数量を算出しています。\n"
+                "このまま保存しますか？",
+                parent=self.winfo_toplevel(),
+            )
+            if not proceed:
+                return
+
         wip_rows = build_wip_extraction_rows(lot_nos)
         save_wip_snapshot(wip_rows)
         log_operation(

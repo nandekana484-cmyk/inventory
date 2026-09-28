@@ -24,7 +24,18 @@ JP_FONT = "HeiseiKakuGo-W5"
 registerFont(UnicodeCIDFont(JP_FONT))
 
 REPORT_HEADERS = ["No", "ファイルNo", "基板名", "構成基板数", "ロットNo", "生産数", "注文数",
-                   "引落数量", "仕掛数量", "未完了数"]
+                   "引落数量", "仕掛数量", "未完了数", "確認事項"]
+
+# PDF出力（build_daily_report_pdf()）用の列幅（ポイント単位）・折り返し対象
+# 列インデックス（2026-09-28、「確認事項」列の追加に伴い新設）。A4縦・
+# 左右マージン15mmずつ（doc生成時の設定）での利用可能幅は約510pt
+# （595pt − 15mm×2枚 ≒ 595 − 85pt）。「確認事項」列（インデックス10、
+# REPORT_HEADERSの末尾）に長い文言が入っても他の列を圧迫してページ幅を
+# はみ出さないよう、他の列を切り詰めてこの列に幅を多めに配分している。
+# ui/monthly_report_window.pyもこの定数をそのままimportして使う（画面ごとに
+# 別の値を定義しない）。
+PDF_COL_WIDTHS = [18, 42, 55, 38, 38, 30, 30, 34, 34, 34, 117]
+PDF_WRAP_COLUMN_INDICES = {10}  # 「確認事項」列のみ折り返す
 
 # ロット単位の縞模様表示（2026-09-26追加）で使うTreeviewタグ名・背景色。
 # 既存の警告色（赤・オレンジ・黄・緑等、生産実績入力画面等で使用）と衝突しない
@@ -35,6 +46,24 @@ _LOT_STRIPE_TAG_B = "lot_stripe_b"
 _LOT_STRIPE_COLOR_A = "#ffffff"  # 白（無色、既定の背景と同じ）
 _LOT_STRIPE_COLOR_B = "#e6e6e6"  # 薄いグレー
 
+# 「確認事項」欄の文字色タグ（2026-09-28追加）。services.production_service.
+# _lot_status_color_category()が返す"needs_review"|"shortfall"に対応する。
+# 縞模様タグ（backgroundのみ設定）とは別のタグとし、こちらはforegroundのみを
+# 設定する（1行に両方のタグを付けても、設定する属性が重ならないため両方
+# 反映される想定。Treeviewの複数タグ適用時の実際の描画は目視確認が必要、
+# 詳細は各画面のdocstring・動作確認報告を参照）。
+_STATUS_COLOR_TAG_NEEDS_REVIEW = "status_needs_review"
+_STATUS_COLOR_TAG_SHORTFALL = "status_shortfall_note"
+_STATUS_TEXT_COLOR_NEEDS_REVIEW = "#cc0000"  # 赤（確認・修正が必要）
+_STATUS_TEXT_COLOR_SHORTFALL = "#cc6600"  # オレンジ（不足のため引落0）
+
+# services.production_service._lot_status_color_category()の戻り値
+# （"needs_review"|"shortfall"|None）から、上記タグ名を引くための辞書。
+_STATUS_COLOR_CATEGORY_TO_TAG = {
+    "needs_review": _STATUS_COLOR_TAG_NEEDS_REVIEW,
+    "shortfall": _STATUS_COLOR_TAG_SHORTFALL,
+}
+
 
 def configure_lot_stripe_tags(tree):
     """
@@ -44,6 +73,17 @@ def configure_lot_stripe_tags(tree):
     """
     tree.tag_configure(_LOT_STRIPE_TAG_A, background=_LOT_STRIPE_COLOR_A)
     tree.tag_configure(_LOT_STRIPE_TAG_B, background=_LOT_STRIPE_COLOR_B)
+
+
+def configure_status_color_tags(tree):
+    """
+    Treeviewに「確認事項」欄の文字色タグを設定する（2026-09-28追加）。
+    configure_lot_stripe_tags()と同様、Treeview生成直後に1回だけ呼び出す。
+    縞模様タグ（background）とは別のタグ（foregroundのみ）のため、
+    populate_report_tree()で1行に両方のタグを渡して併用する。
+    """
+    tree.tag_configure(_STATUS_COLOR_TAG_NEEDS_REVIEW, foreground=_STATUS_TEXT_COLOR_NEEDS_REVIEW)
+    tree.tag_configure(_STATUS_COLOR_TAG_SHORTFALL, foreground=_STATUS_TEXT_COLOR_SHORTFALL)
 
 
 def populate_report_tree(tree, report_rows):
@@ -73,7 +113,17 @@ def populate_report_tree(tree, report_rows):
         if lot_no not in lot_tag_map:
             use_tag_b = not use_tag_b
             lot_tag_map[lot_no] = _LOT_STRIPE_TAG_B if use_tag_b else _LOT_STRIPE_TAG_A
-        tree.insert("", tk.END, values=_row_to_values(row), tags=(lot_tag_map[lot_no],))
+
+        tags = [lot_tag_map[lot_no]]
+        # 「確認事項」欄の文字色タグ（2026-09-28追加）。縞模様タグ（background
+        # のみ）とは別に、statusに応じたforegroundのみのタグを追加する。
+        # matchかつ未登録board_nameも無いロットはstatus_color_categoryが
+        # Noneのため、色タグを追加しない（既定の文字色のまま）。
+        color_tag = _STATUS_COLOR_CATEGORY_TO_TAG.get(row.get("status_color_category"))
+        if color_tag:
+            tags.append(color_tag)
+
+        tree.insert("", tk.END, values=_row_to_values(row), tags=tuple(tags))
 
 
 def _format_board_count(board_name):
@@ -96,15 +146,20 @@ def _format_board_count(board_name):
 def _row_to_values(row):
     # 数量項目は生産実績入力画面の計画一覧（load_plan_list()）と同様に整数表示に揃える
     # （DB上はREAL/INTEGER混在のため、無加工だと"100.0"のように小数点が出てしまう）。
+    # 「確認事項」（confirmation_note、2026-09-28追加）は、REPORT_HEADERS・
+    # 本関数を経由すればCSV・PDF・印刷プレビューにも自動的に反映される
+    # （services.production_service._build_report_rows()が全rowに含めている）。
     return [
         row["seq"], row["file_no"], row["board_name"], _format_board_count(row["board_name"]), row["lot_no"],
         f"{row['daily_qty']:.0f}", f"{row['order_qty']:.0f}",
         f"{row['lot_completed']:.0f}", f"{row['surplus_qty']:.0f}", f"{row['lot_remaining']:.0f}",
+        row.get("confirmation_note", ""),
     ]
 
 
 def build_daily_report_pdf(report_rows, report_date, output_path, title_prefix="日報",
-                             headers=None, row_to_values=None):
+                             headers=None, row_to_values=None,
+                             col_widths=None, wrap_column_indices=None):
     """
     日報データを A4縦PDFとして出力する。
     行数が1ページに収まらない場合は reportlab の Table により自動改ページされる。
@@ -113,6 +168,20 @@ def build_daily_report_pdf(report_rows, report_date, output_path, title_prefix="
     headers / row_to_values を指定すると、日報以外の列構成のレポート
     （在庫差異レポート等）でもこの関数をそのまま再利用できる。
     省略時は日報・月報用の REPORT_HEADERS / _row_to_values を使う。
+
+    col_widths / wrap_column_indices（2026-09-28追加、「確認事項」列対応）：
+    省略時（None）は以前と全く同じ挙動（reportlabのTableが内容の自然な
+    幅で自動サイズする）のまま変更しない（本関数は日報・月報以外にも
+    NG一覧・仕掛一覧・在庫差異レポート等、複数の呼び出し元が異なる列構成で
+    共有しているため、それらへの影響を避けるためデフォルトは無変更とした）。
+    col_widths（headersと同じ要素数のポイント単位の幅リスト）を指定すると、
+    Tableの各列幅を固定する。wrap_column_indices（折り返しを行う列の
+    0始まりインデックスの集合）を指定すると、その列のセル値を
+    reportlab.platypus.Paragraphで包み、col_widthsで指定した幅の中で
+    自動的に折り返す（「確認事項」列のように長い文言が入り得る列が、
+    ページ幅からはみ出さないようにするため。プレーン文字列のセルは
+    Tableの自然な幅で描画されるため、長い文言は折り返されずページ幅を
+    超えて描画されるリスクがある）。
     """
     doc = SimpleDocTemplate(
         output_path,
@@ -131,9 +200,23 @@ def build_daily_report_pdf(report_rows, report_date, output_path, title_prefix="
 
     headers = headers if headers is not None else REPORT_HEADERS
     row_to_values = row_to_values if row_to_values is not None else _row_to_values
+    wrap_column_indices = wrap_column_indices or set()
 
-    data = [headers] + [row_to_values(row) for row in report_rows]
-    table = Table(data, repeatRows=1)
+    cell_style = styles["Normal"]
+    cell_style.fontName = JP_FONT
+    cell_style.fontSize = 8
+    cell_style.leading = 10
+
+    def _build_cell(col_index, value):
+        if col_index in wrap_column_indices:
+            return Paragraph(str(value), cell_style)
+        return value
+
+    data = [headers] + [
+        [_build_cell(i, v) for i, v in enumerate(row_to_values(row))]
+        for row in report_rows
+    ]
+    table = Table(data, repeatRows=1, colWidths=col_widths)
     table.setStyle(TableStyle([
         ("FONTNAME", (0, 0), (-1, -1), JP_FONT),
         ("FONTSIZE", (0, 0), (-1, -1), 8),
@@ -141,6 +224,7 @@ def build_daily_report_pdf(report_rows, report_date, output_path, title_prefix="
         ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
         ("ALIGN", (0, 0), (0, -1), "CENTER"),
         ("ALIGN", (4, 0), (-1, -1), "RIGHT"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
     ]))
     elements.append(table)
 
@@ -161,7 +245,13 @@ class ReportPreviewWindow(tk.Toplevel):
     ROWS_PER_PAGE = 35
 
     COL_HEADERS = REPORT_HEADERS
-    COL_WIDTHS = [25, 55, 80, 60, 55, 45, 45, 50, 50, 50]
+    # 2026-09-28、「確認事項」列の追加に伴い、他の列幅を詰めて確保した
+    # （プレビューは固定ピクセル幅のキャンバスに単純にテキスト描画するのみで
+    # 折り返し機構が無いため、「確認事項」に長い文言が入ると列の右側へ
+    # はみ出す可能性がある。この点はPDF出力（Paragraphによる自動折り返し
+    # 対応済み、build_daily_report_pdf()参照）と異なり、プレビュー画面固有の
+    # 制約として残る。実際の見え方は目視確認が必要）。
+    COL_WIDTHS = [20, 50, 65, 50, 50, 35, 35, 40, 40, 40, 120]
 
     def __init__(self, parent, report_rows, report_date, title_prefix="日報",
                  headers=None, col_widths=None, row_to_values=None):
@@ -254,7 +344,7 @@ class DailyReportWindow(tk.Toplevel):
         # order_qty_inconsistency_warnings・unregistered_board_warnings
         # （2026-09-26追加）は月報限定の警告のため（面1/面2不整合警告と同じ
         # 既存方針）、日報側では受け取るのみでダイアログ表示等は行わない。
-        self.report_rows, self.inconsistency_warnings, _, _, _ = build_daily_report()
+        self.report_rows, self.inconsistency_warnings, _, _, _, _ = build_daily_report()
 
         self.title(f"日報出力（{self.report_date}）")
         self.geometry("1020x500")
@@ -303,7 +393,7 @@ class DailyReportWindow(tk.Toplevel):
         selected_date = self.date_entry.get()
 
         try:
-            self.report_rows, self.inconsistency_warnings, _, _, _ = build_monthly_report(selected_date, selected_date)
+            self.report_rows, self.inconsistency_warnings, _, _, _, _ = build_monthly_report(selected_date, selected_date)
         except Exception as e:
             messagebox.showerror("エラー", f"集計に失敗しました：{e}", parent=self.winfo_toplevel())
             return
@@ -344,7 +434,7 @@ class DailyReportWindow(tk.Toplevel):
 
     def refresh_report(self):
         """実績修正後に日報の一覧を再取得して表示を更新する。"""
-        self.report_rows, self.inconsistency_warnings, _, _, _ = build_monthly_report(self.report_date, self.report_date)
+        self.report_rows, self.inconsistency_warnings, _, _, _, _ = build_monthly_report(self.report_date, self.report_date)
         for item in self.tree.get_children():
             self.tree.delete(item)
         populate_report_tree(self.tree, self.report_rows)
@@ -361,7 +451,10 @@ class DailyReportWindow(tk.Toplevel):
             tempfile.gettempdir(), f"daily_report_{self.report_date.replace('-', '')}_print.pdf"
         )
         try:
-            build_daily_report_pdf(self.report_rows, self.report_date, tmp_path)
+            build_daily_report_pdf(
+                self.report_rows, self.report_date, tmp_path,
+                col_widths=PDF_COL_WIDTHS, wrap_column_indices=PDF_WRAP_COLUMN_INDICES,
+            )
         except Exception as e:
             messagebox.showerror("エラー", f"PDF生成に失敗しました：{e}", parent=self.winfo_toplevel())
             return
@@ -388,7 +481,10 @@ class DailyReportWindow(tk.Toplevel):
             return
 
         try:
-            build_daily_report_pdf(self.report_rows, self.report_date, save_path)
+            build_daily_report_pdf(
+                self.report_rows, self.report_date, save_path,
+                col_widths=PDF_COL_WIDTHS, wrap_column_indices=PDF_WRAP_COLUMN_INDICES,
+            )
         except Exception as e:
             messagebox.showerror("エラー", f"PDF出力に失敗しました：{e}", parent=self.winfo_toplevel())
             return
