@@ -747,6 +747,52 @@ AB-7（右クリック即時登録＋緑ハイライト）・AB追記の複数�
 
 ---
 
+### グループAB追記8：report_dateが手動修正のたびに意図せず「今日」へ書き換わる問題の発見と対応（重要、2026-09-29）
+
+**背景**：「日々の引落（前日比）を出したい」という新しい要望（`PRODUCTION_NG_ENHANCEMENTS_NOTES.md`§19参照）を受け、`production_daily.report_date`を使って「指定日時点の累計」を再構成できるか調査したところ、report_dateの信頼性に問題が見つかった。
+
+**発見の経緯**：`overwrite_daily_result()`/`replace_daily_result()`（`models/production.py`）の全呼び出し元をリポジトリ全体から洗い出し、それぞれがreport_dateにどんな値を渡しているかを1件ずつ追跡した。CSV経由の登録（自動取込・ステージング画面の主経路・右クリック即時登録・Shift+S一括登録）はいずれもCSVの払い出し日を正しく使っていたが、以下3つの経路で、意図せずreport_dateが実行日（今日）に書き換わることが判明した：
+
+1. **生産実績入力画面で既存のキッティングNo.を選び直し、通常の登録ボタンで再登録した場合**：`search_plan()`が`self._pending_csv_report_date`をNoneにクリアするため、`_perform_registration()`の`_resolve_csv_report_date(None)`がNoneを返し、`overwrite_daily_result()`側のデフォルト動作（実行日）にフォールバックしていた。
+2. **画面からの手動登録で、面1/面2の連動登録（反対側の面）を行った場合**：`ui/kitting_production_entry.py::_register_opposite_side_daily_result()`が`report_date`引数を一切渡していなかった（今回新しく見つかった問題）。主たる面がCSV由来の正しい日付で登録されていても、反対側の面は常に今日になっていた。
+3. **右クリック即時登録で数量不一致になり「修正しますか」から通常フローで再登録した場合**：`ui/production_import_staging_window.py::_register_candidate_immediately()`の数量差修正ダイアログで「はい」を選ぶと、再度の`search_plan()`により1と同じ経路に合流する。
+
+**隔離コピー（config.DB_PATH・config.APP_DATA_DIR双方を隔離）での再現**：過去日付（2026-09-01）で登録済みの実績を、計画一覧から選び直して数量だけ変更し通常の登録ボタンで再登録したところ、report_dateが実行日（2026-09-29）へ書き換わることを実際に確認した。
+
+**ユーザー決定の方針**：「実際に生産した日」と「修正した日」は別の情報であるべきなので、report_dateが明示的に渡されない場合は、既存行のreport_dateをそのまま保つ（今日には書き換えない）方針で統一した（`CANONICAL_DESIGN_DECISIONS.md` D-28参照）。
+
+**対応（完了）**：
+
+| # | 対象ファイル | 実施内容 | 判定 |
+|---|---|---|---|
+| AB8-1 | `models/production.py` | `replace_daily_result()`を修正。report_dateがNoneの場合、DELETEの直前・同一コネクション内で削除対象の既存行のreport_dateをSELECTして引き継ぐ。該当する既存行が無い場合のみ実行日（今日）にフォールバックする | **反映済み**（隔離コピーで動作確認済み） |
+| AB8-2 | `services/production_service.py` | `overwrite_daily_result()`が従来ここで行っていた「Noneなら今日にする」処理を削除し、Noneのまま`replace_daily_result()`へ渡すよう変更（既存行引き継ぎの判断をmodels層に一本化） | **反映済み** |
+| AB8-3 | `ui/kitting_production_entry.py` | `_register_opposite_side_daily_result()`に`report_date`引数を新設。`_perform_registration()`が主たる面に使ったreport_date（CSV由来の値、またはNone）を、反対側の面にも同じように渡すよう変更 | **反映済み** |
+
+**動作確認（隔離コピー）**：①手動再登録での日付保持、②新規登録（既存行なし）は従来通り今日になる、③CSV由来の明示的な値は従来通り使われる（退行なし）、④面連動で反対側にも同じ日付が渡る、⑤右クリック即時登録の数量不一致修正フローでも日付が保持される、⑥`ActualCorrectionWindow`の「修正」ボタンへの影響なし（そもそもreport_dateに触れない設計のため）、の6シナリオすべてで想定通りの結果を確認した。`python -m pytest tests/`への影響なし。
+
+---
+
+### グループAB追記9：report_dateの空値（NULL・空文字列）に関する追加の堅牢化（完了、2026-09-29）
+
+**発見の経緯**：グループAB追記8の修正を検証する過程で、「既存行はあるが、その既存行自体のreport_dateがNULLまたは空文字列だった場合、NULLがそのまま連鎖して新しい行に書き込まれてしまう」というロジックの隙間が見つかった。追記8の修正コードは「削除対象となる行が存在するかどうか」だけを見ており、「その行のreport_date列に実際に有効な値が入っているかどうか」を区別していなかったことが原因。
+
+**現状のスキーマでの実害の有無**：`production_daily.report_date`列には元々`NOT NULL`制約が付いている（`db/schema.sql`、実DBの`PRAGMA table_info`でも`notnull: 1`を確認済み）ため、この状況（既存行のreport_date自体がNULL）は通常発生しない。実DBの19行を直接確認したが、`report_date`がNULL・空文字列の行は0件だった。ただし、これは「今のスキーマの制約に守られているから実害が出ていないだけ」であり、コード自体の脆弱性として修正した。
+
+**重要な副次的発見**：もしreport_dateがNULLのまま登録される行があると、日報・月報（report_dateの範囲・等価比較で絞り込む`list_daily_production_range()`/`list_daily_production_today()`）からは**一切見えなくなる**一方、引落・累計の計算（`get_app_cumulative_qty()`等、日付条件を持たないSUM集計）には**含まれ続けてしまう**。「日報・月報には出ないのに集計には反映される」という気づきにくい不整合になり得ることを、隔離コピーでの実際のクエリ実行で確認した。
+
+**対応（完了）**：`models/production.py::replace_daily_result()`をさらに修正。
+
+- 既存行のreport_date自体が空（NULLまたは空文字列）の場合も、「既存行なし」と同様に今日へフォールバックするよう変更（「行の存在」と「report_date列に有効な値があるか」を区別）。
+- 呼び出し元から渡されたreport_dateが空文字列(`''`)の場合もNoneと同じ扱いにした（`if report_date is None:` → `if not report_date:`）。
+- DELETE・INSERTの直前にもう一段、`report_date`が空でないことを確認するガードを追加した（将来同種の抜け道が生まれても、NOT NULL制約の列へ空の値を書き込まないための多重の防御）。
+
+**動作確認（隔離コピー）**：NOT NULL制約を持たない別ファイルのテスト用DBを用意し、既存行のreport_dateがNULL・空文字列それぞれのケースで、修正後は今日の日付へフォールバックすることを確認。呼び出し元からreport_date=''が渡された場合も、既存行があればその日付を引き継ぎ、無ければ今日になることを確認。グループAB追記8の6シナリオを再実行し、退行が無いことも確認した。`python -m pytest tests/`への影響なし。
+
+**未確認事項（申し送り）**：もう一方の拠点のDBで`production_daily.report_date`のNOT NULL制約が同じく適用されているかは、この環境からは確認できていない。次にその環境で作業する機会があれば、`CANONICAL_DESIGN_DECISIONS.md` §5の整合性チェック手順に沿って確認することを推奨する（同ファイル§5のチェック項目に追加済み）。
+
+---
+
 ## 4. 未対応・将来の検討事項
 
 - 項目14（実績履歴からのクリックで計画呼び出し）：未実装
@@ -792,3 +838,6 @@ AB-7（右クリック即時登録＋緑ハイライト）・AB追記の複数�
 - **ロット状態判定・引落ルールの一本化** → 2026-09-28、完了。`services/production_service.py::_evaluate_lot_status()`に構成基板数チェック・引落・仕掛/未生産・「未確定」判定を集約し、`check_lot_progress()`・日報・月報・仕掛数量抽出が同じ関数を使うようにした。不足（shortfall）ロットのみ引落0とするルールに訂正（`DRAWDOWN_ZERO_STATUSES`）。詳細は`PRODUCTION_NG_ENHANCEMENTS_NOTES.md` §17.4・`CANONICAL_DESIGN_DECISIONS.md` D-26参照。
 - **確定登録の後にスナップショットから消えたロットの訂正導線が無い問題** → 2026-09-28、対策実装完了。`ui/wip_expansion_window.py`の一覧を「スナップショット∪確定登録済み」の和集合方式に変更し、既存の「実績修正」ボタンから訂正できるようにした（NG側と同じ設計に統一）。詳細は`PRODUCTION_NG_ENHANCEMENTS_NOTES.md` §18・`CANONICAL_DESIGN_DECISIONS.md` D-27参照。
 - **未解決のまま残っている事項（2026-09-28時点）**：構成基板数がロット内で複数値に分かれる2件（lot_no=271569・344294）・超過2件（lot_no=262752・468052、ファイルNo表記統合の候補なし）の業務側確認待ち、生産実績入力画面の情報欄（`ui/kitting_production_entry.py`）が`_evaluate_lot_status()`に未統一のまま独自に`calculate_lot_completion()`・`get_board_structure()`を呼んでいる点、日報・月報の縞模様・確認事項列の文字色・印刷プレビューでのはみ出し・仕掛展開画面の赤字表示、いずれも実機目視確認が未実施。詳細は`PRODUCTION_NG_ENHANCEMENTS_NOTES.md` §17.6参照。
+- **production_daily.report_dateが手動修正のたびに意図せず「今日」へ書き換わる問題** → 2026-09-29、完了。グループAB追記8参照。CSV経由の登録は元々壊れていなかったが、①既存計画を選び直しての手動再登録、②面連動登録（反対側の面）、③右クリック即時登録の数量不一致修正フロー、の3経路で発生していた。「実際に生産した日」と「修正した日」は別の情報であるべき、というユーザー決定の方針に基づき、report_dateが明示的に渡されない場合は既存行の値を引き継ぐよう修正した（`CANONICAL_DESIGN_DECISIONS.md` D-28参照）。
+- **report_dateの空値（NULL・空文字列）に関する堅牢化** → 2026-09-29、完了。グループAB追記9参照。上記の修正過程で見つかった「既存行のreport_date自体が空だった場合にNULLが連鎖する」ロジックの隙間に対応した。現行スキーマのNOT NULL制約下では実害が出ない（実DBの19行でも該当0件）ことを確認済みだが、コード自体の脆弱性として修正した。もう一方の拠点でも同じNOT NULL制約が適用されているかは未確認（`CANONICAL_DESIGN_DECISIONS.md` §5のチェック項目に追加済み）。
+- **日々の引落・完了一覧・未完了一覧（Step2・Step3）** → **未着手**。上記2件（グループAB追記8・9）はその前提となるreport_dateの信頼性確保（Step1）にあたる。詳細・背景は`PRODUCTION_NG_ENHANCEMENTS_NOTES.md` §19参照。

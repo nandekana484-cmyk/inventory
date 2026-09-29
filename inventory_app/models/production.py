@@ -188,12 +188,48 @@ def replace_daily_result(plan_item_id, kitting_list_no, lot_id, group_id,
     計画の実績まで誤って削除してしまう）。新たな引数は追加せず、
     既にINSERT用に受け取っているlot_idをDELETEの条件にも流用している。
 
-    1つのコネクション・1つのcommitで削除・追加の両方を確定させる（with文により、
-    途中で例外が発生した場合は自動的にロールバックされ、削除だけが反映される
-    中途半端な状態にはならない）。
+    report_date：明示的に指定された場合（CSVの払い出し日等）はその値をそのまま
+    使う。**「明示的に指定された」とはNoneでも空文字列('')でもないことを指す**
+    （空文字列は「値が無い」ことを表すNoneと同列に扱う。呼び出し元がCSVの
+    空欄を`''`のまま渡してくる可能性を考慮した安全策）。
+
+    Noneまたは空文字列の場合は、削除対象となる既存行（同一kitting_list_no・
+    lot_id）のreport_dateを引き継ぐ（2026-09-29の調査で判明した、手動での
+    数量修正・再登録のたびにreport_dateが意図せず「今日」に書き換わって
+    しまう問題への対応。既存行の取得はDELETEの直前・同一コネクション内で
+    行うため、他の処理と競合して読み取った内容と削除対象がずれる心配はない）。
+    ただし、**引き継ごうとした既存行のreport_date自体がNULL・空文字列だった
+    場合**（本来は本関数のNOT NULL制約により通常は発生しないはずだが、
+    「行が存在すること」と「report_dateに有効な値が入っていること」は別の
+    事実であるため、念のため区別して判定する。2026-09-29の調査で発見した
+    論点）や、そもそも該当する既存行が無い場合（本来はoverwrite_daily_
+    result()の契約上、既存行がある前提で呼ばれるため通常は発生しないが、
+    念のためのフォールバック）は、register_daily_result()の新規登録時と
+    同じく実行日（今日）を使う。
+
+    最終防衛線：上記のいずれの分岐を通っても、DELETE・INSERTの直前に
+    report_dateがNoneでも空文字列でもないことを改めて確認する（将来この
+    関数にロジックが追加された場合等に備え、NOT NULL制約を持つ列へ空の値を
+    書き込んでしまう抜け道を無くすため）。
+
+    1つのコネクション・1つのcommitで（既存行の参照を行う場合はそれも含めて）
+    削除・追加を確定させる（with文により、途中で例外が発生した場合は自動的に
+    ロールバックされ、削除だけが反映される中途半端な状態にはならない）。
     """
     with get_connection() as con:
         cur = con.cursor()
+        if not report_date:
+            existing = cur.execute(
+                "SELECT report_date FROM production_daily WHERE kitting_list_no = ? "
+                "AND COALESCE(lot_id, '') = COALESCE(?, '')",
+                (kitting_list_no, lot_id),
+            ).fetchone()
+            existing_report_date = existing["report_date"] if existing else None
+            report_date = existing_report_date if existing_report_date else datetime.now().strftime("%Y-%m-%d")
+        # 最終防衛線（docstring参照）：ここまでの分岐にロジックの抜け道があっても、
+        # NOT NULL制約の列へNone・空文字列を書き込まないことをその場で保証する。
+        if not report_date:
+            report_date = datetime.now().strftime("%Y-%m-%d")
         cur.execute(
             "DELETE FROM production_daily WHERE kitting_list_no = ? "
             "AND COALESCE(lot_id, '') = COALESCE(?, '')",

@@ -185,14 +185,20 @@ def overwrite_daily_result(kitting_list_no: str, lot_no: str, daily_qty: float, 
     lot_no：register_daily_result()と同様、呼び出し元から明示的に受け取り、
     kitting_list_noだけでなくlot_noも条件に含めて計画を特定・削除範囲を絞り込む
     （理由はregister_daily_result()のdocstring参照）。
+
+    report_date：明示的に指定されなかった場合（None）、以前は本関数がここで
+    実行日（今日）へフォールバックしていたが、2026-09-29の調査で「手動で
+    数量を修正・再登録するたびに、CSV由来の正しい日付が意図せず今日に
+    書き換わってしまう」問題が判明したため、**Noneのまま
+    models.production.replace_daily_result()へ渡す**ように変更した。
+    replace_daily_result()側で、削除対象となる既存行のreport_dateを自動的に
+    引き継ぐ（該当行が無い場合のみ今日にフォールバックする、詳細は
+    replace_daily_result()のdocstring参照）。
     戻り値：更新後のアプリ内累計
     """
     plan = find_plan_item_by_kitting_no(kitting_list_no, lot_no)
     if not plan:
         raise ValueError(f"キッティングリストNo. {kitting_list_no}（ロットNo. {lot_no}）の計画が見つかりません。")
-
-    if report_date is None:
-        report_date = datetime.now().strftime("%Y-%m-%d")
 
     replace_daily_result(
         plan_item_id=plan["plan_item_id"],

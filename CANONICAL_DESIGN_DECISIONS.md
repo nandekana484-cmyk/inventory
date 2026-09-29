@@ -41,6 +41,7 @@
 | D-25 | 構成基板数（`board_count`）は**ロット単位**の値であり、「そのロットが何枚の基板で構成されるか」を表す（board_name単位の値ではない）。構成基板数との比較はロット内の全board_nameを通したdistinctファイルNo数（面1省略後）の合計と行うこと。マスタ未登録の判定は引き続きboard_name単位（D-24の欠陥修正と混同しないこと、粒度が異なる） | `PRODUCTION_NG_ENHANCEMENTS_NOTES.md` §17.1・§17.2 |
 | D-26 | ロットの構成基板数チェック結果に基づく引落確定ルール：不足（shortfall）のロットのみ引落を0とする（構成が揃っていないため）。マスタ未登録・構成基板数の食い違い・超過は、引落を実績ベース（`calculate_lot_completion()`）のまま計算し、警告で登録の修正を求める（判定不能、または自動補正すべきでないため）。`services/production_service.py::DRAWDOWN_ZERO_STATUSES = {"shortfall"}`で管理し、`_evaluate_lot_status()`に一本化して日報・月報・仕掛数量抽出・ロット進捗チェックの4機能で共有する | `PRODUCTION_NG_ENHANCEMENTS_NOTES.md` §17.4 |
 | D-27 | 仕掛展開画面（`ui/wip_expansion_window.py`）の一覧は、`wip_board_snapshot`（スナップショット）単独ではなく「スナップショット ∪ 確定登録済み（`wip_scrap_records`）」の和集合とする。確定登録後にスナップショットから消えたロットも「確定済み(スナップショットなし)」として一覧に残し、既存の「実績修正」ボタンから訂正できるようにする（NG側の`ng_declarations` ∪ `scrap_records`という既存の和集合方式（本ファイル参照時は`ui/ng_input_window.py::_fetch_ng_list_rows()`）と揃える設計）。一括展開・登録、`expand_by_identity()`、`services/unprocessed_check_service.py::check_unprocessed_items()`の対象には含めない | `PRODUCTION_NG_ENHANCEMENTS_NOTES.md` §18 |
+| D-28 | `production_daily`の実績を上書き登録する際、`report_date`が呼び出し元から明示的に渡されなかった場合は、削除対象となる既存行の`report_date`をそのまま引き継ぐ（実行日「今日」には書き換えない）。「実際に生産した日」と「修正した日」は別の情報であるべき、というユーザー決定の方針による。既存行自体のreport_dateが空（NULL・空文字列）だった場合、および該当する既存行が無い場合（新規登録）は、今日にフォールバックする | `UI_WORKFLOW_FIXES_NOTES.md` グループAB追記8・追記9 |
 
 ---
 
@@ -91,7 +92,8 @@
 3. **`BOMFileIndex.build_index()`がサブフォルダを再帰的に走査しているか**（`resolve_file_no()`・`problems`機構が存在するか）を確認する（BOM_MIGRATION_NOTES.md §2・§3参照）。
 4. **`models/kitting_plan.py::list_plan_items_by_lot()`に`is_active=1`フィルタが含まれているか**を確認する。
 5. **`bom_master`テーブルに`item_type`列が存在するか確認する**（`PRAGMA table_info(bom_master)`で直接確認する。基板消費枚数機能（BOM_MIGRATION_NOTES.md §13）のキャッシュ列で、`db/migration_013`で追加される。無ければ`migration_013`が未適用）。
-6. 上記いずれかが巻き戻っていた場合は、**該当するノートファイル（BOM_MIGRATION_NOTES.md）の該当セクションを参照し、そこに記載された修正内容をそのまま再適用する**（調査をやり直す必要はない。過去に確定済みの内容であるため）。ただし、そもそも一度も適用されていなかった場合（巻き戻りではない）もあり得る点に注意（2026-09-01の実DB適用時、§6参照）。
+6. **`production_daily.report_date`列にNOT NULL制約が存在するか確認する**（`PRAGMA table_info(production_daily)`で`report_date`行の`notnull`が`1`になっているかを直接確認する。2026-09-29、`models/production.py::replace_daily_result()`のreport_date引き継ぎロジック（D-28参照）がこの制約の存在を安全装置として前提にしているため、他方の拠点でこの制約が失われていないかを確認する意味で追加した項目。本項目自体は「巻き戻り」の検知が主目的ではなく、他拠点環境での前提確認のための申し送りとして追加した点が1〜5と異なる）。
+7. 上記いずれかが巻き戻っていた場合は、**該当するノートファイル（BOM_MIGRATION_NOTES.md）の該当セクションを参照し、そこに記載された修正内容をそのまま再適用する**（調査をやり直す必要はない。過去に確定済みの内容であるため）。ただし、そもそも一度も適用されていなかった場合（巻き戻りではない）もあり得る点に注意（2026-09-01の実DB適用時、§6参照）。
 
 **重要な留意点（`CREATE TABLE IF NOT EXISTS`パターンの運用上の注意）**：`models/bom_master.py::init_bom_master_table()`のように`CREATE TABLE IF NOT EXISTS`でテーブルを定義しているモジュールは、テーブルが既に存在する環境ではアプリ起動時に何度呼ばれても列定義が更新されない。そのため、`bom_master`のようなテーブルに新しいマイグレーション（`migration_011`・`migration_013`等）が追加された場合、**既存DBには自動適用されず、該当するマイグレーションスクリプトを明示的に実行しない限り古いスキーマのまま残り続ける**。上記チェック項目5（`item_type`列の存在確認）は、この一例にすぎない。同様に`CREATE TABLE IF NOT EXISTS`で定義されている他のテーブルについても、新しいマイグレーションを追加した際は既存DB（特に実DB）への適用を忘れずに行うこと（§6の実施記録、特に2026-09-03付の再発記録も参照）。
 

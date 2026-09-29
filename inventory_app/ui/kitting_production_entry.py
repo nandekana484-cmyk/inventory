@@ -2001,7 +2001,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         errors = []
         opposite_registered = False
         try:
-            opposite_registered = self._register_opposite_side_daily_result(daily_qty, worker_id)
+            opposite_registered = self._register_opposite_side_daily_result(daily_qty, worker_id, report_date=report_date)
         except Exception as e:
             errors.append(f"反対側の面への実績連動登録に失敗しました：{e}")
 
@@ -2063,7 +2063,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
                 self._csv_staging_window.deiconify()
             self._csv_staging_window.lift()
 
-    def _register_opposite_side_daily_result(self, daily_qty, worker_id):
+    def _register_opposite_side_daily_result(self, daily_qty, worker_id, report_date=None):
         """
         選択中の計画（self.current_plan）の反対側の面への連動登録。
         実体は services.production_service.register_opposite_side_daily_result()
@@ -2073,9 +2073,19 @@ class KittingProductionEntryWindow(tk.Toplevel):
         （kitting_list_no・lot_no・setup_file_no・production_side・
         plan_start_datetime）をそのまま満たしているため、変換不要でそのまま渡せる。
 
+        report_date：主たる面の登録に使ったreport_date（_perform_registration()の
+        ローカル変数、CSV由来の値またはNone）をそのまま渡す。以前は本引数自体が
+        存在せず、反対側は常にNone（＝register_daily_result()/overwrite_daily_
+        result()側のデフォルト動作である実行日）になっていたため、主たる面が
+        CSV由来の正しい日付で登録されていても、反対側だけ今日の日付になって
+        しまう問題があった（2026-09-29の調査で判明）。Noneのまま渡した場合は、
+        主たる面と同様、models.production.replace_daily_result()が反対側自身の
+        既存行のreport_dateを引き継ぐ（上書きの場合）か、実行日を使う
+        （新規登録の場合）。
+
         戻り値：反対側への登録を実際に行った場合True、反対側が存在しない場合False。
         """
-        return register_opposite_side_daily_result(self.current_plan, daily_qty, worker_id)
+        return register_opposite_side_daily_result(self.current_plan, daily_qty, worker_id, report_date=report_date)
 
     def _setup_ng_side_ui(self, plan):
         """
