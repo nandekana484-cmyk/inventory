@@ -1,4 +1,5 @@
 ﻿# services/production_service.py
+import logging
 from datetime import datetime
 from models.kitting_plan import (
     find_plan_item_by_kitting_no,
@@ -13,12 +14,38 @@ from models.production import (
     get_app_cumulative_qty,
     get_app_cumulative_qty_bulk,
     list_daily_production_by_kitting_no,
+    get_production_daily_by_id,
     update_daily_production,
     delete_daily_production,
     list_daily_production_today,
     list_daily_production_range,
 )
 from models.board_structure_master import get_board_structure
+from models.lot_status_history import record_lot_status_snapshot
+from models.scrap_records import list_scrap_summary_by_kitting_no
+from models.ng_declarations import list_ng_declarations_latest
+
+logger = logging.getLogger(__name__)
+
+
+def _record_lot_status_snapshot_safely(lot_no: str, trigger_source: str):
+    """
+    record_lot_status_snapshot()を呼び、失敗しても例外を外へ伝播させない
+    （実績の登録・修正という本来の処理を、履歴記録の失敗で失敗させないための
+    ラッパー。record_lot_status_snapshot()自体は素直に例外を送出する設計の
+    ため、呼び出し側の4関数それぞれで同じ形のtry/exceptを書く代わりに、
+    重複コード削減のための共通ヘルパーとしてここに1つだけ定義する。
+    「共通フックの一元化」ではなく、5箇所への個別呼び出し追加という方針
+    自体は変えていない点に注意）。
+    """
+    try:
+        record_lot_status_snapshot(lot_no, trigger_source)
+    except Exception:
+        logger.exception(
+            "lot_status_historyの記録に失敗しました（lot_no=%s, trigger_source=%s）。"
+            "実績の登録・修正自体はそのまま続行します。",
+            lot_no, trigger_source,
+        )
 
 
 class DailyResultAlreadyExists(Exception):
@@ -115,10 +142,22 @@ def search_plan_by_kitting_no(kitting_list_no: str, lot_no: str = None):
 
 
 def register_daily_result(kitting_list_no: str, lot_no: str, daily_qty: float, worker_id: str,
-                            report_date: str = None, check_duplicate: bool = False):
+                            report_date: str = None, check_duplicate: bool = False,
+                            record_history: bool = True):
     """
     当日実績を1件追加登録する。
     戻り値：更新後のアプリ内累計
+
+    record_history：Trueの場合（デフォルト、既存の呼び出し元は挙動が変わらない）、
+    登録成功後にそのロットの状態スナップショットをlot_status_historyへ即座に
+    記録する。Falseを渡すと、この記録をスキップする（呼び出し元が自分で
+    まとめて記録する場合に使う。2026-09-30追加：ui.production_import_staging_
+    window.py::_on_bulk_register()のように、多数の行を連続処理する際、行ごとに
+    record_lot_status_snapshot()を呼ぶと1件あたり数十msのDB書き込み
+    （commit()の同期コスト）が積み重なり、100件規模で数秒の遅延になることが
+    判明したための対応。バッチ処理側で影響を受けたlot_noの集合をため、
+    処理の最後にlot_no単位で1回ずつ記録し直すことで、記録回数を
+    「登録行数」から「distinctなlot_no数」へ減らす）。
 
     lot_no：呼び出し元（ui.kitting_production_entry.py、既に検索・選択済みの
     current_plan["lot_no"]）から明示的に受け取る。実DBで同一kitting_list_noが
@@ -169,11 +208,17 @@ def register_daily_result(kitting_list_no: str, lot_no: str, daily_qty: float, w
         worker_id=worker_id,
     )
 
+    # 実績登録が成功した後に、そのロットの状態スナップショットを
+    # lot_status_history へ記録する（2026-09-30追加）。記録自体が失敗しても
+    # この登録処理は失敗させない（_record_lot_status_snapshot_safely()参照）。
+    if record_history:
+        _record_lot_status_snapshot_safely(lot_no, "register")
+
     return get_app_cumulative_qty(kitting_list_no, lot_no)
 
 
 def overwrite_daily_result(kitting_list_no: str, lot_no: str, daily_qty: float, worker_id: str,
-                             report_date: str = None):
+                             report_date: str = None, record_history: bool = True):
     """
     同一kitting_list_no・lot_noの既存レコードを、report_dateを問わず全て削除した
     上で、新しい実績を登録し直す（delete-then-insert、「1計画=1レコード、常に
@@ -195,6 +240,9 @@ def overwrite_daily_result(kitting_list_no: str, lot_no: str, daily_qty: float, 
     引き継ぐ（該当行が無い場合のみ今日にフォールバックする、詳細は
     replace_daily_result()のdocstring参照）。
     戻り値：更新後のアプリ内累計
+
+    record_history：register_daily_result()と同じ（デフォルトTrueで即座に記録、
+    Falseでスキップ）。理由・使い方もregister_daily_result()のdocstring参照。
     """
     plan = find_plan_item_by_kitting_no(kitting_list_no, lot_no)
     if not plan:
@@ -210,11 +258,16 @@ def overwrite_daily_result(kitting_list_no: str, lot_no: str, daily_qty: float, 
         worker_id=worker_id,
     )
 
+    # register_daily_result()と同じ理由でlot_status_historyへ記録する
+    # （2026-09-30追加）。
+    if record_history:
+        _record_lot_status_snapshot_safely(lot_no, "overwrite")
+
     return get_app_cumulative_qty(kitting_list_no, lot_no)
 
 
 def register_opposite_side_daily_result(plan: dict, daily_qty: float, worker_id: str,
-                                          report_date: str = None):
+                                          report_date: str = None, record_history: bool = True):
     """
     plan（"kitting_list_no"・"lot_no"・"setup_file_no"・"production_side"・
     "plan_start_datetime" を含む計画dict。ui.kitting_production_entry の
@@ -238,6 +291,13 @@ def register_opposite_side_daily_result(plan: dict, daily_qty: float, worker_id:
     伝播する。呼び出し元（元の面の登録は既に成功している）は、この例外によって
     元の面の登録結果を取り消す必要はない（呼び出し元の責任で、必要に応じて
     try/exceptで囲むこと）。
+
+    record_history：register_daily_result()/overwrite_daily_result()へそのまま
+    渡す（デフォルトTrueで既存の呼び出し元の挙動は変わらない。2026-09-30追加、
+    ui.kitting_production_entry.KittingProductionEntryWindow._perform_
+    registration()がFalseを渡した場合、反対側への登録でもlot_status_historyへの
+    即時記録をスキップする。反対側は常に主たる面と同一lot_noのため、呼び出し元が
+    まとめて記録する対象からこの反対側分が漏れることはない）。
     """
     side = str(plan.get("production_side") or "").strip()
     if side not in ("1", "2"):
@@ -255,10 +315,13 @@ def register_opposite_side_daily_result(plan: dict, daily_qty: float, worker_id:
     try:
         register_daily_result(
             opposite_kitting_no, opposite_lot_no, daily_qty, worker_id,
-            report_date=report_date, check_duplicate=True,
+            report_date=report_date, check_duplicate=True, record_history=record_history,
         )
     except DailyResultAlreadyExists:
-        overwrite_daily_result(opposite_kitting_no, opposite_lot_no, daily_qty, worker_id, report_date=report_date)
+        overwrite_daily_result(
+            opposite_kitting_no, opposite_lot_no, daily_qty, worker_id, report_date=report_date,
+            record_history=record_history,
+        )
     return True
 
 
@@ -277,15 +340,35 @@ def get_daily_history(kitting_list_no: str, lot_no: str, report_date: str = None
 def update_daily_result(prod_log_id: int, daily_qty: float):
     """
     実績1件（prod_log_id指定）のdaily_qtyを修正する。
+
+    lot_status_historyへの記録（2026-09-30追加）：本関数はprod_log_idしか
+    受け取らないため、lot_no特定のためにUPDATE実行前に対象行を一度SELECTして
+    おく（UPDATE自体はdaily_qtyしか変更せずkitting_list_no・lot_idは変わらない
+    ため、UPDATE前後どちらで取得しても値自体は同じだが、対象行が万一既に
+    削除されていた場合（同時実行等）でも「行が見つからない」ことを検出できる
+    よう、実行前に取得する）。対象行が見つからない場合は、更新自体は従来通り
+    実行した上で、履歴記録はスキップする（UPDATE文自体は対象0件でもエラーには
+    ならないため、この場合のUPDATEは実質何もしない）。
     """
+    row = get_production_daily_by_id(prod_log_id)
     update_daily_production(prod_log_id, daily_qty)
+    if row is not None:
+        _record_lot_status_snapshot_safely(row["lot_id"], "update")
 
 
 def delete_daily_result(prod_log_id: int):
     """
     実績1件（prod_log_id指定）を削除する。
+
+    lot_status_historyへの記録（2026-09-30追加）：DELETE実行後には対象行が
+    無くなり参照できなくなるため、lot_no特定のため必ずDELETEの前に対象行を
+    SELECTしておく。対象行が見つからない場合（既に削除済み等）は、削除処理・
+    履歴記録のいずれもスキップする。
     """
+    row = get_production_daily_by_id(prod_log_id)
     delete_daily_production(prod_log_id)
+    if row is not None:
+        _record_lot_status_snapshot_safely(row["lot_id"], "delete")
 
 
 def _build_report_rows(records):
@@ -402,22 +485,33 @@ def _build_report_rows(records):
     _build_lot_status_remarks()参照）・"status_color_category"
     （"needs_review"|"shortfall"|None、_lot_status_color_category()参照）を
     追加した。文言・色分けの定義はこの2つの関数（services層）に一本化し、
-    ui.daily_report_window・ui.monthly_report_window・ui.lot_progress_window
-    の3画面はこの値をそのまま使う（画面ごとに文言・色を定義しない）。
+    ui.unified_report_window（2026-10-01に日報・月報を統合した実績レポート
+    画面、旧ui.daily_report_window.DailyReportWindow・ui.monthly_report_window.
+    MonthlyReportWindowを置き換えた）・ui.lot_progress_windowの各画面は
+    この値をそのまま使う（画面ごとに文言・色を定義しない）。
 
     戻り値：(report_rows, inconsistency_warnings, order_qty_inconsistency_warnings,
              unregistered_board_warnings, excess_file_no_warnings,
              board_count_inconsistency_warnings) のタプル。
       report_rows：[{"seq", "kitting_list_no", ..., "confirmation_note",
-                    "status_color_category"}, ...]（面1省略・構成基板数
-                    チェックの仮想行追加後、seqは表示される行のみで1から
-                    振り直す）
+                    "status_color_category", "status"（2026-10-01追加。
+                    "match"|"shortfall"|"excess"|"unregistered"|
+                    "board_count_inconsistent"|None（lot_eval自体が無い
+                    判定不能ケース）。ui.unified_report_window.pyの状態
+                    絞り込みで使う）, "has_ng"（2026-10-01追加。bool、
+                    scrap_records・ng_declarationsのいずれかにこの
+                    (kitting_list_no, lot_no, production_side)の実績・申告が
+                    あればTrue。「未確定」仮想行は常にFalse）, "report_date"
+                    （2026-10-01追加。rec（production_daily）のreport_dateを
+                    そのまま保持。「未確定」仮想行は元レコードが無いためNone）}, ...]
+                    （面1省略・構成基板数チェックの仮想行追加後、seqは
+                    表示される行のみで1から振り直す）
       inconsistency_warnings：[{"lot_no", "setup_file_no", "side1_kitting_list_no",
                                  "side1_qty", "side2_kitting_list_no", "side2_qty"}, ...]
       order_qty_inconsistency_warnings：[{"lot_no", "order_qty_values"}, ...]
       unregistered_board_warnings：[{"lot_no", "board_name", "file_nos"}, ...]
                                     （file_nosはロット全体・面1省略後のdistinct
-                                    file_no一覧、ui.monthly_report_window.py
+                                    file_no一覧、ui.unified_report_window.py
                                     のCSV出力機能で使用）
       excess_file_no_warnings：[{"lot_no", "board_name", "board_count", "file_nos"}, ...]
       board_count_inconsistency_warnings：[{"lot_no", "board_name", "board_count",
@@ -438,6 +532,12 @@ def _build_report_rows(records):
             "plan": plan,
             "daily_qty": rec["daily_qty"],
             "lot_no": lot_no or (plan["lot_no"] if plan else ""),
+            # 登録日（2026-10-01追加）。rec（production_daily）自身が持つ
+            # report_dateをそのまま保持する。本関数の行はkitting_list_no単位
+            # （＝production_dailyの1レコード単位）であり、複数バッチの
+            # report_dateを1行に集約する必要はない（build_wip_extraction_rows()
+            # の_pick_representative_plan_item()のような代表選定は不要）。
+            "report_date": rec["report_date"],
         })
 
     excluded_indices = set()
@@ -471,6 +571,21 @@ def _build_report_rows(records):
             })
 
         excluded_indices.add(idx)
+
+    # NG（仕損）の有無の事前一括取得（2026-10-01追加、ui.unified_report_window.py
+    # の「NGの有無」絞り込み用）。(kitting_list_no, lot_no, production_side)を
+    # キーに、仕損展開実績（scrap_records、record_count>0）またはNG申告
+    # （ng_declarations、ng_qty>0）のいずれかが存在する組の集合を作る
+    # （ui.ng_input_window._fetch_ng_list_rows()と同じ「申告 ∪ 展開済み」の
+    # 考え方。本関数の行単位でO(1)判定できるよう事前にsetへまとめておき、
+    # 行数分のN+1クエリを避ける）。
+    ng_exists_keys = {
+        (s["kitting_list_no"], s["lot_no"] or "", str(s["production_side"]))
+        for s in list_scrap_summary_by_kitting_no() if s["record_count"] > 0
+    } | {
+        (d["kitting_list_no"], d["lot_no"] or "", str(d["production_side"]))
+        for d in list_ng_declarations_latest() if (d["ng_qty"] or 0) > 0
+    }
 
     report_rows = []
     seq = 1
@@ -515,6 +630,9 @@ def _build_report_rows(records):
             confirmation_note = ""
             status_color_category = None
 
+        side_for_ng_key = plan["production_side"] if plan else None
+        has_ng = (kitting_list_no, lot_no or "", str(side_for_ng_key)) in ng_exists_keys
+
         report_rows.append({
             "seq": seq,
             "kitting_list_no": kitting_list_no,
@@ -531,6 +649,9 @@ def _build_report_rows(records):
             "lot_remaining": lot_remaining,
             "confirmation_note": confirmation_note,
             "status_color_category": status_color_category,
+            "status": lot_eval["status"] if lot_eval is not None else None,
+            "has_ng": has_ng,
+            "report_date": item["report_date"],
         })
         seq += 1
 
@@ -610,6 +731,14 @@ def _build_report_rows(records):
                     "lot_remaining": lot_eval["order_quantity"] - lot_eval["lot_completed"],
                     "confirmation_note": lot_eval["status_remarks"],
                     "status_color_category": lot_eval["status_color_category"],
+                    "status": status,
+                    # 「未確定」仮想行はkitting_list_no自体が存在しない（まだ
+                    # 計画・実績のどちらも無い）ため、NGの有無は判定しようが
+                    # なくFalse固定とする。
+                    "has_ng": False,
+                    # 元になるproduction_dailyレコードが存在しないため、
+                    # report_dateに相当する値も存在しない（2026-10-01追加）。
+                    "report_date": None,
                 })
                 seq += 1
 
@@ -1029,19 +1158,40 @@ def evaluate_lot_status(lot_no: str) -> dict:
 
 def list_incomplete_lots():
     """
-    distinctなlot_no全件について、ロット未完成数（lot_remaining_quantity、
-    calculate_lot_completion()と同じ計算式、内部的にも_compute_lot_completion()を
-    共有している）を算出し、0より大きい（＝未完了）ロットのみを一覧で返す
-    （DB間コピー機能の「未完了lot_noの抽出」用）。
+    distinctなlot_no全件について、_evaluate_lot_status()の判定結果を元に
+    未完了ロットのみを一覧で返す（DB間コピー機能の「未完了lot_noの抽出」用）。
 
-    calculate_lot_completion()をlot_no件数分ループ呼び出しするとN+1
-    （list_plan_items_by_lot()のSELECTがlot_no件数分発生）になるため、
-    models.production.get_app_cumulative_qty_bulk()による一括取得
-    （list_active_plan_items()で採用済みの高速化パターン）と同じ考え方で、
-    全lot_no分の計画行をmodels.kitting_plan.list_plan_items_for_all_lots()で
-    1回のSELECTにまとめて取得し、アプリ内累計もget_app_cumulative_qty_bulk()で
-    1回（〜数回）のバルククエリにまとめて取得した上で、Python側でlot_noごとに
-    グルーピングして_compute_lot_completion()に渡す。
+    2026-10-01、判定ロジックを_compute_lot_completion()直接呼び出しから
+    _evaluate_lot_status()経由に変更した。以前は
+    構成基板数チェックを一切行わない_compute_lot_completion()のremaining_
+    quantity（実績の素の最小値ベース）のみで未完了判定していたため、日報・
+    月報・仕掛数量抽出・ロット進捗チェックの4機能（いずれも_evaluate_lot_
+    status()に判定一本化済み）と食い違う結果になり得た。具体的には、構成
+    基板数不足（shortfall）のロットは、他の4機能ではlot_completed=0（引落
+    未確定）として扱われるにもかかわらず、本関数は実績が発注数に達して
+    いれば「完了」とみなし、引き継ぎ対象から誤って除外してしまう可能性が
+    あった（理論上のシナリオ。実データでの発生は確認していない）。
+
+    未完了とみなす条件（ユーザー確定の方針）：
+      - status=="shortfall"：引落が0扱いのため、remaining_quantityの値に
+        関わらず無条件で未完了とする。
+      - status=="match"：従来通りremaining_quantity（=order_quantity－
+        lot_completed）<= 0 かどうかで完了判定する（退行なし）。
+      - status in ("unregistered", "board_count_inconsistent", "excess")：
+        これらは構成基板数との整合性チェック自体が成立しない、または
+        自動補正を行わないため、_evaluate_lot_status()が従来通り実績
+        ベースの値をそのままlot_completedとして返す（以前確定した方針）。
+        その値でremaining_quantityを計算し、通常通り完了判定する。
+
+    calculate_lot_completion()・check_lot_progress()と同じ理由で、
+    lot_no件数分のN+1呼び出し（evaluate_lot_status()を都度呼ぶとlist_
+    plan_items_by_lot()がlot_no件数分発生する）を避けるため、全lot_no分の
+    計画行をlist_plan_items_for_all_lots()で1回のSELECTにまとめて取得し、
+    アプリ内累計もget_app_cumulative_qty_bulk()で一括取得した上で、
+    Python側でlot_noごとにグルーピングして_evaluate_lot_status()の内部
+    実装（_evaluate_lot_status()、plan_items・cumulative_by_pairを直接
+    受け取るバルク対応版）に渡す（check_lot_progress()と全く同じ
+    バルク取得パターン）。
 
     list_active_plan_items()は使わない：「1回目除外」ロジック（同一setup_file_no
     でproduction_side=2が存在する場合、対応するside=1を除外する）や完了済み
@@ -1054,8 +1204,14 @@ def list_incomplete_lots():
     戻り値：[{"lot_no", "kitting_list_nos"（そのlot_noに属するdistinctな
               kitting_list_noのソート済みリスト。DB間コピー時にどのkitting_list_no
               を対象にすればよいか把握するための情報）, "order_quantity",
-              "completed_quantity", "remaining_quantity"}, ...]
-             lot_no昇順。remaining_quantity > 0 の行のみを含む。
+              "completed_quantity"（_evaluate_lot_status()のlot_completed、
+              shortfallの場合は0）, "remaining_quantity",
+              "status"（2026-10-01追加。_evaluate_lot_status()の判定結果、
+              呼び出し元が未完了の理由を把握できるよう追加した新規キー。
+              carry_over_incomplete_lots()は既存の"lot_no"・
+              "kitting_list_nos"キーのみ参照しているため、このキー追加は
+              既存の呼び出し元に影響しない）}, ...]
+             lot_no昇順。
     """
     plan_items = list_plan_items_for_all_lots()
 
@@ -1070,17 +1226,27 @@ def list_incomplete_lots():
 
     results = []
     for lot_no, items in items_by_lot.items():
-        info = _compute_lot_completion(lot_no, items, cumulative_by_pair)
+        lot_eval = _evaluate_lot_status(lot_no, items, cumulative_by_pair)
+        status = lot_eval["status"]
+        order_quantity = lot_eval["order_quantity"]
+        completed_quantity = lot_eval["lot_completed"]
+        remaining_quantity = order_quantity - completed_quantity
 
-        if info["remaining_quantity"] <= 0:
+        if status == "shortfall":
+            is_incomplete = True  # 引落0扱いのため、remaining_quantityの値に関わらず無条件で未完了
+        else:
+            is_incomplete = remaining_quantity > 0
+
+        if not is_incomplete:
             continue
 
         results.append({
             "lot_no": lot_no,
             "kitting_list_nos": sorted({item["kitting_list_no"] for item in items}),
-            "order_quantity": info["order_quantity"],
-            "completed_quantity": info["completed_quantity"],
-            "remaining_quantity": info["remaining_quantity"],
+            "order_quantity": order_quantity,
+            "completed_quantity": completed_quantity,
+            "remaining_quantity": remaining_quantity,
+            "status": status,
         })
 
     results.sort(key=lambda r: r["lot_no"])
@@ -1165,7 +1331,7 @@ def build_wip_extraction_rows(lot_nos: list) -> list:
     指定されたlot_no一覧について、setup_file_no × production_side（面）単位の
     仕掛数量（= evaluate_lot_status()のfile_actuals[key] - lot_completed）を
     算出し、models.wip_board_snapshot.save_wip_snapshot()にそのまま渡せる
-    行のリストを返す（ui.monthly_report_window.MonthlyReportWindow.on_extract_wip()
+    行のリストを返す（ui.unified_report_window.UnifiedReportWindow.on_extract_wip()
     から呼ばれる）。
 
     2026-09-28、引落（lot_completed）の算出をevaluate_lot_status()経由に

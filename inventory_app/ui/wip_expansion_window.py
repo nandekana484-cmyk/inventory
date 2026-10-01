@@ -26,7 +26,8 @@ class WipExpansionWindow(tk.Toplevel):
     """
     仕掛（WIP）展開画面。
 
-    月報（ui/monthly_report_window.py）の「仕掛数量抽出」で保存された
+    実績レポート画面（ui/unified_report_window.py、旧ui/monthly_report_window.py。
+    2026-10-01に削除・統合済み）の「仕掛数量抽出」で保存された
     models.wip_board_snapshot（仕掛基板一覧のスナップショット）を右ペインに
     一覧表示し、行をダブルクリックするとその基板の仕掛数量分をBOM展開して
     左ペインに部品一覧を表示する（ui/ng_input_window.py の左右ペイン構成を

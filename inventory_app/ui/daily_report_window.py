@@ -1,13 +1,18 @@
 # ui/daily_report_window.py
-import csv
-import os
-import tempfile
-from datetime import datetime
+"""
+日報・月報で共通して使われるレポート表示・出力ロジック（Treeview描画・
+PDF出力・印刷プレビュー画面等）を提供するモジュール。
 
+旧DailyReportWindowクラス（日報画面本体）は、ui/unified_report_window.py::
+UnifiedReportWindow（日報・月報統合画面）への機能移植を確認した上で
+2026-10-01に削除した。本モジュールの共通関数・共通クラス（populate_report_tree・
+configure_lot_stripe_tags・configure_status_color_tags・_row_to_values・
+build_daily_report_pdf・REPORT_HEADERS・ReportPreviewWindow等）は、
+ui/unified_report_window.py・ui/wip_expansion_window.py等から引き続き
+importされているため、このファイル自体は削除せず残している。
+"""
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
-
-from tkcalendar import DateEntry
+from tkinter import ttk
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
@@ -17,25 +22,27 @@ from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 
-from services.production_service import build_daily_report, build_monthly_report
 from models.board_structure_master import get_board_structure
 
 JP_FONT = "HeiseiKakuGo-W5"
 registerFont(UnicodeCIDFont(JP_FONT))
 
 REPORT_HEADERS = ["No", "ファイルNo", "基板名", "構成基板数", "ロットNo", "生産数", "注文数",
-                   "引落数量", "仕掛数量", "未完了数", "確認事項"]
+                   "引落数量", "仕掛数量", "未完了数", "登録日", "確認事項"]
 
 # PDF出力（build_daily_report_pdf()）用の列幅（ポイント単位）・折り返し対象
-# 列インデックス（2026-09-28、「確認事項」列の追加に伴い新設）。A4縦・
-# 左右マージン15mmずつ（doc生成時の設定）での利用可能幅は約510pt
-# （595pt − 15mm×2枚 ≒ 595 − 85pt）。「確認事項」列（インデックス10、
-# REPORT_HEADERSの末尾）に長い文言が入っても他の列を圧迫してページ幅を
-# はみ出さないよう、他の列を切り詰めてこの列に幅を多めに配分している。
-# ui/monthly_report_window.pyもこの定数をそのままimportして使う（画面ごとに
+# 列インデックス（2026-09-28、「確認事項」列の追加に伴い新設。2026-10-01、
+# 「登録日」列（production_daily.report_date、インデックス10）を追加。
+# 末尾の「確認事項」はインデックス11に繰り下がった）。A4縦・左右マージン
+# 15mmずつ（doc生成時の設定）での利用可能幅は約510pt（595pt − 15mm×2枚
+# ≒ 595 − 85pt）。「登録日」追加分の幅は、基板名・確認事項の幅を切り詰めて
+# 確保した（他の列のレイアウトを変えないため合計は従来通り510pt以内に
+# 収めている）。
+# ui/unified_report_window.py（実績レポート画面、旧ui/monthly_report_window.py。
+# 2026-10-01に削除・統合済み）もこの定数をそのままimportして使う（画面ごとに
 # 別の値を定義しない）。
-PDF_COL_WIDTHS = [18, 42, 55, 38, 38, 30, 30, 34, 34, 34, 117]
-PDF_WRAP_COLUMN_INDICES = {10}  # 「確認事項」列のみ折り返す
+PDF_COL_WIDTHS = [18, 42, 50, 38, 38, 30, 30, 34, 34, 34, 55, 107]
+PDF_WRAP_COLUMN_INDICES = {11}  # 「確認事項」列のみ折り返す
 
 # ロット単位の縞模様表示（2026-09-26追加）で使うTreeviewタグ名・背景色。
 # 既存の警告色（赤・オレンジ・黄・緑等、生産実績入力画面等で使用）と衝突しない
@@ -153,6 +160,8 @@ def _row_to_values(row):
         row["seq"], row["file_no"], row["board_name"], _format_board_count(row["board_name"]), row["lot_no"],
         f"{row['daily_qty']:.0f}", f"{row['order_qty']:.0f}",
         f"{row['lot_completed']:.0f}", f"{row['surplus_qty']:.0f}", f"{row['lot_remaining']:.0f}",
+        # 登録日（report_date、2026-10-01追加）。「未確定」仮想行はNoneのため空欄にする。
+        row.get("report_date") or "",
         row.get("confirmation_note", ""),
     ]
 
@@ -251,7 +260,11 @@ class ReportPreviewWindow(tk.Toplevel):
     # はみ出す可能性がある。この点はPDF出力（Paragraphによる自動折り返し
     # 対応済み、build_daily_report_pdf()参照）と異なり、プレビュー画面固有の
     # 制約として残る。実際の見え方は目視確認が必要）。
-    COL_WIDTHS = [20, 50, 65, 50, 50, 35, 35, 40, 40, 40, 120]
+    # 2026-10-01、「登録日」列を追加（COL_HEADERS = REPORT_HEADERSが11→12要素に
+    # なったため、_draw_page()がcol_widthsをインデックス対応で使う都合上、
+    # 本リストも同じ要素数に揃える必要がある。揃えないとヘッダーと列幅が
+    # 1つずつずれる）。基板名・確認事項の幅を切り詰めて確保した。
+    COL_WIDTHS = [20, 50, 55, 45, 50, 35, 35, 40, 40, 40, 60, 85]
 
     def __init__(self, parent, report_rows, report_date, title_prefix="日報",
                  headers=None, col_widths=None, row_to_values=None):
@@ -330,188 +343,3 @@ class ReportPreviewWindow(tk.Toplevel):
             text=f"ページ {page_no} / {total_pages}", font=("Helvetica", 9),
         )
 
-
-class DailyReportWindow(tk.Toplevel):
-    """
-    本日入力された生産実績を一覧表示し、印刷プレビュー・印刷・PDF出力・CSV出力を行うウィンドウ。
-    """
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.report_date = datetime.now().strftime("%Y-%m-%d")
-        # inconsistency_warnings（面1・面2の実績不整合）は月報画面（ui/monthly_report_window.py）
-        # 側でのみ警告表示する（要求スコープ）。日報側はタプルを正しく受け取り
-        # 保持するに留める。
-        # order_qty_inconsistency_warnings・unregistered_board_warnings
-        # （2026-09-26追加）は月報限定の警告のため（面1/面2不整合警告と同じ
-        # 既存方針）、日報側では受け取るのみでダイアログ表示等は行わない。
-        self.report_rows, self.inconsistency_warnings, _, _, _, _ = build_daily_report()
-
-        self.title(f"日報出力（{self.report_date}）")
-        self.geometry("1020x500")
-
-        date_frame = ttk.Frame(self, padding=10)
-        date_frame.pack(fill=tk.X)
-
-        ttk.Label(date_frame, text="対象日：").pack(side=tk.LEFT, padx=5)
-        self.date_entry = DateEntry(date_frame, date_pattern="yyyy-mm-dd", width=12, locale="ja_JP")
-        self.date_entry.pack(side=tk.LEFT, padx=5)
-
-        ttk.Button(date_frame, text="表示", command=self.on_display).pack(side=tk.LEFT, padx=10)
-
-        tree_frame = ttk.Frame(self, padding=10)
-        tree_frame.pack(expand=True, fill=tk.BOTH)
-
-        cols = ("seq", "file_no", "board_name", "board_count", "lot_no", "daily_qty", "order_qty",
-                "lot_completed", "surplus_qty", "lot_remaining")
-        headers = dict(zip(cols, REPORT_HEADERS))
-        widths = {
-            "seq": 50, "file_no": 100, "board_name": 160, "board_count": 80, "lot_no": 110,
-            "daily_qty": 80, "order_qty": 80,
-            "lot_completed": 80, "surplus_qty": 80, "lot_remaining": 80,
-        }
-        left_aligned = {"file_no", "board_name", "board_count", "lot_no"}
-
-        self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings")
-        for c in cols:
-            self.tree.heading(c, text=headers[c])
-            self.tree.column(c, width=widths[c], anchor=tk.W if c in left_aligned else tk.E)
-        self.tree.pack(expand=True, fill=tk.BOTH)
-        self.tree.bind("<Double-1>", self.on_row_double_click)
-        configure_lot_stripe_tags(self.tree)
-
-        populate_report_tree(self.tree, self.report_rows)
-
-        btn_frame = ttk.Frame(self, padding=10)
-        btn_frame.pack(fill=tk.X)
-
-        ttk.Button(btn_frame, text="印刷プレビュー", command=self.on_preview).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="印刷", command=self.on_print).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="PDF出力", command=self.on_export_pdf).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="CSV出力", command=self.on_export_csv).pack(side=tk.LEFT, padx=5)
-
-    def on_display(self):
-        selected_date = self.date_entry.get()
-
-        try:
-            self.report_rows, self.inconsistency_warnings, _, _, _, _ = build_monthly_report(selected_date, selected_date)
-        except Exception as e:
-            messagebox.showerror("エラー", f"集計に失敗しました：{e}", parent=self.winfo_toplevel())
-            return
-
-        self.report_date = selected_date
-        self.title(f"日報出力（{self.report_date}）")
-
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-        populate_report_tree(self.tree, self.report_rows)
-
-    def on_row_double_click(self, event):
-        """
-        選択行に対応する実績（kitting_list_no・lot_no）を実績修正ウインドウ
-        （ui.kitting_production_entry.ActualCorrectionWindow）で開く。
-        完了済み（生産実績入力画面の一覧からは除外済み）の計画でも、
-        production_daily に実績が残っている限りここから修正できる。
-        循環import回避のため、ここで都度importする。
-        """
-        sel = self.tree.selection()
-        if not sel:
-            return
-        index = self.tree.index(sel[0])
-        if index >= len(self.report_rows):
-            return
-        row = self.report_rows[index]
-        kitting_list_no = row["kitting_list_no"]
-        if not kitting_list_no:
-            return
-
-        from ui.kitting_production_entry import ActualCorrectionWindow
-        ActualCorrectionWindow(
-            self,
-            kitting_list_no=kitting_list_no,
-            lot_no=row["lot_no"],
-            on_updated=self.refresh_report,
-        )
-
-    def refresh_report(self):
-        """実績修正後に日報の一覧を再取得して表示を更新する。"""
-        self.report_rows, self.inconsistency_warnings, _, _, _, _ = build_monthly_report(self.report_date, self.report_date)
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-        populate_report_tree(self.tree, self.report_rows)
-
-    def on_preview(self):
-        ReportPreviewWindow(self, self.report_rows, self.report_date)
-
-    def on_print(self):
-        if not self.report_rows:
-            messagebox.showwarning("警告", "本日の実績データがありません。", parent=self.winfo_toplevel())
-            return
-
-        tmp_path = os.path.join(
-            tempfile.gettempdir(), f"daily_report_{self.report_date.replace('-', '')}_print.pdf"
-        )
-        try:
-            build_daily_report_pdf(
-                self.report_rows, self.report_date, tmp_path,
-                col_widths=PDF_COL_WIDTHS, wrap_column_indices=PDF_WRAP_COLUMN_INDICES,
-            )
-        except Exception as e:
-            messagebox.showerror("エラー", f"PDF生成に失敗しました：{e}", parent=self.winfo_toplevel())
-            return
-
-        try:
-            os.startfile(tmp_path, "print")
-        except Exception as e:
-            messagebox.showerror("エラー", f"印刷の起動に失敗しました：{e}", parent=self.winfo_toplevel())
-            return
-
-        messagebox.showinfo("印刷", "OS標準の印刷ダイアログを開きました。", parent=self.winfo_toplevel())
-
-    def on_export_pdf(self):
-        if not self.report_rows:
-            messagebox.showwarning("警告", "本日の実績データがありません。", parent=self.winfo_toplevel())
-            return
-
-        default_name = f"daily_report_{self.report_date.replace('-', '')}.pdf"
-        save_path = filedialog.asksaveasfilename(
-            defaultextension=".pdf", initialfile=default_name,
-            filetypes=[("PDF files", "*.pdf")],
-        parent=self.winfo_toplevel())
-        if not save_path:
-            return
-
-        try:
-            build_daily_report_pdf(
-                self.report_rows, self.report_date, save_path,
-                col_widths=PDF_COL_WIDTHS, wrap_column_indices=PDF_WRAP_COLUMN_INDICES,
-            )
-        except Exception as e:
-            messagebox.showerror("エラー", f"PDF出力に失敗しました：{e}", parent=self.winfo_toplevel())
-            return
-
-        messagebox.showinfo("完了", f"PDFを保存しました：\n{save_path}", parent=self.winfo_toplevel())
-
-    def on_export_csv(self):
-        if not self.report_rows:
-            messagebox.showwarning("警告", "本日の実績データがありません。", parent=self.winfo_toplevel())
-            return
-
-        default_name = f"daily_report_{self.report_date.replace('-', '')}.csv"
-        save_path = filedialog.asksaveasfilename(
-            defaultextension=".csv", initialfile=default_name,
-            filetypes=[("CSV files", "*.csv")],
-        parent=self.winfo_toplevel())
-        if not save_path:
-            return
-
-        try:
-            with open(save_path, "w", newline="", encoding="utf-8-sig") as f:
-                writer = csv.writer(f)
-                writer.writerow(REPORT_HEADERS)
-                for row in self.report_rows:
-                    writer.writerow(_row_to_values(row))
-        except Exception as e:
-            messagebox.showerror("エラー", f"CSV出力に失敗しました：{e}", parent=self.winfo_toplevel())
-            return
-
-        messagebox.showinfo("完了", f"CSVを保存しました：\n{save_path}", parent=self.winfo_toplevel())

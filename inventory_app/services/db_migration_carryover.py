@@ -11,7 +11,12 @@ list_incomplete_lots()）を旧DBから新DBへ引き継ぐ処理。
     必要なため）。
   - コピーしない：scrap_records・ng_declarations（NG履歴・監査証跡）、
     wip_board_snapshot（ある時点のスナップショットのため、DBをまたいで
-    持ち越す性質のものではない）。
+    持ち越す性質のものではない）、wip_scrap_records（仕掛の仕損展開実績。
+    wip_board_snapshotと同じく、ある時点のスナップショットに対する
+    追加実績という性質のため、スナップショット本体を持ち越さない以上、
+    その実績記録だけを単独で持ち越す意味が無い。2026-10-01、記載漏れを
+    解消。従来からコード上はコピー対象外だったが、本docstringの列挙に
+    テーブル名自体が記載されていなかった）。
 
 config.DB_PATHの扱いについて：
 本モジュールの各関数はモデル層（models.kitting_plan / models.production /
@@ -25,6 +30,7 @@ config.DB_PATH（アプリ全体で共有されるグローバルな「現在の
 呼び出し元が事前にinit_database_at()で作成済みであり、それが以後アプリの
 「現在のDB」になるべきだから）。
 """
+import logging
 import os
 from datetime import datetime
 
@@ -34,9 +40,12 @@ from models.kitting_plan import (
     init_kitting_plan_tables,
 )
 from models.production import (
-    get_connection as get_production_connection, replace_daily_result, init_production_table,
+    get_connection as get_production_connection, replace_daily_result,
 )
+from models.lot_status_history import record_lot_status_snapshot
 from services.production_service import list_incomplete_lots
+
+logger = logging.getLogger(__name__)
 
 # plan_start_datetimeの実データ形式（"YYYY/MM/DD HH:MM:SS"、スラッシュ区切り＋時刻付き。
 # UI_WORKFLOW_FIXES_NOTES.md/PRODUCTION_NG_ENHANCEMENTS_NOTES.md等で既出のkitting_plan_items
@@ -46,6 +55,16 @@ _PLAN_START_DATETIME_FORMAT = "%Y/%m/%d %H:%M:%S"
 # ロットNo重複疑いと判定する経過日数のしきい値（約1年。うるう年を厳密には考慮しない、
 # 「実装しやすい方針」としての単純な日数比較）。
 _LOT_NO_DUPLICATE_THRESHOLD_DAYS = 365
+
+# 「未着手」（旧DB側production_dailyに実績が1件も無い）計画を引き継ぐかどうかの
+# 判定に使う、plan_start_datetime（実装予定日）の上限日数（2026-10-01追加）。
+# 引継ぎ日（carry_over_incomplete_lots()実行日）からこの日数より先の実装予定日を
+# 持つ未着手計画は、新DBへ持ち越さない（まだ先の話で、当面のDBでは不要な計画
+# データが無制限に積み上がることを避けるため）。既に実績がある計画（＝着手済み）
+# には、この上限を適用しない（ロット単位で引き継ぐ以上、着手済みの計画は
+# plan_start_datetimeに関わらず常に引き継ぐ。下記_filter_plan_items_for_
+# migration()参照）。
+_UNSTARTED_PLAN_UPCOMING_LIMIT_DAYS = 50
 
 
 def _parse_plan_start_datetime(value):
@@ -194,10 +213,17 @@ def _lot_already_migrated(lot_no: str, plan_items: list, production_rows: list) 
         return False
 
     # 新DBがまだ一度もcreate_plan_batch()等を呼ばれていない真っさらな状態だと
-    # kitting_plan_items／production_dailyテーブル自体が存在しないため、
+    # kitting_plan_itemsテーブル自体が存在しないため、
     # _fetch_existing_plan_start_datetimes_for_lot()と同様に事前に存在を保証する。
+    # production_dailyについては、本関数の呼び出し前提（carry_over_incomplete_
+    # lots()のdocstring参照）として、呼び出し元が事前にinit_database_at()で
+    # schema.sql一式（production_daily含む）を作成済みであるため、ここで
+    # 改めて存在を保証する必要は無い（2026-10-01、production_records廃止に伴い
+    # init_production_table()の呼び出しを削除。この呼び出しは元々
+    # production_records（廃止済みの別テーブル）を作成するだけで、
+    # production_dailyの存在を保証してはいなかった。コメントの記載が
+    # 誤っていたため、合わせて修正した）。
     init_kitting_plan_tables()
-    init_production_table()
 
     with get_plan_connection() as con:
         for item in plan_items:
@@ -247,7 +273,78 @@ def _fetch_production_daily_for_lot(lot_no: str, kitting_list_nos: list) -> list
         return [dict(row) for row in cur.fetchall()]
 
 
-def carry_over_incomplete_lots(old_db_path: str, new_db_path: str, imported_by: str = "carry_over") -> dict:
+def _filter_plan_items_for_migration(plan_items: list, production_rows: list, reference_date) -> dict:
+    """
+    ロット単位で引き継ぐplan_items（_fetch_plan_items_for_lot()の結果、
+    そのlot_noに属する全kitting_list_noの計画行）のうち、実際にコピーする
+    行を選別する（2026-10-01追加）。
+
+    方針（ユーザー確定）：
+      - 既に実績がある（production_rowsにそのkitting_list_noの行が1件以上
+        存在する）計画は、着手済みとみなし、plan_start_datetimeに関わらず
+        常に含める（ロット単位で引き継ぐという方針により、同一ロットの
+        完了済みfile_noを除外しないのと同じ考え方）。
+      - 実績が1件も無い（未着手の）計画は、plan_start_datetimeをパースし、
+        reference_date（引継ぎ日、通常は本関数呼び出し時点の日付）からの
+        日数差が_UNSTARTED_PLAN_UPCOMING_LIMIT_DAYS（50日）以内であれば
+        含める。50日より先（未来）の場合は除外する。過去日付（既に予定日を
+        過ぎているのにまだ未着手）は日数差が負になるため、50日以内の条件を
+        満たし、常に含まれる（却って優先して引き継ぐべき対象のため、これは
+        意図した挙動）。
+      - plan_start_datetimeが空・パース不能（形式不正）な未着手計画は、
+        「安全側」の扱いとして**除外せず含める**。理由：50日上限の目的は
+        「先の話でまだ不要な計画データが無制限に積み上がるのを防ぐ」ことで
+        あり、判定不能なデータを誤って除外すると、実は近日中に着手予定
+        だった計画が新DBから silently 失われるリスクがある（本来の計画・
+        実績データが1行も新DB側に存在しなくなり、後から気づいて復旧する
+        手段が無い）。一方、誤って含めてしまっても、実害は「本来除外したい
+        計画が1件余分に残る」という软らかい失敗で済み、人が後から
+        気づいて対処できる。_check_lot_no_duplicate()が判定不能を「重複で
+        ない」と断定せず警告に残す方針と同じ、「データを自動的に失わない」
+        という本アプリ全体の既存方針に揃えた。この判定不能だった行は
+        戻り値のundetermined_kitting_list_nosに記録し、呼び出し元
+        （carry_over_incomplete_lots()）がsummaryに集約する。
+
+    戻り値：{"included_items": [plan_itemの辞書, ...]（コピー対象）,
+             "excluded_kitting_list_nos": [str, ...]（50日超過で除外した
+             未着手計画のkitting_list_no一覧）,
+             "undetermined_kitting_list_nos": [str, ...]（plan_start_datetime
+             が判定不能だったため、安全側で含めた未着手計画のkitting_list_no
+             一覧）}
+    """
+    kitting_list_nos_with_actual = {row["kitting_list_no"] for row in production_rows}
+
+    included_items = []
+    excluded_kitting_list_nos = []
+    undetermined_kitting_list_nos = []
+
+    for item in plan_items:
+        kitting_list_no = item["kitting_list_no"]
+        if kitting_list_no in kitting_list_nos_with_actual:
+            included_items.append(item)  # 着手済み：常に含める
+            continue
+
+        parsed = _parse_plan_start_datetime(item.get("plan_start_datetime"))
+        if parsed is None:
+            included_items.append(item)  # 判定不能：安全側で含める
+            undetermined_kitting_list_nos.append(kitting_list_no)
+            continue
+
+        days_ahead = (parsed.date() - reference_date).days
+        if days_ahead <= _UNSTARTED_PLAN_UPCOMING_LIMIT_DAYS:
+            included_items.append(item)
+        else:
+            excluded_kitting_list_nos.append(kitting_list_no)
+
+    return {
+        "included_items": included_items,
+        "excluded_kitting_list_nos": excluded_kitting_list_nos,
+        "undetermined_kitting_list_nos": undetermined_kitting_list_nos,
+    }
+
+
+def carry_over_incomplete_lots(old_db_path: str, new_db_path: str, imported_by: str = "carry_over",
+                                reference_date=None) -> dict:
     """
     旧DB（old_db_path）の未完了ロット（list_incomplete_lots()、
     lot_remaining_quantity > 0）を、新DB（new_db_path）へコピーする。
@@ -290,8 +387,8 @@ def carry_over_incomplete_lots(old_db_path: str, new_db_path: str, imported_by: 
     として合算してしまう）への注意喚起であり、コピー処理自体を止めるものではない
     （検知しても引き継ぎは通常通り続行する）。
 
-    scrap_records・ng_declarations・wip_board_snapshotはコピーしない
-    （モジュールdocstring参照）。
+    scrap_records・ng_declarations・wip_board_snapshot・wip_scrap_recordsは
+    コピーしない（モジュールdocstring参照）。
 
     途中でのエラー・再実行について：
     lot_noごとの書き込み処理は個別にtry/exceptで捕捉する。あるlot_noの処理中に
@@ -313,6 +410,29 @@ def carry_over_incomplete_lots(old_db_path: str, new_db_path: str, imported_by: 
     再コピーを避けるためにここで事前にスキップする）。前回失敗した/未着手だった
     lotは通常通り処理される。
 
+    未着手計画の50日上限（2026-10-01追加、_filter_plan_items_for_migration()
+    参照）：実績が1件も無い（旧DB側production_dailyに行が無い）計画は、
+    plan_start_datetime（実装予定日）がreference_date（引継ぎ日、省略時は
+    本関数呼び出し時点の日付）から_UNSTARTED_PLAN_UPCOMING_LIMIT_DAYS
+    （50日）以内のものだけをコピー対象とする。既に実績がある計画は、
+    ロット単位で引き継ぐ方針（下記）により、この上限を適用せず常にコピーする。
+    この絞り込みは、lot_noごとの処理ループの先頭（_lot_already_migrated()の
+    判定より前）で行う：除外された計画は新DB側に存在しないのが正しい状態
+    のため、"既に完了済みかどうか"の判定（_lot_already_migrated()）も、
+    絞り込み後の対象行だけを見て行う必要がある（絞り込み前の全plan_itemsで
+    判定すると、除外した行が新DB側に存在しないことを理由に「未完了（前回
+    失敗した）」と誤判定され、スキップされず毎回無駄に再処理されてしまう）。
+
+    引き継ぎ単位のロット統一（2026-10-01、調査により既存実装で対応済みと
+    確認。念のため明記）：_fetch_plan_items_for_lot()はlot_no単位の全
+    アクティブ計画行を無条件に取得し、_fetch_production_daily_for_lot()も
+    そのlot_noの全kitting_list_noに対応する実績を取得するため、完了済み・
+    未完了を問わずロット全体が単位としてコピーされる（ファイルNo単位で
+    個別に完了判定して間引く処理は行っていない）。50日上限によるフィルタ
+    （上記）は、この「ロット全体を単位とする」方針とは独立した、未着手計画
+    固有の別軸の絞り込みである（着手済みの計画はロットの一部であれば
+    常にコピーされ、50日を超えていても除外されない）。
+
     戻り値：{
         "lots_copied": int,                  # 今回の呼び出しで新規にコピーしたlot_no件数
         "kitting_plan_items_copied": int,    # 今回コピーしたkitting_plan_items行数
@@ -329,8 +449,28 @@ def carry_over_incomplete_lots(old_db_path: str, new_db_path: str, imported_by: 
              "existing_plan_start_datetime": str または None},
             ...
         ],
+        "excluded_unstarted_items": [         # 2026-10-01追加。50日超過のため
+                                               # 除外した未着手計画
+            {"lot_no": str, "kitting_list_no": str, "plan_start_datetime": str},
+            ...
+        ],
+        "undetermined_plan_start_datetime_items": [  # 2026-10-01追加。
+                                               # plan_start_datetimeが判定不能
+                                               # だったため安全側で含めた未着手計画
+            {"lot_no": str, "kitting_list_no": str},
+            ...
+        ],
+        "lots_with_no_items_to_copy": [lot_no, ...],  # 2026-10-01追加。
+                                               # 全ての計画が50日超過で除外され、
+                                               # 結果的に今回コピー対象の計画が
+                                               # 1件も残らなかったlot_no
+                                               # （lot_nos・skipped_lot_nos・
+                                               # failed_lot_nosのいずれにも
+                                               # 含まれない）
     }
     """
+    reference_date = reference_date or datetime.now().date()
+
     try:
         config.set_db_path(old_db_path)
         incomplete_lots = list_incomplete_lots()
@@ -354,6 +494,9 @@ def carry_over_incomplete_lots(old_db_path: str, new_db_path: str, imported_by: 
         "skipped_lot_nos": [],
         "failed_lot_nos": [],
         "duplicate_lot_warnings": [],
+        "excluded_unstarted_items": [],
+        "undetermined_plan_start_datetime_items": [],
+        "lots_with_no_items_to_copy": [],
     }
 
     source_label = f"carry_over:{os.path.basename(os.path.dirname(old_db_path)) or old_db_path}"
@@ -361,22 +504,45 @@ def carry_over_incomplete_lots(old_db_path: str, new_db_path: str, imported_by: 
     for idx, (lot, plan_items, production_rows) in enumerate(lots_data):
         lot_no = lot["lot_no"]
         try:
-            if _lot_already_migrated(lot_no, plan_items, production_rows):
+            filter_result = _filter_plan_items_for_migration(plan_items, production_rows, reference_date)
+            included_items = filter_result["included_items"]
+
+            for kitting_list_no in filter_result["excluded_kitting_list_nos"]:
+                original_item = next(i for i in plan_items if i["kitting_list_no"] == kitting_list_no)
+                summary["excluded_unstarted_items"].append({
+                    "lot_no": lot_no,
+                    "kitting_list_no": kitting_list_no,
+                    "plan_start_datetime": original_item.get("plan_start_datetime"),
+                })
+            for kitting_list_no in filter_result["undetermined_kitting_list_nos"]:
+                summary["undetermined_plan_start_datetime_items"].append({
+                    "lot_no": lot_no, "kitting_list_no": kitting_list_no,
+                })
+
+            if not included_items:
+                # このlot_noに属する計画が全て50日超過の未着手計画だった場合、
+                # 今回は引き継ぎ対象外とする（skipped_lot_nosは「前回までに
+                # 完了済み」の意味のため使わない。failed_lot_nosもエラーでは
+                # ないため使わない）。
+                summary["lots_with_no_items_to_copy"].append(lot_no)
+                continue
+
+            if _lot_already_migrated(lot_no, included_items, production_rows):
                 summary["skipped_lot_nos"].append(lot_no)
                 continue
 
             # create_plan_version()で新DBへ書き込む前に、新DB側の既存状態に対して
             # ロットNo重複チェックを行う（このlot自身の書き込みで状態が変わる前に
             # 確認する必要があるため、create_plan_batch()より前で行う）。
-            old_plan_start_datetimes = [item.get("plan_start_datetime") for item in plan_items]
+            old_plan_start_datetimes = [item.get("plan_start_datetime") for item in included_items]
             duplicate_check = _check_lot_no_duplicate(lot_no, old_plan_start_datetimes)
             if duplicate_check is not None:
                 summary["duplicate_lot_warnings"].append({"lot_no": lot_no, **duplicate_check})
 
-            batch_id = create_plan_batch(source_label, imported_by, len(plan_items))
+            batch_id = create_plan_batch(source_label, imported_by, len(included_items))
 
             kitting_list_no_to_new_plan_item_id = {}
-            for item in plan_items:
+            for item in included_items:
                 new_plan_item_id = create_plan_version(
                     batch_id, item["kitting_list_no"], dict(item), created_by=item.get("created_by"),
                 )
@@ -390,6 +556,22 @@ def carry_over_incomplete_lots(old_db_path: str, new_db_path: str, imported_by: 
                     row["report_date"], row["daily_qty"], row["worker_id"],
                 )
                 summary["production_daily_copied"] += 1
+
+            # このlot_noの計画・実績が新DB側へ全てコピーされた時点で、
+            # lot_status_historyへ状態スナップショットを記録する（2026-09-30
+            # 追加）。config.DB_PATHは既にnew_db_pathへ切り替わっているため
+            # （このtryブロックの外側、読み取りフェーズ直後のfinallyで切替済み）、
+            # evaluate_lot_status()は新DB側の内容を見て計算する。記録の失敗は
+            # 引き継ぎ処理自体を失敗させない（services.production_service.
+            # register_daily_result()等と同じ方針）。
+            try:
+                record_lot_status_snapshot(lot_no, "carryover")
+            except Exception:
+                logger.exception(
+                    "lot_status_historyの記録に失敗しました（lot_no=%s, "
+                    "trigger_source=carryover）。引き継ぎ処理自体はそのまま続行します。",
+                    lot_no,
+                )
 
             summary["lots_copied"] += 1
             summary["lot_nos"].append(lot_no)

@@ -4,61 +4,6 @@ from models.db_common import get_connection
 
 
 # =====================================================
-# 旧：基板グループ単位の簡易生産実績（production_records）
-# ※廃止予定。新規実装では使用しないこと。
-# =====================================================
-
-def init_production_table():
-    """生産実績テーブルの初期化（計画数と実績数を持つ）"""
-    with get_connection() as con:
-        cur = con.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS production_records (
-                record_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                production_date TEXT NOT NULL,
-                board_group_id TEXT NOT NULL,
-                plan_qty REAL DEFAULT 0,
-                qty REAL DEFAULT 0,
-                worker_id TEXT,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(production_date, board_group_id)
-            )
-        """)
-        con.commit()
-
-
-def get_daily_production(target_date: str):
-    """指定日の生産計画・実績一覧を取得"""
-    init_production_table()
-    with get_connection() as con:
-        cur = con.cursor()
-        cur.execute("""
-            SELECT record_id, board_group_id, plan_qty, qty, worker_id
-            FROM production_records
-            WHERE production_date = ?
-            ORDER BY board_group_id
-        """, (target_date,))
-        return [dict(row) for row in cur.fetchall()]
-
-
-def upsert_production_record(p_date: str, group_id: str, plan_qty: float, actual_qty: float, worker_id: str):
-    """生産計画・実績の保存または更新"""
-    init_production_table()
-    with get_connection() as con:
-        cur = con.cursor()
-        cur.execute("""
-            INSERT INTO production_records (production_date, board_group_id, plan_qty, qty, worker_id)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(production_date, board_group_id) DO UPDATE SET
-                plan_qty = excluded.plan_qty,
-                qty = excluded.qty,
-                worker_id = excluded.worker_id,
-                updated_at = CURRENT_TIMESTAMP
-        """, (p_date, group_id, plan_qty, actual_qty, worker_id))
-        con.commit()
-
-
-# =====================================================
 # 新：キッティングリストNo.紐付き日次生産実績（production_daily）
 # ※production_dailyテーブル本体はdb/schema.sqlで作成済み。
 #   plan_item_id / kitting_list_no 列は db/migration_002.py で追加すること。
@@ -299,6 +244,26 @@ def list_daily_production_range(from_date: str, to_date: str):
             ORDER BY report_date, prod_log_id
         """, (from_date, to_date))
         return [dict(r) for r in cur.fetchall()]
+
+
+def get_production_daily_by_id(prod_log_id: int):
+    """
+    prod_log_id指定で1件取得する（無ければNone）。
+
+    services.production_service.update_daily_result()・delete_daily_result()が、
+    UPDATE/DELETE実行前に対象行のkitting_list_no・lot_idを特定するために使う
+    （lot_status_history.record_lot_status_snapshot()を呼ぶにはlot_noが必要だが、
+    update_daily_result()/delete_daily_result()はprod_log_idしか受け取らないため。
+    DELETEは実行後には行が無くなり参照できなくなるので、必ずUPDATE/DELETEの
+    「前」に呼ぶこと）。
+    """
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.execute("""
+            SELECT * FROM production_daily WHERE prod_log_id = ?
+        """, (prod_log_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
 
 
 def update_daily_production(prod_log_id: int, daily_qty: float):

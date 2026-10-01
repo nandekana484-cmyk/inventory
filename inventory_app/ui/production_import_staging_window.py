@@ -44,6 +44,7 @@ DBに保存せず、_load_staged_rows_from_db()・_populate_candidates()が表�
 行はdelete_pending_csv_import_row()で即座に物理削除し、履歴としては残さない。
 """
 import csv
+import logging
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
@@ -59,6 +60,9 @@ from models.production_import_staging import (
     delete_pending_csv_import_row,
     upsert_pending_csv_import_row,
 )
+from models.lot_status_history import record_lot_status_snapshot
+
+logger = logging.getLogger(__name__)
 # ui.plan_candidate_dialog（モーダルダイアログ用の実装）から、候補の並べ替え・
 # ハイライト判定・表示フォーマットのロジックのみをそのまま再利用する。
 # ui.plan_candidate_dialog自体はui.ng_input_window.NgInputWindowが引き続き
@@ -784,12 +788,19 @@ class ProductionImportStagingWindow(tk.Toplevel):
             return
         self._register_candidate_immediately(row, staging_iid, candidate)
 
-    def _register_candidate_immediately(self, row, staging_iid, candidate):
+    def _register_candidate_immediately(self, row, staging_iid, candidate, record_history=True):
         """
         右クリックでの即時登録。_confirm_candidate()と同じ転記処理を行った上で、
         続けてparent._perform_registration()を直接呼び、確認ダイアログ
         （parent._show_registration_confirm_dialog()）を経由せず即座に登録を
         完了させる。
+
+        record_history：Trueの場合（デフォルト）、parent._perform_registration()に
+        そのまま渡り、登録成功後に即座にlot_status_historyへ記録される
+        （右クリックでの単発即時登録は、この既定動作のまま変更しない）。
+        _on_bulk_register()（Shift+S一括登録）からFalseを渡された場合は、
+        この記録をスキップし、_on_bulk_register()側がバッチ処理の最後に
+        distinctなlot_no単位でまとめて記録する（2026-09-30追加）。
 
         row・staging_iidを引数として明示的に受け取る（self._current_staging_
         row/iidを暗黙に参照しない）理由：_on_bulk_register()（Shift+S一括登録）
@@ -871,7 +882,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
         original_showinfo = messagebox.showinfo
         messagebox.showinfo = lambda title, message, **kw: captured.append((title, message))
         try:
-            parent._perform_registration(daily_qty, preview)
+            parent._perform_registration(daily_qty, preview, record_history=record_history)
         finally:
             messagebox.showinfo = original_showinfo
 
@@ -987,6 +998,11 @@ class ProductionImportStagingWindow(tk.Toplevel):
         registered_count = 0
         skipped_count = 0
         failed_count = 0
+        # 登録に成功した行のlot_noを集める（重複除去、set）。反対面連動
+        # （_perform_registration()内部）で影響するlot_noも常に同一lot_noの
+        # ため、この集合に別途追加する必要はない（2026-09-30追加、
+        # バッチ末尾でのlot_status_historyまとめ記録に使う）。
+        affected_lot_nos = set()
 
         original_showinfo = messagebox.showinfo
         messagebox.showinfo = lambda *a, **kw: None
@@ -1013,13 +1029,35 @@ class ProductionImportStagingWindow(tk.Toplevel):
                     skipped_count += 1
                     continue
 
-                self._register_candidate_immediately(row, iid, candidate)
+                # record_history=False：一括登録では行ごとの即時記録を抑制し、
+                # バッチ処理の最後にdistinctなlot_no単位でまとめて記録する
+                # （2026-09-30追加。行ごとに記録すると1件あたり数十msの
+                # DB書き込みコストが積み重なり、100件規模で数秒の遅延になる
+                # ことが判明したための対応）。
+                self._register_candidate_immediately(row, iid, candidate, record_history=False)
                 if iid not in self._row_by_iid:
                     registered_count += 1
+                    affected_lot_nos.add(candidate["lot_no"])
                 else:
                     failed_count += 1
         finally:
             messagebox.showinfo = original_showinfo
+
+        # バッチ処理全体の最後に、影響を受けたdistinctなlot_noそれぞれについて
+        # 1回だけlot_status_historyへ記録する（2026-09-30追加）。1件の記録
+        # 失敗が他のlot_noの記録・一括登録の完了通知自体を妨げないよう、
+        # lot_noごとに個別にtry/exceptで捕捉する
+        # （services.production_service._record_lot_status_snapshot_safely()と
+        # 同じ方針だが、呼び出し元がUI層のため同じ形をここで実装する）。
+        for lot_no in affected_lot_nos:
+            try:
+                record_lot_status_snapshot(lot_no, "bulk_register")
+            except Exception:
+                logger.exception(
+                    "lot_status_historyの記録に失敗しました（lot_no=%s, "
+                    "trigger_source=bulk_register）。一括登録処理自体はそのまま続行します。",
+                    lot_no,
+                )
 
         message = f"{registered_count}件を登録しました。\n{skipped_count}件は要件を満たさないためスキップしました。"
         if failed_count:

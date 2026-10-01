@@ -28,9 +28,9 @@ from models.production import list_daily_production_today
 from models.ng_declarations import save_ng_declaration, get_ng_declaration
 from models.board_structure_master import get_board_structure
 from models.operation_log import log_operation
-from ui.daily_report_window import DailyReportWindow
-from ui.monthly_report_window import MonthlyReportWindow
+from ui.unified_report_window import UnifiedReportWindow
 from ui.lot_progress_window import LotProgressWindow
+from ui.daily_drawdown_window import DailyDrawdownWindow
 from ui.production_import_staging_window import open_or_notify
 from ui.loading_window import LoadingWindow
 from ui.plan_candidate_dialog import _parse_flexible_date
@@ -120,6 +120,10 @@ class KittingProductionEntryWindow(tk.Toplevel):
         # （open_lot_progress()でwinfo_exists()を確認し、開いていればlift()の
         # みで新規生成しない）。
         self._lot_progress_window = None
+
+        # 日々の引落一覧画面（ui.daily_drawdown_window.DailyDrawdownWindow）の
+        # インスタンス参照。多重表示防止は_lot_progress_windowと同じパターン。
+        self._daily_drawdown_window = None
 
         # 計画一覧の絞り込み基盤：
         # - _all_plan_rows：_fetch_plan_list_rows() の全件結果（フィルタ前）。
@@ -442,16 +446,20 @@ class KittingProductionEntryWindow(tk.Toplevel):
         ttk.Button(bottom_btn_frame, text="更新", command=self.load_plan_list).pack(
             side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 5)
         )
-        self.btn_daily_report = ttk.Button(bottom_btn_frame, text="日報出力", command=self.open_daily_report)
-        self.btn_daily_report.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 5))
-
-        self.btn_monthly_report = ttk.Button(bottom_btn_frame, text="月報出力", command=self.open_monthly_report)
-        self.btn_monthly_report.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 5))
+        self.btn_unified_report = ttk.Button(
+            bottom_btn_frame, text="実績レポート", command=self.open_unified_report
+        )
+        self.btn_unified_report.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 5))
 
         self.btn_lot_progress = ttk.Button(
             bottom_btn_frame, text="ロット進捗チェック", command=self.open_lot_progress
         )
         self.btn_lot_progress.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 5))
+
+        self.btn_daily_drawdown = ttk.Button(
+            bottom_btn_frame, text="日々の引落一覧", command=self.open_daily_drawdown
+        )
+        self.btn_daily_drawdown.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 5))
 
         self.btn_production_csv_import = ttk.Button(
             bottom_btn_frame, text="実績CSV取込", command=self.on_production_csv_import
@@ -1357,7 +1365,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         """
         日次実績履歴（本日の全計画ログ）の行をダブルクリックすると、対応する計画を
         直接search_plan()へ渡して呼ぶ（既存のUIパターン：
-        ui.daily_report_window.DailyReportWindow.on_row_double_click()や
+        ui.unified_report_window.UnifiedReportWindow.on_row_double_click()や
         ui.ng_input_window.NgInputWindow.on_ng_list_double_click()と同じ、
         「行→保持データからkitting_list_noを逆引き→対応する処理を呼ぶ」導線）。
         計画情報表示・NG欄・実績記入欄は、search_plan()内の既存処理
@@ -1397,11 +1405,13 @@ class KittingProductionEntryWindow(tk.Toplevel):
             current_worker=self.current_worker,
         )
 
-    def open_daily_report(self):
-        DailyReportWindow(self)
-
-    def open_monthly_report(self):
-        MonthlyReportWindow(self, current_worker=self.current_worker)
+    def open_unified_report(self):
+        """
+        日報・月報を統合した実績レポート画面（ui.unified_report_window.
+        UnifiedReportWindow）を開く。旧「日報出力」「月報出力」ボタンを
+        この1つに置き換えた（2026-09-30、日報・月報統合の第一段階）。
+        """
+        UnifiedReportWindow(self, current_worker=self.current_worker)
 
     def open_lot_progress(self):
         """
@@ -1414,6 +1424,16 @@ class KittingProductionEntryWindow(tk.Toplevel):
             self._lot_progress_window.focus_force()
             return
         self._lot_progress_window = LotProgressWindow(self)
+
+    def open_daily_drawdown(self):
+        """
+        多重表示防止：open_lot_progress()と同じパターン。
+        """
+        if self._daily_drawdown_window is not None and self._daily_drawdown_window.winfo_exists():
+            self._daily_drawdown_window.lift()
+            self._daily_drawdown_window.focus_force()
+            return
+        self._daily_drawdown_window = DailyDrawdownWindow(self)
 
     def on_production_csv_import(self):
         """
@@ -1938,12 +1958,21 @@ class KittingProductionEntryWindow(tk.Toplevel):
         dialog.wait_window()
         return result["confirmed"]
 
-    def _perform_registration(self, daily_qty, preview):
+    def _perform_registration(self, daily_qty, preview, record_history=True):
         """
         登録確認ダイアログで「登録」が選ばれた後、実績→NGの順に逐次登録する。
         途中でエラーが発生しても、既に成功した分はそのまま残し（完全ロールバックは
         しない、services.production_import_service.import_production_csv()の
         「1行の異常が他行に影響しない」設計と同じ考え方）、エラー内容を明示する。
+
+        record_history：Trueの場合（デフォルト、通常の登録フロー・右クリック
+        単発即時登録はこのまま）、register_daily_result()/overwrite_daily_
+        result()および反対面連動（_register_opposite_side_daily_result()）に
+        そのまま渡り、登録成功後に即座にlot_status_historyへ記録される。
+        ui.production_import_staging_window.py::_on_bulk_register()（Shift+S
+        一括登録）がFalseを渡した場合は、この記録をスキップする（呼び出し元が
+        バッチ処理の最後にdistinctなlot_no単位でまとめて記録するため、
+        2026-09-30追加）。
 
         実績側は、_build_registration_preview()で既に既存レコードの有無を確認・
         ユーザーの承認も確認ダイアログで得ている（この時点で既にexisting_daily_
@@ -1975,9 +2004,15 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
         try:
             if preview["existing_daily_qty"] is not None:
-                new_cumulative = overwrite_daily_result(kitting_no, lot_no, daily_qty, worker_id, report_date=report_date)
+                new_cumulative = overwrite_daily_result(
+                    kitting_no, lot_no, daily_qty, worker_id, report_date=report_date,
+                    record_history=record_history,
+                )
             else:
-                new_cumulative = register_daily_result(kitting_no, lot_no, daily_qty, worker_id, report_date=report_date)
+                new_cumulative = register_daily_result(
+                    kitting_no, lot_no, daily_qty, worker_id, report_date=report_date,
+                    record_history=record_history,
+                )
         except Exception as e:
             messagebox.showerror("登録エラー", f"実績の登録に失敗しました：{e}", parent=self.winfo_toplevel())
             return
@@ -2001,7 +2036,9 @@ class KittingProductionEntryWindow(tk.Toplevel):
         errors = []
         opposite_registered = False
         try:
-            opposite_registered = self._register_opposite_side_daily_result(daily_qty, worker_id, report_date=report_date)
+            opposite_registered = self._register_opposite_side_daily_result(
+                daily_qty, worker_id, report_date=report_date, record_history=record_history,
+            )
         except Exception as e:
             errors.append(f"反対側の面への実績連動登録に失敗しました：{e}")
 
@@ -2063,7 +2100,8 @@ class KittingProductionEntryWindow(tk.Toplevel):
                 self._csv_staging_window.deiconify()
             self._csv_staging_window.lift()
 
-    def _register_opposite_side_daily_result(self, daily_qty, worker_id, report_date=None):
+    def _register_opposite_side_daily_result(self, daily_qty, worker_id, report_date=None,
+                                               record_history=True):
         """
         選択中の計画（self.current_plan）の反対側の面への連動登録。
         実体は services.production_service.register_opposite_side_daily_result()
@@ -2084,8 +2122,15 @@ class KittingProductionEntryWindow(tk.Toplevel):
         （新規登録の場合）。
 
         戻り値：反対側への登録を実際に行った場合True、反対側が存在しない場合False。
+
+        record_history：_perform_registration()から受け取った値をそのまま
+        services.production_service.register_opposite_side_daily_result()へ渡す
+        （2026-09-30追加）。
         """
-        return register_opposite_side_daily_result(self.current_plan, daily_qty, worker_id, report_date=report_date)
+        return register_opposite_side_daily_result(
+            self.current_plan, daily_qty, worker_id, report_date=report_date,
+            record_history=record_history,
+        )
 
     def _setup_ng_side_ui(self, plan):
         """

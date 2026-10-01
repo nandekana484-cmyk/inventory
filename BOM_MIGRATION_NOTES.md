@@ -235,16 +235,16 @@ lot_no=221608: is_active行数=10, file_actuals件数=10, 一致=True
 
 - **`list_excluded_file_nos()`の派生対応**（§3参照）：除外理由（`multiple_tsv_in_subfolder`/`unresolved_multiple_candidates`/`tsv_not_found`/`read_error`等）の一覧化はできているが、それぞれをUI上でどう扱う・通知するかは未対応。
 - **file_no=284の文字コードエラー対応方針**（§3参照）：`ValueError`（cp932でもデコード不可）が発生する既知の未解決事項。対応方針は未定。
-- **`models/production.py`の`init_production_table()`/`get_daily_production()`**：呼び出し元がリポジトリ全体を検索しても見つからない。削除候補として報告済みだが未対応のまま残存。
-- **`production_records`テーブル**（実DB0件）：上記2関数が対象とする旧テーブル。DROPするかどうか未定。
+- ~~**`models/production.py`の`init_production_table()`/`get_daily_production()`**：呼び出し元がリポジトリ全体を検索しても見つからない。削除候補として報告済みだが未対応のまま残存。~~ → **2026-10-01、完了**。再調査で`upsert_production_record()`も含め呼び出し元が皆無であることを確認し、3関数と`CREATE TABLE production_records`定義を`models/production.py`から削除した。詳細は本ファイル§14参照。
+- ~~**`production_records`テーブル**（実DB0件）：上記2関数が対象とする旧テーブル。DROPするかどうか未定。~~ → **2026-10-01、DROP実施済み**。本ファイル§14参照。
 - **`services/production_service.py`の`_build_report_rows()`（日報・月報画面、`build_daily_report()`/`build_monthly_report()`が利用）に同様のN+1構造が残存**：ループ内で`get_app_cumulative_qty()`を1レコードずつ個別呼び出ししている（§5 #16の対応スコープ外）。同じく`get_app_cumulative_qty_bulk()`を流用して一括化できる見込み。
 
 ---
 
 ## 7. 実DBに関する注意事項
 
-- `board_definitions`/`component_groups`/`component_bom`（旧BOM）は空テーブルとして残存。DROP不要と判断。
-- `parts_attributes`/`bom_master`テーブルは開発中の動作確認の副作用で実DBに新規作成済み（0件、DROP不要と判断）。
+- ~~`board_definitions`/`component_groups`/`component_bom`（旧BOM）は空テーブルとして残存。DROP不要と判断。~~ → **2026-10-01、判断を見直しDROP実施**。再調査で現行コードにCREATE TABLE定義自体が存在しない（旧世代のBOM機能の名残と確認）ことが分かり、実DB0件・参照なしを確認した上で削除した。当時「DROP不要」と判断した具体的な根拠は記録に残っておらず、今回の判断とどちらが妥当だったかは断定できないが、実害（0件・無参照）が無いことを再確認した上での削除である。詳細は本ファイル§14参照。
+- `parts_attributes`/`bom_master`テーブルは開発中の動作確認の副作用で実DBに新規作成済み（0件、DROP不要と判断）。**この2テーブルは現役で使用中（`parts_attributes`はBOM計算・丁取り数、`bom_master`はBOM計算キャッシュ）であり、上記の削除対象には含めていない。**
 - `kitting_plan_items`件数について、開発環境と実環境で値が異なる場合がある（実環境の値を正とする方針で運用中）。2251件 vs 6949件という食い違いが確認されたが、リポジトリ内に比較対象となる`.db`ファイルが1つしか存在しないこと、`sqlite_sequence`の最高到達値が2255であり過去に6949件へ達したことがないことから、6949件は別環境固有の事情によるものと判断し、実環境側の値（2251件）を正として扱う方針とした。
 
 ---
@@ -389,3 +389,29 @@ ui/parts_attributes_import_window.py（CSVインポート、行ごとにupsert�
 
 ### on_register()の列位置非依存化
 `ui/ng_input_window.py::on_register()`が、タプルの位置に依存した固定unpack（`part_no, _qty, consumed_qty_text = get_row_values(iid)`）をしていたため、列追加のたびに壊れるリスクがあった。`CheckableTreeview`に列key→値を取得する`get_row_value(iid, col_key)`／`column_index`辞書を新設し、位置非依存の取得方法に書き換えた。
+
+---
+
+## 14. 「共通マスタ」が月次DBに同居している設計の発見、およびレガシーテーブル14個の削除（2026-10-01）
+
+### 共通マスタの月次DB同居問題（重要、未着手の課題）
+
+本ファイルD-4（`CANONICAL_DESIGN_DECISIONS.md`参照）で「`parts`・`final_products`・`lots`は現行のどこからも参照されない第一世代設計の名残」としていた判断を、未完了計画のDB間引き継ぎ機能の検証を契機に再調査した。その結果、以下が判明した：
+
+- `parts`・`final_products`は、D-4作成時の記述に反し、**「マスターデータ管理」（`ui/master_management.py`）・「マスターインポート」画面から現役で読み書きされていた**（D-4の記述は誤りだったことになる）。
+- `board_structure_master`・`parts_attributes`・`workers`・`parts`・`final_products`という「共通マスタ」とみなすべき5テーブルが、月次DB切り替えの対象である`config.DB_PATH`に、キッティング計画・生産実績等の月次データと無区別に同居しており、**月次DBを新規作成するたびにこれら共通マスタも空の状態から始まる**設計であることが判明した。
+- きっかけは、「未完了計画の引き継ぎ機能で、構成基板数マスタ（`board_structure_master`）が新DBにコピーされないため、引き継いだ直後に再評価すると構成基板数マスタが空になりunregistered扱いになる」という実例。
+- この同居は最初のコミット時点からの設計であり、途中の変更で崩れたものではない。
+- `bom_master`は`data_ym`（年月）列を持つキャッシュ的設計であり月次の概念と矛盾しないため、分離対象には含めない。
+
+分離の実現には`config.py`への第2のDBパス新設・各マスタ系モジュールの接続先振り分けが必要で、影響範囲は複数モジュールに及ぶ。**現時点ではまだ着手していない（優先度の高い未着手タスクとして記録）。** 詳細は`CANONICAL_DESIGN_DECISIONS.md` §18.3（D-38）参照。
+
+### レガシーテーブル14個の削除
+
+実DB行数0件・現行コードから一切参照されていないことを確認した上で、以下14テーブルを削除した：`production_records`・`lots`・`usage_daily`・`incoming_goods_log`・`stock_manual_adjustment`・`closing_runs`・`closing_wip_adjustment`・`audit_log`・`snapshot_batches`・`stock_snapshot`・`physical_count`・`board_definitions`・`component_bom`・`component_groups`。
+
+`board_definitions`・`component_groups`・`component_bom`（旧BOM）は、本ファイル§7で過去に「DROP不要」と判断していたが、今回の再調査で現行コードにCREATE TABLE定義自体が存在しない（旧世代のBOM機能の名残）ことを確認し、判断を見直してDROPした。
+
+重要な発見：`production_daily.lot_id REFERENCES lots(lot_id)`という外部キー宣言が存在したが、アプリの通常動作では`PRAGMA foreign_keys`が設定されておらず実際には強制されていなかった。`lots`テーブル自体に現行コードからのINSERTが無いため、この宣言は実質的に満たされ得ないものだった。
+
+削除前にバックアップを作成し、削除後に主要10画面の動作確認・`pytest`実行を行い、影響が無いことを確認した。`parts`・`final_products`は削除せず、共通マスタ分離の検討対象として維持している。詳細は`CANONICAL_DESIGN_DECISIONS.md` §18.4（D-39）参照。

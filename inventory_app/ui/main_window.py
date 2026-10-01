@@ -636,7 +636,7 @@ class MainWindow(tk.Tk):
         ログアウトし、ログイン画面に戻る。
 
         開いている子ウィンドウ（_open_windowsで管理している多重表示防止対象、
-        および対象外のDailyReportWindow/MonthlyReportWindow/UnmatchedProductionWindow等）は、
+        および対象外のUnifiedReportWindow/UnmatchedProductionWindow等）は、
         個別にクローズ処理を呼ぶ必要はない。Tkinterの仕様上、親（MainWindow=このself）を
         destroy()すると、それを親として開いた全Toplevelも連動して破棄されるため。
 
