@@ -13,7 +13,7 @@ models/parts_attributes.py と同じ「CSVをマスタとした差分同期」�
 import re
 import unicodedata
 
-from models.db_common import get_connection
+from models.db_common import get_master_connection
 
 
 def normalize_board_name(name):
@@ -36,7 +36,7 @@ def normalize_board_name(name):
 
 def init_board_structure_master_table():
     """board_structure_master テーブルの初期化（既存があれば何もしない）。"""
-    with get_connection() as con:
+    with get_master_connection() as con:
         con.execute("""
             CREATE TABLE IF NOT EXISTS board_structure_master (
                 board_name TEXT PRIMARY KEY,
@@ -62,7 +62,7 @@ def upsert_board_structure(board_name: str, board_count):
     """
     init_board_structure_master_table()
     normalized = normalize_board_name(board_name)
-    with get_connection() as con:
+    with get_master_connection() as con:
         con.execute("""
             INSERT INTO board_structure_master (board_name, board_count, board_name_normalized)
             VALUES (?, ?, ?)
@@ -90,7 +90,7 @@ def delete_board_structure_not_in(keep_board_name_list) -> list:
     """
     keep_set = set(keep_board_name_list)
     init_board_structure_master_table()
-    with get_connection() as con:
+    with get_master_connection() as con:
         existing = [row["board_name"] for row in con.execute("SELECT board_name FROM board_structure_master")]
         to_delete = [b for b in existing if b not in keep_set]
         for board_name in to_delete:
@@ -114,7 +114,7 @@ def get_board_structure(board_name: str):
     """
     init_board_structure_master_table()
     normalized = normalize_board_name(board_name)
-    with get_connection() as con:
+    with get_master_connection() as con:
         cur = con.execute("""
             SELECT board_name, board_count FROM board_structure_master
             WHERE board_name_normalized = ?
@@ -128,7 +128,7 @@ def get_board_structure(board_name: str):
 def list_board_structure() -> list:
     """構成基板数マスタの一覧を board_name 順で取得する（インポート画面の一覧表示用）。"""
     init_board_structure_master_table()
-    with get_connection() as con:
+    with get_master_connection() as con:
         cur = con.execute("""
             SELECT board_name, board_count FROM board_structure_master ORDER BY board_name
         """)

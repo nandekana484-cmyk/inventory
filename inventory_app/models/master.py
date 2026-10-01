@@ -1,14 +1,40 @@
-﻿from models.db_common import get_connection
+from models.db_common import get_master_connection
+
+
+def init_master_tables():
+    """parts・final_products テーブルの初期化（既存があれば何もしない）。db/schema.sqlの定義と同一。"""
+    with get_master_connection() as con:
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS parts (
+                part_id TEXT PRIMARY KEY,
+                code96 TEXT NOT NULL,
+                part_type TEXT,
+                shelf_type TEXT,
+                shape_category TEXT,
+                is_high_value INTEGER DEFAULT 0,
+                is_active INTEGER DEFAULT 1
+            )
+        """)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS final_products (
+                product_id TEXT PRIMARY KEY,
+                product_name TEXT NOT NULL
+            )
+        """)
+        con.commit()
+
 
 # --- 部品マスタ (parts) ---
 def get_all_parts():
-    with get_connection() as con:
+    init_master_tables()
+    with get_master_connection() as con:
         cur = con.cursor()
         cur.execute("SELECT part_id, code96, part_type, shelf_type, shape_category, is_active FROM parts")
         return [dict(row) for row in cur.fetchall()]
 
 def upsert_part(part_id: str, code96: str, part_type: str, shelf_type: str, shape_category: str):
-    with get_connection() as con:
+    init_master_tables()
+    with get_master_connection() as con:
         cur = con.cursor()
         cur.execute("""
             INSERT INTO parts (part_id, code96, part_type, shelf_type, shape_category, is_active)
@@ -22,20 +48,23 @@ def upsert_part(part_id: str, code96: str, part_type: str, shelf_type: str, shap
         con.commit()
 
 def delete_part(part_id: str):
-    with get_connection() as con:
+    init_master_tables()
+    with get_master_connection() as con:
         cur = con.cursor()
         cur.execute("DELETE FROM parts WHERE part_id = ?", (part_id,))
         con.commit()
 
 # --- 完成品マスタ (final_products) ---
 def get_all_products():
-    with get_connection() as con:
+    init_master_tables()
+    with get_master_connection() as con:
         cur = con.cursor()
         cur.execute("SELECT product_id, product_name FROM final_products")
         return [dict(row) for row in cur.fetchall()]
 
 def upsert_product(product_id: str, product_name: str):
-    with get_connection() as con:
+    init_master_tables()
+    with get_master_connection() as con:
         cur = con.cursor()
         cur.execute("""
             INSERT INTO final_products (product_id, product_name)
@@ -46,7 +75,8 @@ def upsert_product(product_id: str, product_name: str):
         con.commit()
 
 def delete_product(product_id: str):
-    with get_connection() as con:
+    init_master_tables()
+    with get_master_connection() as con:
         cur = con.cursor()
         cur.execute("DELETE FROM final_products WHERE product_id = ?", (product_id,))
         con.commit()
@@ -66,7 +96,8 @@ def upsert_part_master(part_no: str, name: str, shelf: str):
     既存の part_type / shape_category はこの関数では更新しない
     （旧 upsert_part() で設定された値を保持する）。
     """
-    with get_connection() as con:
+    init_master_tables()
+    with get_master_connection() as con:
         cur = con.cursor()
         cur.execute("""
             INSERT INTO parts (part_id, code96, shelf_type, is_active)

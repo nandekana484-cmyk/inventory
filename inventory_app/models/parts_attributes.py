@@ -7,12 +7,12 @@ BOM TSVの係数が0かつRフラグがある行の qty 計算に丁取り数（
 （qty = 部品員数 ÷ 丁取り数）。
 """
 from models.bom_master import invalidate_bom_master_by_part_no
-from models.db_common import get_connection
+from models.db_common import get_master_connection
 
 
 def init_parts_attributes_table():
     """parts_attributes テーブルの初期化（既存があれば何もしない）。"""
-    with get_connection() as con:
+    with get_master_connection() as con:
         con.execute("""
             CREATE TABLE IF NOT EXISTS parts_attributes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,7 +39,7 @@ def upsert_parts_attributes(part_no: str, teitori, part_type: str = None,
     含むキャッシュ行を無効化し、次回参照時に再計算させる。
     """
     init_parts_attributes_table()
-    with get_connection() as con:
+    with get_master_connection() as con:
         con.execute("""
             INSERT INTO parts_attributes (part_no, teitori, part_type, supply_type, full_qty)
             VALUES (?, ?, ?, ?, ?)
@@ -75,7 +75,7 @@ def delete_parts_attributes_not_in(keep_part_no_list) -> list:
     """
     keep_set = set(keep_part_no_list)
     init_parts_attributes_table()
-    with get_connection() as con:
+    with get_master_connection() as con:
         existing = [row["part_no"] for row in con.execute("SELECT part_no FROM parts_attributes")]
         to_delete = [p for p in existing if p not in keep_set]
         for part_no in to_delete:
@@ -91,7 +91,7 @@ def delete_parts_attributes_not_in(keep_part_no_list) -> list:
 def get_parts_attributes(part_no: str):
     """指定 part_no（96コード）の部品属性を取得する。存在しなければ None を返す。"""
     init_parts_attributes_table()
-    with get_connection() as con:
+    with get_master_connection() as con:
         cur = con.execute("""
             SELECT part_no, teitori, part_type, supply_type, full_qty
             FROM parts_attributes WHERE part_no = ?
@@ -103,7 +103,7 @@ def get_parts_attributes(part_no: str):
 def list_parts_attributes() -> list:
     """部品属性の一覧を part_no 順で取得する（インポート画面の一覧表示用）。"""
     init_parts_attributes_table()
-    with get_connection() as con:
+    with get_master_connection() as con:
         cur = con.execute("""
             SELECT part_no, teitori, part_type, supply_type, full_qty
             FROM parts_attributes ORDER BY part_no

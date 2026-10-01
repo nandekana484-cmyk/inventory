@@ -45,6 +45,11 @@ os.makedirs(APP_DATA_DIR, exist_ok=True)
 # データベースファイルの保存パス
 DB_PATH = os.path.join(APP_DATA_DIR, 'db', 'inventory.db')
 
+# マスタDB（board_structure_master・parts_attributes・workers・parts・
+# final_products）の保存パス。月次DB（DB_PATH）と異なり、set_db_path()による
+# 切り替え機構の対象外の固定パス（ローカルに1つ）とする。
+MASTER_DB_PATH = os.path.join(APP_DATA_DIR, 'db', 'master.db')
+
 
 def set_db_path(path: str):
     """アプリ全体で使用するDBパスを切り替える唯一の入口。

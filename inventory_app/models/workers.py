@@ -1,8 +1,24 @@
-﻿from models.db_common import get_connection
+from models.db_common import get_master_connection
+
+
+def init_workers_table():
+    """workers テーブルの初期化（既存があれば何もしない）。db/schema.sqlの定義と同一。"""
+    with get_master_connection() as con:
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS workers (
+                worker_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                role TEXT DEFAULT 'operator',
+                is_active INTEGER DEFAULT 1
+            )
+        """)
+        con.commit()
+
 
 def create_worker(worker_id: str, name: str, role: str = 'operator') -> bool:
     """作業者を登録"""
-    with get_connection() as con:
+    init_workers_table()
+    with get_master_connection() as con:
         cur = con.cursor()
         cur.execute(
             "INSERT INTO workers (worker_id, name, role) VALUES (?, ?, ?)",
@@ -13,7 +29,8 @@ def create_worker(worker_id: str, name: str, role: str = 'operator') -> bool:
 
 def get_active_workers():
     """有効な作業者一覧を取得"""
-    with get_connection() as con:
+    init_workers_table()
+    with get_master_connection() as con:
         cur = con.cursor()
         cur.execute("SELECT worker_id, name, role FROM workers WHERE is_active = 1")
         return [dict(row) for row in cur.fetchall()]
@@ -21,7 +38,8 @@ def get_active_workers():
 
 def get_all_workers():
     """作業者管理画面用：無効化済みも含めた全作業者一覧を worker_id 順で取得"""
-    with get_connection() as con:
+    init_workers_table()
+    with get_master_connection() as con:
         cur = con.execute(
             "SELECT worker_id, name, role, is_active FROM workers ORDER BY worker_id"
         )
@@ -33,7 +51,8 @@ def upsert_worker(worker_id: str, name: str, role: str = "operator", is_active: 
     作業者を登録または更新する（既存なら上書き、なければ新規登録）。
     差分検知は行わず常に上書きする。
     """
-    with get_connection() as con:
+    init_workers_table()
+    with get_master_connection() as con:
         con.execute("""
             INSERT INTO workers (worker_id, name, role, is_active)
             VALUES (?, ?, ?, ?)
@@ -53,7 +72,8 @@ def set_worker_active(worker_id: str, is_active: bool):
     作業者IDが参照されているため、レコード自体は削除せず is_active フラグの
     切り替えのみで対応する（ログイン画面の一覧は is_active=1 のみ表示）。
     """
-    with get_connection() as con:
+    init_workers_table()
+    with get_master_connection() as con:
         con.execute(
             "UPDATE workers SET is_active = ? WHERE worker_id = ?",
             (1 if is_active else 0, worker_id),
