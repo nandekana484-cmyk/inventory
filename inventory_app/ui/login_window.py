@@ -6,7 +6,7 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from models.workers import get_active_workers
 from ui.main_window import MainWindow
-from ui.worker_management_window import WorkerManagementWindow
+from ui.worker_registration_window import WorkerRegistrationWindow
 
 class LoginWindow(tk.Tk):
     def __init__(self):
@@ -39,17 +39,24 @@ class LoginWindow(tk.Tk):
         btn_login = ttk.Button(frame, text="ログイン", command=self.on_login)
         btn_login.pack(pady=10)
 
-        btn_worker_management = ttk.Button(
-            frame, text="作業者を管理（新規登録・編集）", command=self.open_worker_management
+        btn_worker_registration = ttk.Button(
+            frame, text="作業者を登録（新規）", command=self.open_worker_registration
         )
-        btn_worker_management.pack(pady=(0, 5))
+        btn_worker_registration.pack(pady=(0, 5))
 
-    def open_worker_management(self):
+    def open_worker_registration(self):
         """
-        ログイン前でも作業者の新規登録・編集ができるようにする。
+        ログイン前でも新規作業者を登録できるようにする。
         workers が0件（初回起動時等）でもログイン不能で行き詰まらないようにするための入口。
+
+        2026-10-03、作業者管理機能を登録画面（本画面が開くWorkerRegistration
+        Window）と管理画面（WorkerManagementWindow、既存作業者の編集・
+        有効/無効切替・admin限定）に分割した。ログイン前はadminの概念が
+        存在しない（current_worker自体が無い）ため、ログイン画面から開けるのは
+        新規登録のみとし、編集・有効/無効切替はログイン後、admin役割の
+        作業者のみがメインメニューから開ける（ui/main_window.py参照）。
         """
-        win = WorkerManagementWindow(self)
+        win = WorkerRegistrationWindow(self)
         self.wait_window(win)
         self.refresh_workers()
 

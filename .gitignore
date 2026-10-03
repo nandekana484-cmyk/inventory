@@ -29,5 +29,10 @@ inventory_app/tessdata_local_backup/
 # アプリ永続設定（選択中DBパス等、実行環境ごとに異なる実行時生成ファイル）
 inventory_app/app_settings.json
 
+# PyInstallerのビルド成果物（inventory_app.spec参照）。ビルドのたびに
+# ローカルで再生成されるものであり、.exe本体（100MB超）を含むためGit管理しない。
+build/
+dist/
+
 # Python ソースコードはすべて追跡対象
 !*.py

@@ -64,6 +64,23 @@ def upsert_worker(worker_id: str, name: str, role: str = "operator", is_active: 
         con.commit()
 
 
+def any_admin_exists() -> bool:
+    """
+    role='admin'の作業者がmaster.dbに1人でも存在するか返す（2026-10-03追加、
+    ui.worker_registration_window.WorkerRegistrationWindowの役割選択肢の
+    制御に使う）。
+
+    is_active（有効/無効）は問わない：無効化されたadminが1人いるだけの状態で
+    「admin不在」とみなし、新規登録画面で再び誰でもadminを選べるようにして
+    しまうと、意図せず複数人がadmin権限を持つ抜け道になり得るため、
+    有効/無効に関わらずrole='admin'の行が1件でも存在すれば「存在する」扱いとする。
+    """
+    init_workers_table()
+    with get_master_connection() as con:
+        cur = con.execute("SELECT 1 FROM workers WHERE role = 'admin' LIMIT 1")
+        return cur.fetchone() is not None
+
+
 def set_worker_active(worker_id: str, is_active: bool):
     """
     作業者の有効/無効を切り替える。

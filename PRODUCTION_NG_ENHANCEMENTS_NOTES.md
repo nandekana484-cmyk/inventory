@@ -209,7 +209,7 @@ NG連動計算式:**面1保存値 = 面1欄入力値 + 面2欄入力値、面2�
 - **もう一方の拠点のDBで`production_daily.report_date`のNOT NULL制約が同じく適用されているか** → **未確認**。この環境からは確認できないため、次にその環境で作業する機会があれば、`CANONICAL_DESIGN_DECISIONS.md` §5の整合性チェック手順に沿って確認することを推奨する（同ファイル§5のチェック項目に追加済み）。
 - **UnifiedReportWindowへの「登録日」列の追加** → **2026-10-01、完了**。`production_daily.report_date`をTreeview・CSV・PDF出力すべてに反映。§22.1参照。
 - **未完了計画のDB間引き継ぎルールの見直し（`list_incomplete_lots()`の`_evaluate_lot_status()`統一、未着手計画の50日上限）** → **2026-10-01、完了**。§22.2参照。
-- **【重要・優先度高・未着手】共通マスタ（`board_structure_master`・`parts_attributes`・`workers`・`parts`・`final_products`）が月次DBに同居している設計上の課題** → **2026-10-01、発見（調査のみ完了、対応未着手）**。月次DBを新規作成するたびに共通マスタも空になる。詳細は`BOM_MIGRATION_NOTES.md` §14・`CANONICAL_DESIGN_DECISIONS.md` §18.3（D-38）参照。
+- **共通マスタ（`board_structure_master`・`parts_attributes`・`workers`・`parts`・`final_products`）が月次DBに同居している設計上の課題** → **2026-10-01に発見。2026-10-02、分離自体はコードとして実装済みであることを確認した**（`config.MASTER_DB_PATH`・`get_master_connection()`等）。**【重要・未解決】`inventory.db`側に残る既存データ（`board_structure_master`3119件・`workers`1件等）の`master.db`への移行はまだ完了していない**（移行するか初期化するかの業務判断待ち）。詳細は`BOM_MIGRATION_NOTES.md` §14・`CANONICAL_DESIGN_DECISIONS.md` §18.3・§18.6（D-38・D-42）参照。
 - **レガシーテーブル14個の削除** → **2026-10-01、完了**。`BOM_MIGRATION_NOTES.md` §14・`CANONICAL_DESIGN_DECISIONS.md` §18.4（D-39）参照。
 
 ---

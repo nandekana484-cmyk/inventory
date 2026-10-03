@@ -24,11 +24,14 @@ from ui.parts_attributes_import_window import PartsAttributesImportWindow
 from ui.board_structure_import_window import BoardStructureImportWindow
 from ui.wip_expansion_window import WipExpansionWindow
 from ui.worker_management_window import WorkerManagementWindow
+from ui.worker_registration_window import WorkerRegistrationWindow
 from ui.shared_db_list_window import SharedDbListWindow
 from ui.operation_log_window import OperationLogWindow
 from models.operation_log import log_operation
 from ui.db_delete_helper import confirm_and_delete_database
 from services.db_migration_carryover import carry_over_incomplete_lots
+from services.backup_service import backup_databases
+from services.master_merge_service import merge_master_from_backup
 from services.unprocessed_check_service import check_unprocessed_items
 from services.app_settings_service import load_last_db_path
 
@@ -142,6 +145,15 @@ class MainWindow(tk.Tk):
         self._create_db_result_queue = queue.Queue()
         self._create_db_loading_window = None
 
+        # on_backup_databases()用（2026-10-02追加、同じ非同期パターン）
+        self._backup_result_queue = queue.Queue()
+        self._backup_loading_window = None
+        self._backup_destination_folder = None
+
+        # on_merge_master_from_backup()用（2026-10-03追加、同じ非同期パターン）
+        self._merge_master_result_queue = queue.Queue()
+        self._merge_master_loading_window = None
+
         # ヘッダー領域
         header_frame = ttk.Frame(self, padding=10)
         header_frame.pack(fill=tk.X)
@@ -174,6 +186,29 @@ class MainWindow(tk.Tk):
             header_frame, text="共有フォルダのDB一覧", command=self.open_shared_db_list,
         )
         self.btn_shared_db_list.pack(side=tk.RIGHT, padx=(0, 10))
+
+        # 月次DB（config.DB_PATH）・マスタDB（config.MASTER_DB_PATH）を同時に
+        # バックアップする手動ボタン（2026-10-02追加）。共有フォルダ系3ボタンとは
+        # 別の操作のため、side=tk.RIGHTのpack順序上、この3ボタンよりさらに左側
+        # （ログイン作業者ラベルに近い側）に配置する。
+        self.btn_backup_databases = ttk.Button(
+            header_frame, text="バックアップ", command=self.on_backup_databases,
+        )
+        self.btn_backup_databases.pack(side=tk.RIGHT, padx=(0, 10))
+
+        # バックアップ済みマスタDB（master_backup_*.db）から、現在のmaster.dbに
+        # 不足しているレコードを取り込むボタン（2026-10-03追加）。マスタデータ
+        # （特にworkers＝ログイン可能な作業者とその役割）に影響する操作のため、
+        # 作業者管理画面（ui/worker_management_window.py）の編集・有効/無効
+        # 切替と同様、admin役割の作業者にのみメニューへ表示する（operatorの
+        # 場合はボタン自体を生成・packしない）。self.btn_merge_masterはNoneで
+        # 初期化しておき、_menu_widgetsへの追加もこの条件に合わせる。
+        self.btn_merge_master = None
+        if current_worker.get("role") == "admin":
+            self.btn_merge_master = ttk.Button(
+                header_frame, text="マスタデータを他PCから取り込む", command=self.on_merge_master_from_backup,
+            )
+            self.btn_merge_master.pack(side=tk.RIGHT, padx=(0, 10))
 
         # 現在接続中のDBパスを常時表示する行（ヘッダー直下）。ローカル・共有フォルダ
         # （UNC）のどちらでも、切り替え操作のたびに最新のフルパスへ更新される
@@ -285,10 +320,24 @@ class MainWindow(tk.Tk):
         )
         btn_parts_attributes_import.pack(fill=tk.X, pady=5)
 
-        btn_worker_management = ttk.Button(
-            master_frame, text="3. 作業者管理", command=self.open_worker_management
+        # 作業者登録（新規登録のみ、role不問で常に表示）は、ui/login_window.py
+        # （ログイン前）と同じ導線をログイン後にも提供する（2026-10-03追加）。
+        btn_worker_registration = ttk.Button(
+            master_frame, text="作業者登録（新規）", command=self.open_worker_registration
         )
-        btn_worker_management.pack(fill=tk.X, pady=5)
+        btn_worker_registration.pack(fill=tk.X, pady=5)
+
+        # 「3. 作業者管理」（既存作業者の編集・有効/無効切替）は、admin役割の
+        # 作業者にのみメニューへ表示する（2026-10-03追加）。operatorの場合は
+        # ボタン自体を生成・packしない（CANONICAL_DESIGN_DECISIONS.md参照）。
+        # ボタンが存在しない場合に備え、self.btn_worker_managementはNoneで
+        # 初期化しておく（_menu_widgetsへの追加もこの条件に合わせる）。
+        self.btn_worker_management = None
+        if current_worker.get("role") == "admin":
+            self.btn_worker_management = ttk.Button(
+                master_frame, text="3. 作業者管理", command=self.open_worker_management
+            )
+            self.btn_worker_management.pack(fill=tk.X, pady=5)
 
         btn_master = ttk.Button(master_frame, text="4. マスターデータ管理", command=self.open_master_management)
         btn_master.pack(fill=tk.X, pady=5)
@@ -314,12 +363,20 @@ class MainWindow(tk.Tk):
             self.db_folder_combobox, self.btn_switch_database, self.entry_new_db_folder,
             self.chk_carry_over, self.btn_create_database,
             self.btn_open_shared_database, self.btn_create_shared_database,
+            self.btn_backup_databases,
             btn_kitting_import, btn_kitting_production, btn_inventory_input,
             btn_theoretical_import, btn_inventory_diff, btn_ng_input, btn_wip_expansion,
             btn_pdf_ocr_import,
             btn_master, btn_master_import, btn_parts_attributes_import,
-            btn_worker_management, btn_board_structure_import, btn_logout,
+            btn_worker_registration, btn_board_structure_import, btn_logout,
         ]
+        # 「3. 作業者管理」・「マスタデータを他PCから取り込む」はいずれも
+        # admin役割の場合のみ生成されるため、存在する場合だけ_menu_widgetsへ
+        # 追加する（2026-10-03追加）。
+        if self.btn_worker_management is not None:
+            self._menu_widgets.append(self.btn_worker_management)
+        if self.btn_merge_master is not None:
+            self._menu_widgets.append(self.btn_merge_master)
 
         # ウィンドウを閉じる（×ボタン・Alt+F4等）際にロックファイルを解放してから
         # 終了する。on_logout()はdestroy()を直接呼ぶためこのprotocolハンドラを
@@ -626,6 +683,17 @@ class MainWindow(tk.Tk):
         self._open_singleton_window(
             "worker_management",
             lambda: WorkerManagementWindow(self, current_worker=self.current_worker),
+        )
+
+    def open_worker_registration(self):
+        """
+        新規作業者登録画面を開く（2026-10-03追加、role不問で常にメニューに
+        表示するボタンから呼ばれる）。ui/login_window.py（ログイン前）と
+        同じ画面クラスを使う。
+        """
+        self._open_singleton_window(
+            "worker_registration",
+            lambda: WorkerRegistrationWindow(self, current_worker=self.current_worker),
         )
 
     def open_operation_log(self):
@@ -1056,3 +1124,199 @@ class MainWindow(tk.Tk):
         self._load_db_folders()
         self.db_folder_var.set(folder_name)
         self.new_db_folder_var.set("")
+
+    def on_backup_databases(self):
+        """
+        月次DB（config.DB_PATH）・マスタDB（config.MASTER_DB_PATH）を、選択した
+        フォルダへ同時にバックアップする（2026-10-02追加）。
+
+        保存先フォルダはfiledialog.askdirectory()で選択させる。バックアップ処理
+        （services.backup_service.backup_databases()、sqlite3.Connection.backup()
+        経由）は、on_create_database()の引き継ぎ処理と同じ非同期パターン
+        （LoadingWindow＋threading.Thread(daemon=True)＋queue.Queue＋
+        self.after(200, ...)ポーリング）で実行し、UIスレッドをブロックしない。
+        バックアップ中は他のDB操作ボタンもあわせて無効化する。
+        """
+        destination_folder = filedialog.askdirectory(
+            title="バックアップ保存先フォルダを選択", parent=self.winfo_toplevel(),
+        )
+        if not destination_folder:
+            return
+
+        # _poll_backup_queue()はこのメソッドのローカル変数を参照できないため、
+        # インスタンス属性に保持しておく（log_operation()の詳細欄で使う）。
+        self._backup_destination_folder = destination_folder
+
+        self._set_menu_enabled(False)
+        self._backup_loading_window = LoadingWindow(self, message="データベースをバックアップしています…")
+
+        t = threading.Thread(
+            target=self._run_backup_in_thread,
+            args=(destination_folder,),
+            daemon=True,
+        )
+        t.start()
+        self.after(200, self._poll_backup_queue)
+
+    def _run_backup_in_thread(self, destination_folder):
+        try:
+            result = backup_databases(destination_folder)
+            self._backup_result_queue.put((True, result))
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            self._backup_result_queue.put((False, f"{e}\n{tb}"))
+
+    def _poll_backup_queue(self):
+        try:
+            result = self._backup_result_queue.get_nowait()
+        except queue.Empty:
+            self.after(200, self._poll_backup_queue)
+            return
+
+        success, payload = result
+        if self._backup_loading_window is not None:
+            self._backup_loading_window.destroy()
+            self._backup_loading_window = None
+        self._set_menu_enabled(True)
+
+        if success:
+            lines = []
+            if payload["inventory_backup_path"]:
+                lines.append(f"・月次DB：{payload['inventory_backup_path']}")
+            if payload["master_backup_path"]:
+                lines.append(f"・マスタDB：{payload['master_backup_path']}")
+
+            skipped = payload.get("skipped") or []
+            skipped_labels = {"inventory": "月次DB", "master": "マスタDB"}
+            if skipped:
+                lines.append(
+                    "\n※ 次のDBはまだ一度も作成されていないためスキップしました：\n  "
+                    + "、".join(skipped_labels.get(s, s) for s in skipped)
+                )
+
+            log_operation(
+                self.current_worker.get("name", "unknown"),
+                "手動バックアップ",
+                detail=f"保存先: {self._backup_destination_folder}",
+            )
+
+            messagebox.showinfo(
+                "バックアップ完了",
+                "以下のファイルを保存しました。\n\n" + "\n".join(lines),
+                parent=self.winfo_toplevel(),
+            )
+        else:
+            messagebox.showerror(
+                "バックアップエラー",
+                f"バックアップ中にエラーが発生しました。\n\n{payload}",
+                parent=self.winfo_toplevel(),
+            )
+
+    def on_merge_master_from_backup(self):
+        """
+        バックアップされたマスタDB（master_backup_*.db）から、現在のmaster.db
+        （config.MASTER_DB_PATH）に不足しているレコードだけを取り込む
+        （2026-10-03追加）。
+
+        admin限定操作（判断の理由）：workersテーブルを含むマスタデータ全般に
+        影響する操作であり、特にworkers（ログイン可能な作業者とその役割）に
+        他PCのadmin・operatorが追加され得るため、作業者管理画面（編集・有効/
+        無効切替）と同じ基準でadmin限定とした。メインメニュー側でadmin以外には
+        このボタン自体を表示しない設計だが、本メソッド自体にも念のため同じ
+        チェックを入れる（直接呼び出された場合への対策、ui/worker_management_
+        window.py::_require_admin()と同じ考え方）。
+
+        ファイル選択はfiledialog.askopenfilename()、実行は既存の非同期パターン
+        （LoadingWindow＋threading.Thread(daemon=True)＋queue.Queue＋
+        self.after(200, ...)ポーリング、on_backup_databases()と同じ構造）で
+        行い、UIスレッドをブロックしない。実行中は他のDB操作ボタンもあわせて
+        無効化する。
+        """
+        if self.current_worker.get("role") != "admin":
+            messagebox.showerror(
+                "権限がありません",
+                "この操作はadmin役割の作業者のみ実行できます。",
+                parent=self.winfo_toplevel(),
+            )
+            return
+
+        backup_file_path = filedialog.askopenfilename(
+            title="取り込むマスタDBバックアップファイルを選択",
+            filetypes=[("SQLite データベース", "master_backup_*.db"), ("すべてのファイル", "*.*")],
+            parent=self.winfo_toplevel(),
+        )
+        if not backup_file_path:
+            return
+
+        self._set_menu_enabled(False)
+        self._merge_master_loading_window = LoadingWindow(
+            self, message="マスタデータを取り込んでいます…",
+        )
+
+        t = threading.Thread(
+            target=self._run_merge_master_in_thread,
+            args=(backup_file_path,),
+            daemon=True,
+        )
+        t.start()
+        self.after(200, self._poll_merge_master_queue)
+
+    def _run_merge_master_in_thread(self, backup_file_path):
+        try:
+            result = merge_master_from_backup(backup_file_path)
+            self._merge_master_result_queue.put((True, result))
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            self._merge_master_result_queue.put((False, f"{e}\n{tb}"))
+
+    def _poll_merge_master_queue(self):
+        try:
+            result = self._merge_master_result_queue.get_nowait()
+        except queue.Empty:
+            self.after(200, self._poll_merge_master_queue)
+            return
+
+        success, payload = result
+        if self._merge_master_loading_window is not None:
+            self._merge_master_loading_window.destroy()
+            self._merge_master_loading_window = None
+        self._set_menu_enabled(True)
+
+        if success:
+            table_labels = {
+                "board_structure_master": "構成基板数マスタ",
+                "parts_attributes": "部品属性マスタ",
+                "workers": "作業者",
+                "parts": "部品マスタ",
+                "final_products": "完成品マスタ",
+            }
+            lines = []
+            no_change_labels = []
+            for table, added in payload.items():
+                label = table_labels.get(table, table)
+                if added > 0:
+                    lines.append(f"・{label}：{added}件追加")
+                else:
+                    no_change_labels.append(label)
+            if no_change_labels:
+                lines.append(f"・{'、'.join(no_change_labels)}：変更なし")
+
+            log_operation(
+                self.current_worker.get("name", "unknown"),
+                "マスタデータ取り込み",
+                detail=", ".join(f"{table_labels.get(t, t)}:{n}件" for t, n in payload.items()),
+            )
+
+            messagebox.showinfo(
+                "取り込み完了",
+                "マスタデータの取り込みが完了しました。\n\n" + "\n".join(lines),
+                parent=self.winfo_toplevel(),
+            )
+        else:
+            messagebox.showerror(
+                "取り込みエラー",
+                f"マスタデータの取り込み中にエラーが発生しました。\n\n{payload}",
+                parent=self.winfo_toplevel(),
+            )

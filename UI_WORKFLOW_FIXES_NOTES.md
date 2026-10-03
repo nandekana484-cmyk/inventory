@@ -793,6 +793,48 @@ AB-7（右クリック即時登録＋緑ハイライト）・AB追記の複数�
 
 ---
 
+### グループAC：手動バックアップ機能の実装（新機能、2026-10-02）
+
+`services/backup_service.py::backup_databases(destination_folder)`を新規実装した。単純なファイルコピー（`shutil.copy2()`等）ではなく、`sqlite3.Connection.backup()`（SQLite公式のオンラインバックアップAPI）を採用した。書き込み中のDBファイルをコピーしても、ページ単位で整合性を保って完了できるため。
+
+マスタDB分離（グループAB以降、`CANONICAL_DESIGN_DECISIONS.md` D-38参照）後は、`config.DB_PATH`（月次DB）・`config.MASTER_DB_PATH`（マスタDB）の両方が揃って初めて完全な状態になるため、同一タイムスタンプで1回の操作としてまとめてバックアップする。ファイル名（`inventory_backup_<timestamp>.db`・`master_backup_<timestamp>.db`）が保存先フォルダに既に存在する場合は`_1`・`_2`...と連番を付与し、バックアップ対象のDBファイルがまだ存在しない場合（`master.db`未作成等）はそのDBのみスキップする。
+
+メインメニューのヘッダー行に「バックアップ」ボタンを配置し、既存の非同期パターン（`LoadingWindow`＋スレッド＋`queue.Queue`＋ポーリング、`on_create_database()`と同じ構造）でバックグラウンド実行する。
+
+**自己点検で発見・修正したバグ**：実装直後の検証で、`_poll_backup_queue()`が`on_backup_databases()`のローカル変数`destination_folder`をそのまま参照しており`NameError`になる不具合（バックアップ自体は完了するが、完了メッセージ表示・操作履歴記録の段階で例外になる）を発見した。インスタンス属性（`self._backup_destination_folder`）に保持する形に修正した。
+
+詳細は`CANONICAL_DESIGN_DECISIONS.md` §19.1（D-44）参照。
+
+### グループAC追記：バックアップファイルの共有フォルダ機能での再利用実証（調査のみ、新機能は不要と判明）
+
+「バックアップファイルを他PCで取得・利用できるか」という問いに対し、既存の「共有フォルダのDBを開く」機能（`on_open_shared_database()`）を調査したところ、ファイル名に一切制約を持たないことを確認した。隔離コピー上で、実際にバックアップファイルをこの機能で開き、計画・実績データの読み込み・新規の実績登録がバックアップファイル自身に正しく反映されること、ロック機構（`services/db_lock_service.py`）もファイルパス文字列のみに依存する設計であることを確認した。**これにより新規機能の追加は不要と判断した。** 複数PCでの同時アクセスという実機・実ネットワーク環境での検証はできていない。詳細は`CANONICAL_DESIGN_DECISIONS.md` §19.2（D-45）参照。
+
+### グループAD：.exe化のビルド実施（PyInstaller、2026-10-02〜03）
+
+`inventory_app.spec`を新規作成し、`--onefile`形式で実際に`dist/InventoryApp.exe`（約124MB）のビルドに成功した。Tesseract OCR・Poppler本体は同梱しない方針を確定した（PDF OCR機能はまだ十分な精度・再現性が得られていないため）。OCRが必要な操作時にTesseractが見つからない場合はエラーダイアログを表示するのみでアプリ全体はクラッシュしない設計であることをコードで確認した。
+
+ログイン画面・メインメニューの起動、`config.APP_DATA_DIR`（`%LOCALAPPDATA%\InventoryApp\`）へのDB作成は実機確認済み。**生産実績入力画面・共通マスタ5画面・バックアップ機能の実際のボタンクリックによる動作確認は、ttk製ウィジェットの自動化が技術的に困難だったため完了していない**（importの成功＝依存関係が揃っていることは確認済み。優先度の高い申し送り事項）。
+
+**教訓の再現**：検証の過程で「windowedビルドが即座に終了する」という事象を一度観測し修正を加えたが、後の再検証で実際の原因は検証スクリプト自身の起動方法の問題であり、ビルド自体に不具合は無かったことが判明した。D-41（自分の検証結果を疑う）の教訓が.exe化の文脈でも再現した事例として記録する。
+
+`.gitignore`に`build/`・`dist/`を追加した（100MB超のバイナリをGit管理対象から除外するため）。詳細は`CANONICAL_DESIGN_DECISIONS.md` §19.5・§19.6（D-48・D-49）参照。
+
+### グループAE：作業者管理のセキュリティ上の空白の発見と、登録画面・管理画面への分割（重要、セキュリティ対応、2026-10-03）
+
+作業者管理画面（`WorkerManagementWindow`）の仕様確認を行ったところ、ログイン画面自体にパスワード認証が無い（グループS、以前から既知）ことに加え、**作業者管理画面自体がログイン不要で誰でも開け**、画面内の全操作（新規登録・役割変更・有効/無効切替）に`role`（admin/operator）による制限が一切無いことが判明した。`role`列はデータとして存在するが、アクセス制御の目的では現行コードのどこからも参照されておらず実質的に無意味だった。
+
+対策として、作業者管理機能を「登録画面」（`ui/worker_registration_window.py::WorkerRegistrationWindow`、新設、常時誰でも開けるがadmin不在時のみadmin選択肢を提示）と「管理画面」（既存`WorkerManagementWindow`を再編、既存作業者の編集・有効/無効切替専任、admin役割でログイン中の場合のみメインメニューに表示）に分割した。編集・切替の実行自体にも`_require_admin()`による関数レベルのチェックを追加し、画面を直接インスタンス化してメニューの表示制御を迂回しても拒否されることを実証した。operator役割でこの画面を開いた場合は、保存・切替ボタンをグレーアウトし「この画面の操作にはadmin権限が必要です」という案内ラベルを表示する見た目の対策も追加した（ボタン無効化・関数内チェックの二重防御）。
+
+詳細は`CANONICAL_DESIGN_DECISIONS.md` §19.3（D-46）参照。
+
+### グループAE追記：マスタデータの「不足分のみ取り込み」機能（2026-10-03）
+
+複数PC間でadmin体制・マスタデータを揃える方法として、「現在のデータを正とし、バックアップ側は不足分のみ追加する」方針を採用した（上書き・完全マージは選ばない）。`services/master_merge_service.py::merge_master_from_backup(backup_file_path)`を新規実装し、5テーブル（`board_structure_master`・`parts_attributes`・`workers`・`parts`・`final_products`）それぞれについて、バックアップ側の主キーが現在の`master.db`に存在しない行だけを、既存のupsert関数を再利用して追加する。`workers`の取り込みでは`role`をバックアップ側の値のまま追加する。この取り込み操作もグループAEと同じ基準でadmin限定とした（メニュー非表示＋関数内の二重チェック）。
+
+隔離コピー上で、既存レコードが上書きされないこと、同じバックアップファイルでの再実行が冪等（追加件数0件）であることを確認した。詳細は`CANONICAL_DESIGN_DECISIONS.md` §19.4（D-47）参照。
+
+---
+
 ## 4. 未対応・将来の検討事項
 
 - 項目14（実績履歴からのクリックで計画呼び出し）：未実装
@@ -845,6 +887,12 @@ AB-7（右クリック即時登録＋緑ハイライト）・AB追記の複数�
 - **`_perform_registration()`の「重複」呼び出しの調査** → **2026-09-30、調査完了・現状維持**。`search_plan()`後の`_setup_ng_side_ui()`・`_load_current_daily_qty()`の再呼び出しは、間にNG申告の保存等の実際のDB書き込みが挟まっているため、削除すると登録後のNG入力欄の表示が崩れることを確認し、削除しない判断で確定した。`CANONICAL_DESIGN_DECISIONS.md` D-32参照。
 - **未確認・申し送り事項（2026-10-01時点）**：「今週」の起算日（月曜起算とした）が業務慣習と合っているか、統合画面の列表示/非表示のレイアウトの見た目、チェックボックスの状態を次回起動時に保持するか、大量データ（922行）でのフィルタ操作の体感速度。いずれも業務側の意向確認・実機目視確認が未実施。詳細は`PRODUCTION_NG_ENHANCEMENTS_NOTES.md` §21参照。
 - **UnifiedReportWindowへの「登録日」列追加・未完了計画のDB間引き継ぎルールの見直し** → **2026-10-01、完了**。`production_daily.report_date`を登録日列としてTreeview・CSV・PDF出力に追加（代表選定ロジックは不要と判明）。`list_incomplete_lots()`を`_evaluate_lot_status()`ベースの判定に統一し、構成基板数不足ロットが無条件で未完了引き継ぎ対象になるよう修正。未着手計画は実装予定日が引継ぎ日から50日以内のものだけを引き継ぐ新ルールを追加（パース不能な日付は安全側で含める）。ロット単位（完了済みファイルNo込み）での引き継ぎは既存実装で既に満たされていたと確認済み（コード変更不要）。詳細は`PRODUCTION_NG_ENHANCEMENTS_NOTES.md` §22、`CANONICAL_DESIGN_DECISIONS.md` §18.1・§18.2（D-35〜D-37）参照。
-- **【重要・優先度高・未着手】共通マスタが月次DBに同居している設計上の課題** → **2026-10-01、発見（調査のみ完了）**。`board_structure_master`・`parts_attributes`・`workers`・`parts`・`final_products`が、月次DB切り替えの対象である`config.DB_PATH`に月次データと無区別に同居しており、月次DBを新規作成するたびに共通マスタも空の状態から始まる。未完了計画の引き継ぎ機能の検証（構成基板数マスタが新DBにコピーされず再評価結果が変わる実例）で発見した。分離には`config.py`への第2のDBパス新設・各マスタ系モジュールの接続先振り分けが必要で影響範囲は複数モジュールに及ぶため、**優先度の高い未着手タスクとして次回以降の着手を推奨する**。`bom_master`は月次の概念と矛盾しないキャッシュのため分離対象に含めない。詳細は`BOM_MIGRATION_NOTES.md` §14、`CANONICAL_DESIGN_DECISIONS.md` §18.3（D-38）参照。
+- **共通マスタが月次DBに同居している設計上の課題** → **2026-10-01、発見。2026-10-02、分離自体はコードとして実装済みであることが判明した**（`config.MASTER_DB_PATH`・`get_master_connection()`・`board_structure_master.py`/`parts_attributes.py`/`workers.py`/`master.py`の接続先切り替え・`tests/conftest.py`）。隔離コピー上で、ログイン画面の作業者一覧0件表示・作業者登録・構成基板数マスタCSVインポートがいずれも`master.db`へ正しく反映されることを確認済み。`inventory.db`側に残っていた孤立データ（5テーブル）は2026-10-02に削除済み（下記参照）、`master.db`にはログイン動作確認用のテスト作業者（`worker_id=W001`）を登録済み。**【重要・未解決・優先度高】`board_structure_master`の実データ（3119件）そのものをCSV再インポート等で`master.db`側に再構築する作業は、依然として未着手のまま残っている。** `bom_master`は月次の概念と矛盾しないキャッシュのため分離対象に含めない。詳細は`BOM_MIGRATION_NOTES.md` §14、`CANONICAL_DESIGN_DECISIONS.md` §18.3・§18.6（D-38・D-42〜D-43）参照。
 - **レガシーテーブル14個の削除**（`production_records`・`lots`・`usage_daily`・`incoming_goods_log`・`stock_manual_adjustment`・`closing_runs`・`closing_wip_adjustment`・`audit_log`・`snapshot_batches`・`stock_snapshot`・`physical_count`・`board_definitions`・`component_bom`・`component_groups`） → **2026-10-01、完了**。実DB0件・現行コードから一切参照されていないことを確認した上でバックアップを取って削除。`production_daily.lot_id REFERENCES lots(lot_id)`という外部キー宣言は、アプリが`PRAGMA foreign_keys`を設定しないため実際には強制されておらず、かつ`lots`自体に現行コードからのINSERTが無いため実質的に満たされ得ないものだったと判明。`parts`・`final_products`は分離検討対象として削除せず維持。詳細は`BOM_MIGRATION_NOTES.md` §14、`CANONICAL_DESIGN_DECISIONS.md` §18.4（D-39）参照。
 - **【重要・必ず記録】検証作業自体の教訓（2026-10-01）**：レガシーテーブル削除後の動作確認の過程で、2件の誤った報告が発生し、いずれも事後的に自分で誤りに気づいて訂正した。(a)文字コード不一致で文字化けしたウィンドウタイトルを正確に確認せず「ログイン画面がスキップされた」と誤報告（実際はログイン画面は正しく表示されていた。`GetWindowTextW`でのUnicode直接取得により訂正）。(b)検証スクリプトが`MainWindow`を`destroy()`で直接閉じ、`WM_DELETE_WINDOW`プロトコル経由のロック解放処理が実行されなかったため、実DBのロックファイルに検証用の架空の作業者名が残留し、「別の人物が使用中では」という懸念を招いた（`force=True`での奪取→正規の`release_lock()`で後始末済み）。**教訓**：`MainWindow`を直接インスタンス化する検証では、`destroy()`ではなく正規の終了経路を使うか確実にロック解放の後始末を行うこと。文字化けした出力を根拠に断定的な報告をしないこと。詳細・`CANONICAL_DESIGN_DECISIONS.md`の既存原則（D-18「調査結果が確認できない場合は推測で断定しない」）との関連付けは同ファイル §8（D-40）・§9（D-41）参照。
+- **手動バックアップ機能（`services/backup_service.py::backup_databases()`）** → **2026-10-02、完了**。月次DB・マスタDBを同一タイムスタンプでまとめてバックアップ、`sqlite3.Connection.backup()`採用、ファイル名重複時の連番付与。グループAC参照。
+- **バックアップ経由での月次DB共有の実証** → **2026-10-02、調査完了・新機能は不要と判明**。既存の「共有フォルダのDBを開く」機能でバックアップファイルをそのまま開けることを実証した。複数PCでの実機・実ネットワーク環境での検証は未実施。グループAC追記参照。
+- **【重要・優先度高】board_structure_masterの実データ（3119件）のmaster.dbへの再構築** → **未着手**。CSV再インポート等による再構築が必要。`BOM_MIGRATION_NOTES.md` §14参照。
+- **.exe化のビルド実施**（`inventory_app.spec`、`--onefile`形式） → **2026-10-02〜03、ビルド完了**。ログイン画面・メインメニュー起動・`%LOCALAPPDATA%`へのDB作成は実機確認済み。**【重要・優先度高】生産実績入力画面・共通マスタ5画面・バックアップ機能・マスタデータ取り込み機能の実際のボタンクリックによる動作確認は未完了**（ttk製ウィジェットの自動化が技術的に困難だったため、手動確認待ち）。Tesseract・Popplerは同梱しない方針を確定。検証中に観測した「windowedビルドが即座に終了する」事象は、後の再検証で検証スクリプト自身の起動方法の問題と判明し、ビルド自体に不具合は無かった（D-41の教訓の再現）。グループAD参照。
+- **作業者管理のセキュリティ上の空白の発見と対策（登録画面・管理画面への分割）** → **2026-10-03、完了（重要・セキュリティ対応）**。ログイン画面にパスワード認証が無いことに加え、作業者管理画面自体がログイン不要で誰でも開け、role列が実質無視されていたことが判明。登録画面（`WorkerRegistrationWindow`、新設）と管理画面（既存`WorkerManagementWindow`を再編、admin限定）に分割し、ボタングレーアウト＋関数内チェックの二重防御を実装。グループAE参照。
+- **マスタデータの「不足分のみ取り込み」機能（`services/master_merge_service.py::merge_master_from_backup()`）** → **2026-10-03、完了**。現在のデータを正とし、バックアップ側は不足分のみ追加する方針（上書きしない）。admin限定操作。グループAE追記参照。
