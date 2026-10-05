@@ -9,6 +9,7 @@ from tkinter import ttk, messagebox, filedialog
 from models.inventory import list_inventory, upsert_inventory, upsert_inventory_stock, delete_inventory
 from models.operation_log import log_operation
 from ui.loading_window import LoadingWindow
+from ui.window_utils import center_window
 
 # エンコーディング自動判定の候補（この順で試す）
 _ENCODINGS_TO_TRY = ["utf-8-sig", "utf-8", "cp932"]
@@ -113,6 +114,7 @@ class InventoryInputWindow(tk.Toplevel):
         self.current_worker = current_worker or {}
         self.title("在庫入力")
         self.geometry("760x520")
+        center_window(self, parent)
 
         tree_frame = ttk.Frame(self, padding=10)
         tree_frame.pack(expand=True, fill=tk.BOTH)

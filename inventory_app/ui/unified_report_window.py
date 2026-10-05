@@ -100,6 +100,7 @@ from ui.daily_report_window import (
 from models.wip_board_snapshot import save_wip_snapshot
 from models.operation_log import log_operation
 from ui.lot_progress_window import STATUS_LABELS
+from ui.window_utils import center_window
 
 PERIOD_OPTIONS = ["今日", "今週", "今月", "カスタム範囲"]
 
@@ -186,6 +187,7 @@ class UnifiedReportWindow(tk.Toplevel):
 
         self.title("実績レポート")
         self.geometry("1020x560")
+        center_window(self, parent)
 
         period_frame = ttk.LabelFrame(self, text="集計期間", padding=10)
         period_frame.pack(fill=tk.X, padx=10, pady=10)
@@ -649,6 +651,7 @@ class UnifiedReportWindow(tk.Toplevel):
         popup = tk.Toplevel(self)
         popup.title(f"{label_text} の絞り込み")
         popup.geometry("260x380")
+        center_window(popup, self)
         popup.transient(self)
         popup.grab_set()
 

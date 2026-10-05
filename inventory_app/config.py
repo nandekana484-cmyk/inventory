@@ -42,8 +42,15 @@ else:
 # 同一のため既に存在しており、実質何もしない）。
 os.makedirs(APP_DATA_DIR, exist_ok=True)
 
+# ローカルDBの親フォルダ名。新規作成・バックアップの呼び出しが組み立てる
+# フォルダ名付きDBパスは os.path.join(APP_DATA_DIR, DB_ROOT_FOLDER_NAME, folder,
+# 'inventory.db') の形を取るのに対し、既定DB（フォルダ名なし）はこの直下
+# （1階層浅い場所）に置かれる。is_default_db()の判定・フォルダ名の予約の
+# 両方でこの定数を参照する。
+DB_ROOT_FOLDER_NAME = 'db'
+
 # データベースファイルの保存パス
-DB_PATH = os.path.join(APP_DATA_DIR, 'db', 'inventory.db')
+DB_PATH = os.path.join(APP_DATA_DIR, DB_ROOT_FOLDER_NAME, 'inventory.db')
 
 # マスタDB（board_structure_master・parts_attributes・workers・parts・
 # final_products）の保存パス。月次DB（DB_PATH）と異なり、set_db_path()による
@@ -75,6 +82,29 @@ def set_db_path(path: str):
 def get_current_db_label() -> str:
     """UI表示用に、現在接続中のDBパスを返す。"""
     return DB_PATH
+
+
+def is_default_db() -> bool:
+    """
+    現在のconfig.DB_PATHが「既定DB」（APP_DATA_DIR/db/inventory.db、
+    フォルダ名を挟まない1階層浅いパス）かどうかを判定する。
+
+    既定DBは、起動時にユーザーが一度もDBを選択・新規作成・呼び出し
+    （on_switch_database()・on_create_database()・on_restore_from_backup()）
+    していない場合に使われる、モジュール読み込み時点のDB_PATHそのもの
+    （上記のDB_PATH定義を参照）。これらの操作はいずれも
+    os.path.join(APP_DATA_DIR, DB_ROOT_FOLDER_NAME, folder, 'inventory.db')
+    という、フォルダ名を1つ挟む形でパスを組み立てるため、親フォルダ名が
+    folder名になる。既定DBだけが親フォルダ名が"db"（DB_ROOT_FOLDER_NAME）
+    そのものになる、というパスの深さの違いで判定できる（追加の状態保持は
+    不要。ファイルが存在するかどうか・データが入っているかどうかは問わない
+    ——既定DBは一律「未選択」として扱う方針のため）。
+
+    フォルダ名の予約（"db"という名前のフォルダをユーザーが作成できないよう
+    禁止する、ui/main_window.py参照）と組み合わせることで、この判定が
+    既定DB以外のケースで誤って成立することを防いでいる。
+    """
+    return os.path.basename(os.path.dirname(DB_PATH)) == DB_ROOT_FOLDER_NAME
 
 # 各種フォルダパス（DB_PATHと同じ理由でAPP_DATA_DIR基準）
 LOG_DIR = os.path.join(APP_DATA_DIR, 'logs')

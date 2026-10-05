@@ -20,6 +20,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 from models.workers import upsert_worker, any_admin_exists
+from ui.window_utils import center_window
 
 
 def _generate_worker_id() -> str:
@@ -43,6 +44,7 @@ class WorkerRegistrationWindow(tk.Toplevel):
         self.title("作業者登録")
         self.geometry("360x220")
         self.resizable(False, False)
+        center_window(self, parent)
 
         frame = ttk.Frame(self, padding=20)
         frame.pack(expand=True, fill=tk.BOTH)

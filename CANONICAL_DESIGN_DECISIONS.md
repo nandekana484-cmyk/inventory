@@ -17,7 +17,7 @@
 | D-1 | BOM TSVのヘッダーにはA/B/Cの3表記ゆれが存在し、いずれも実質同一データとして吸収する（列ごとに独立して実在する方の列名を採用）。Dパターン（ヘッダー破損）はエラー扱いとする | BOM_MIGRATION_NOTES.md §9 |
 | D-2 | 同一file_noは複数の実装ライン向けに同一BOMを重複記載しているため、`mounting_line`で絞り込まずに合算してはならない | BOM_MIGRATION_NOTES.md §10 |
 | D-3 | 丁取り数（`parts_attributes.teitori`）は部品自身の96コードではなく、同一file_no・実装ライン内の「K行」（セットアップ部品種別='K'、基板自身を表す行）の96コードに対して登録されている。K行は生産面に関係なく常に生産面=1で記録される | BOM_MIGRATION_NOTES.md §11 |
-| D-4 | ~~`parts`（部品マスタ）・`final_products`（完成品マスタ）・`lots`テーブル、および「4.マスターデータ管理」「11.マスタインポート」画面は、現行のBOM基盤・キッティング計画・生産実績のいずれからも参照されない第一世代設計の名残であり、削除ではなく現状維持（参考情報として残す）~~ → **2026-10-01、一部訂正・更新（D-39参照）**。`parts`・`final_products`は、実際には現行の「マスターデータ管理」（`ui/master_management.py`）・「マスターインポート」（`services/master_import_service.py`）画面から現役で読み書きされていることが再調査で判明した（当時の「参照されない」という記述は誤りだった）ため、削除せず現状維持（共通マスタ分離の検討対象、D-38）とする。一方`lots`は、現行コードから本当に一切参照されていないこと（実DB0件、FK宣言は不整合、D-39参照）を確認した上で2026-10-01に削除した | 本ファイル §5・§18 |
+| D-4 | ~~`parts`（部品マスタ）・`final_products`（完成品マスタ）・`lots`テーブル、および「4.マスターデータ管理」「11.マスタインポート」画面は、現行のBOM基盤・キッティング計画・生産実績のいずれからも参照されない第一世代設計の名残であり、削除ではなく現状維持（参考情報として残す）~~ → **2026-10-01、一部訂正・更新（D-39参照）**。`parts`・`final_products`は、実際には現行の「マスターデータ管理」（`ui/master_management.py`）・「マスターインポート」（`services/master_import_service.py`）画面から現役で読み書きされていることが再調査で判明した（当時の「参照されない」という記述は誤りだった）ため、削除せず現状維持（共通マスタ分離の検討対象、D-38）とする。一方`lots`は、現行コードから本当に一切参照されていないこと（実DB0件、FK宣言は不整合、D-39参照）を確認した上で2026-10-01に削除した → **さらに2026-10-05、メインメニュー整理（D-50）により「マスターデータ管理」（`ui/master_management.py`）・「マスターインポート」（`ui/master_import_window.py`・`services/master_import_service.py`）画面自体を削除した**。削除理由：`parts`・`final_products`を読む機能（`get_all_parts()`・`get_all_products()`）がこの2画面以外に存在しないことを確認済み（他画面からの参照なし）。`parts`・`final_products`テーブル自体・`models/master.py`の`upsert_part`/`upsert_product`/`init_master_tables`（`services/master_merge_service.py`が「不足分のみ取り込み」機能で使用）は削除せず残置した。呼び出し元が無くなった`get_all_parts`/`get_all_products`/`delete_part`/`delete_product`は`models/master.py`から削除した | 本ファイル §5・§18・§20 |
 | D-5 | `kitting_list_no`単体では計画を一意に識別できない（同一kitting_list_noが複数の異なるlot_noにまたがって存在するのが正常な業務パターン）。`(kitting_list_no, lot_no)`の組み合わせで初めて一意になる | PRODUCTION_NG_ENHANCEMENTS_NOTES.md §5 |
 | D-6 | 実績・NG申告は「日付問わず1計画（kitting_list_no, lot_no）1レコード、常に上書き」で統一する（同じロットの別日生産は別のkitting_list_noとして立てる業務運用のため） | PRODUCTION_NG_ENHANCEMENTS_NOTES.md §6 |
 | D-7 | 実績CSV取込には`import_production_csv()`（即時登録、後方互換のため維持）と`parse_production_csv_for_staging()`＋`ProductionImportStagingWindow`（ステージング方式、現在の標準フロー）の2系統が**意図的に併存**している。片方が巻き戻った結果ではない | UI_WORKFLOW_FIXES_NOTES.md §3 グループH（H-2） |
@@ -58,11 +58,30 @@
 | D-42 | マスタDB分離（D-38）は、2026-10-02時点で**コードとしては実装済み**（`config.MASTER_DB_PATH`・`models/db_common.py::get_master_connection()`・`board_structure_master.py`/`parts_attributes.py`/`workers.py`/`master.py`の4モジュールの接続先切り替え・`tests/conftest.py`によるテスト隔離）。ただし`inventory.db`側に残る既存データ（`board_structure_master`3119件・`workers`1件を含む5テーブル）の`master.db`への**移行は未完了**であり、これは「移行するか、初期化して新規に再構築するか」という別の業務判断を要する未解決の課題として残っている。コード実装の完了と、データ移行の完了は別の事柄であることに注意 | 本ファイル §18.3・§18.6 |
 | D-43 | 複数拠点・複数セッションでの並行作業では、一方で実装が先行し、記録（本ファイル等のノート）への反映が後追いになることで、**記録と実際のコードの状態が一時的に食い違う**状態が起こりうる（マスタDB分離がD-38で「未着手」と記録された後、別セッションで実装が完了していたにもかかわらず、記録側がそれに気づかないまま「未着手」の記述を維持していた事例、本ファイル§18.6参照）。本ファイル§5「環境間の整合性チェック手順」の定期的な実施（特に、記録上「未着手」「保留」としている項目が、実は既に別の場所で着手・完了していないかの確認）が、巻き戻り検知だけでなく、こうした記録の後追い状態の検知にも有効である | 本ファイル §18.6 |
 | D-44 | 手動バックアップ（`services/backup_service.py::backup_databases()`）は、`shutil.copy2()`等の単純なファイルコピーではなく`sqlite3.Connection.backup()`（SQLite公式のオンラインバックアップAPI）を採用する。書き込み中のDBファイルをコピーしても整合性を保って完了できるため。`config.DB_PATH`（月次DB）・`config.MASTER_DB_PATH`（マスタDB）は、マスタDB分離（D-38）後は両方揃って初めて完全な状態になるため、同一タイムスタンプで1回の操作としてまとめてバックアップする。ファイル名重複時は`_1`・`_2`...と連番を付与し、バックアップ対象のDBファイルがまだ存在しない場合（例：`master.db`未作成）はそのDBのみスキップし、空のDBを誤って作成しない | 本ファイル §19.1 |
-| D-45 | バックアップファイル（`inventory_backup_<timestamp>.db`等）は、既存の「共有フォルダのDBを開く」機能（`on_open_shared_database()`）でそのまま開いて本番DBとして使い始められることを実証した。この機能・ロック機構（`services/db_lock_service.py`）はいずれもファイル名・パス文字列のみに依存する設計であり、バックアップファイルを特別扱いする新規機能は不要と判断した。複数PCでの同時アクセスという実機・実ネットワーク環境での検証はできていない | 本ファイル §19.2 |
+| D-45 | ~~バックアップファイル（`inventory_backup_<timestamp>.db`等）は、既存の「共有フォルダのDBを開く」機能（`on_open_shared_database()`）でそのまま開いて本番DBとして使い始められることを実証した。この機能・ロック機構（`services/db_lock_service.py`）はいずれもファイル名・パス文字列のみに依存する設計であり、バックアップファイルを特別扱いする新規機能は不要と判断した。複数PCでの同時アクセスという実機・実ネットワーク環境での検証はできていない~~ → **2026-10-05、D-50により改訂**。この方針には3つの問題があった：①バックアップ原本そのものがそのまま本番DBになってしまう（コピーではなく原本を直接使い続けることになる）、②マスタDB（`master.db`）は復元されない（この機能が切り替えるのは`config.DB_PATH`のみ）、③D-20（共有フォルダ直接アクセスからローカル+バックアップ方式への転換）の方針と整合しない（「共有フォルダのDBを開く」機能自体を前提にしているため）。これらを解消するため、「バックアップの呼び出し」機能（新しいローカルフォルダへ`sqlite3.Connection.backup()`でコピーしてから切り替える、原本・元のDBとも不変）に置き換えた | 本ファイル §19.2・§20 |
 | D-46 | ログイン画面にパスワード認証が無いことに加え、作業者管理画面（`WorkerManagementWindow`）自体がログイン不要で誰でも開け、`role`（admin/operator）列が存在するにもかかわらずアクセス制御の目的ではどこからも参照されず実質的に無意味だった、というセキュリティ上の空白が判明した。対策として、作業者管理機能を「登録画面」（`ui/worker_registration_window.py::WorkerRegistrationWindow`、常時誰でも開けるが、`models/workers.py::any_admin_exists()`がTrueの場合はadmin選択肢自体を提示しない）と「管理画面」（既存`WorkerManagementWindow`を再編、既存作業者の編集・有効/無効切替専任、admin役割でログイン中の場合のみメインメニューに表示）に分割した。編集・切替の実行自体にも`_require_admin()`による関数レベルのチェックを残し、画面を直接インスタンス化してメニューの表示制御を迂回しても拒否される（ボタンのグレーアウトという見た目の対策と合わせた二重の防御） | 本ファイル §19.3 |
 | D-47 | 複数PC間でadmin体制・マスタデータを揃える方法として、「現在のデータを正とし、バックアップ側は不足分のみ追加する」方針を採用する（上書き・完全マージは選ばない）。`services/master_merge_service.py::merge_master_from_backup()`が、5テーブル（`board_structure_master`・`parts_attributes`・`workers`・`parts`・`final_products`）それぞれについて、バックアップ側の主キーが現在の`master.db`に存在しない行だけを、既存のupsert関数を再利用して追加する。`workers`の取り込みでは`role`をバックアップ側の値のまま追加する（既存のadmin・operatorの値には一切影響しない）。この取り込み操作もD-46と同じ基準でadmin限定とした | 本ファイル §19.4 |
 | D-48 | .exe化は`--onefile`形式を採用する。`config.py`のBASE_DIR算出部のコメントが最初からonefile形式（`sys.executable`基準）を前提に書かれていたため、既存設計との整合性を優先した。Tesseract OCR・Poppler本体は同梱しない方針を確定した（PDF OCR機能はまだ十分な精度・再現性が得られていないため）。PDF読み取り機能のコード自体は通常通り同梱され、OCRが必要な操作時にTesseractが見つからない場合はエラーダイアログを表示するのみでアプリ全体はクラッシュしない設計であることをコードで確認した | 本ファイル §19.5 |
 | D-49 | .exe化の動作確認中、「windowedビルド（`console=False`）が即座に無言で終了する」という事象を一度観測し、`sys.stdout`/`sys.stderr`が`None`になることが原因という仮説のもと`main.py`に防御的な修正を加えたが、後の再検証で、実際の原因は検証スクリプト自身の起動方法（`cmd.exe`経由の`start /B`）の問題であり、ビルド自体に不具合は無かったことが判明した。D-41（文字化けした出力を根拠に断定しない）と同種の「自分の検証結果を疑うべき」教訓が、.exe化の文脈でも再現した事例。修正自体は無害（既知のPyInstaller windowed時の危険への一般的な予防策）のため、コードには残している | 本ファイル §19.6 |
+| D-50 | メインメニューを整理した（2026-10-05）。(1) 共有フォルダ3ボタン（共有フォルダのDB一覧／共有フォルダのDBを開く／共有フォルダに新規作成）・`ui/shared_db_list_window.py`・`services/shared_db_scan_service.py`・`services/app_settings_service.py::save_shared_db_root()`/`load_shared_db_root()`を削除し、代わりに「バックアップの呼び出し」ボタン（権限制限なし）を新設した。「共有フォルダのDBを開く」機能をバックアップの復元に転用する旧方針（D-45）が持っていた3つの問題（原本がそのまま本番DBになる・マスタDBが復元されない・D-20の方針と不整合）を解消するため、新しいローカルフォルダへ`sqlite3.Connection.backup()`でコピーしてから切り替える方式（`services/backup_service.py::validate_monthly_db_backup()`で月次DBかどうかをテーブル構成で判定し、マスタDBのバックアップ・SQLiteでないファイルを拒否した上で、`restore_backup_as_new_local_db()`でコピーする。原本・元のDBとも不変。判定方式自体は後日D-53で見直した）に置き換えた。マスタDBはこの機能の対象外のまま（必要な場合は既存の「マスタデータを他PCから取り込む」、D-47を使う）。(2) 「4.マスターデータ管理」（`ui/master_management.py`）・「5.マスターインポート」（`ui/master_import_window.py`・`services/master_import_service.py`）を削除した（`parts`・`final_products`を読む機能がこの2画面以外に存在しないことを確認した上で削除、D-4参照）。テーブル自体・`models/master.py`の一部関数（`upsert_part`/`upsert_product`/`init_master_tables`、`services/master_merge_service.py`の「不足分のみ取り込み」が使用）は残置した。(3) 「PDF読み取り」「操作履歴」を月次データ列（右列）から共通マスタ列（左列）の「ツール」見出し配下へ番号なしで移動した。依存先DB（`config.DB_PATH`、月次DB）は変わらないため、配置は使用頻度の低い補助機能をまとめる目的のレイアウト上の都合であり、依存DBによる列分けの厳密な例外であることをコード上のコメントに明記した | 本ファイル §20 |
+| D-51 | `db/schema.sql`（`init_database_at()`が新規の月次DBを作成する際に使う定義）に、マスタDB分離（D-38・D-42）以前の名残である`workers`テーブルの`CREATE TABLE IF NOT EXISTS`定義が今も残っていることが、D-50の検証中に判明した。新規作成した月次DBにはこの未使用の`workers`テーブルが物理的に作成されてしまうため、「`workers`テーブルの有無」を月次DBかマスタDBかの判定材料に使うと誤判定する（実際に検証中、正しい月次DBバックアップがマスタDBと誤判定される事象を確認した）。`schema.sql`自体には`parts`・`final_products`・`lots`（D-39で実DBからは削除済み）の定義も同様に残っており、新規作成した月次DBには引き続きこれらの空テーブルが作られる。`schema.sql`の整理自体は本タスクのスコープ外のため見送り、`services/backup_service.py`の月次DB／マスタDB判定では`board_structure_master`・`parts_attributes`（`schema.sql`に定義が無く、マスタDB分離後は`master.db`側にしか作られない）のみをマスタDBの目印として使うことで回避した。`schema.sql`自体の整理（不要な`CREATE TABLE`定義の削除）は未着手のまま残っている | 本ファイル §20 |
+| D-52 | モジュール削除時、「ある関数の呼び出し元」だけをgrepして安全と判断すると、そのモジュール内の**別の関数**が実は他から再利用されている場合を見落とすことがある（`services/master_import_service.py`の削除検討時、`import_parts_csv()`の呼び出し元のみを確認し、同じファイル内の汎用関数`parse_csv_generic()`が`services/production_import_service.py`からも再利用されていることを見落としかけた）。以降、モジュール削除前の安全確認は、特定の関数名ではなく**モジュール名そのもの**でリポジトリ全体をgrepすることを原則とする（テスト・PyInstallerの`.spec`・ドキュメント内のコード例も対象に含める）。再利用されていた汎用部分（`parse_csv_generic`・`_open_csv_with_fallback`・`_resolve_column_map`・`_ENCODINGS_TO_TRY`）は内容を変更せず`services/csv_parsing_common.py`（新規）へ切り出し、`production_import_service.py`の参照先を差し替えた上で`master_import_service.py`を削除した | 本ファイル §20 |
+| D-53 | `validate_monthly_db_backup()`（D-50で新設）の判定方式を、「マスタDB固有テーブル（`board_structure_master`・`parts_attributes`等）があれば拒否」という否定的な判定から、「月次DB固有テーブル（`kitting_plan_items`）があれば受理」という肯定的な判定に変更した（2026-10-05）。マスタDB分離（D-38・D-42）より前（2026-10-02より前）に作成された月次DBには、当時の`db/schema.sql`・各モジュールの接続先が`get_connection()`（月次DB）だったため、`board_structure_master`・`parts_attributes`・`workers`・`parts`・`final_products`の5テーブルが物理的に同居している。この同居は分離前の月次DBとして正常な状態だが、旧判定方式ではこれを「マスタDBのバックアップ」と誤って拒否してしまうことを、実在する分離直前の実バックアップファイル（`inventory_app/db/inventory.db.bak_before_master_tables_removal_20261002_084718`、読み取りのみで確認）を使った検証で確認した。`kitting_plan_items`は`db/schema.sql`には定義されず`models.kitting_plan.init_kitting_plan_tables()`（月次DB経由）でのみ作成されるため、分離の前後を問わず月次DBには常に存在し、`master.db`には存在しない、信頼できる肯定的な目印として使える。マスタDB固有テーブルの存在は、拒否条件としてではなく「マスタDBのバックアップのようです」という具体的な拒否理由を出すためのヒントとしてのみ残した | 本ファイル §20.8 |
+| D-54 | 全画面（`tk.Toplevel`/`tk.Tk`を生成する29クラス＋関数内ダイアログ11か所）に中央寄せを適用した（2026-10-05）。共通ヘルパー`ui/window_utils.py::center_window(window, parent=None)`を新設し、各画面の`__init__`（または関数内の生成箇所）の最後に1行追加するだけで適用できるようにした。`parent`が無い・現在表示されていない（`withdrawn`/`iconic`）場合はディスプレイ中央、それ以外は`parent`の中央に重ね、画面外にはみ出す場合は画面内に収まるよう補正する。サイズ自体は変更しない：`geometry("WxH")`で明示的にサイズ指定済みの画面はその幅・高さを使い、サイズ未指定（内容に応じた自動サイズ）の画面も、`update_idletasks()`後の`winfo_width()`/`winfo_height()`がどちらの場合も正しい値を返すことを実機確認した上で、分岐せず同じ経路で扱っている。ちらつき防止のため、`center_window()`内部で`withdraw()`→位置決定→`deiconify()`を行う（呼び出し元のコードは変更不要）。既存の`_open_singleton_window()`による再表示（既に開いている画面を前面に出すだけの動作）は、`center_window()`が`__init__`内で1回しか呼ばれない設計のため、位置が動かないことを確認済み | 本ファイル §21 |
+| D-55 | D-54の実装着手前の調査で、前回調査（メインメニュー整理時）の「全画面が固定サイズの`geometry("WxH")`を持つ」という前提が誤りだったことが判明した。関数内ダイアログ11か所のうち4か所（`ui/ng_input_window.py`の「対象外にする理由」・「実装ラインの選択」、`ui/kitting_production_entry.py`の「登録内容の確認」、`ui/wip_expansion_window.py`の「対象外にする理由」）は、`geometry()`呼び出しを持たず、パックしたウィジェットの内容に応じた自動サイズのままだった。これらは`center_window()`側の分岐（上記D-54参照）で違和感なく対応できたため、サイズ自体の変更（新たに`geometry("WxH")`を追加する等）は行わず、自動サイズの挙動を維持したまま中央寄せのみ適用した | 本ファイル §21 |
+| D-56 | 既定DB（`config.APP_DATA_DIR/db/inventory.db`、`on_switch_database()`等が組み立てるフォルダ名付きパスより1階層浅い、モジュール読み込み時点のデフォルトパス）を、ファイルの有無・データの有無を問わず一律「未選択」として扱い、業務操作（月次データ・共通マスタ・ツール・バックアップ・マスタ取込の各ボタン、「前月から引き継ぐ」チェック）を無効化する方針を確定した（2026-10-05）。**理由**：名前の付いていない既定DBに、利用者が気づかないまま入力・CSV取込を行ってしまうリスクがあったため（どの月の作業か特定できない暗黙のDBが実質的な作業領域になってしまう）。判定は`config.is_default_db()`（`os.path.basename(os.path.dirname(DB_PATH)) == "db"`というパスの深さのみで判定、追加の状態保持は不要）に集約し、`ui/main_window.py::_apply_widget_states()`が、既存の`_set_menu_enabled()`（`carry_over_incomplete_lots()`実行中の一括無効化）とは独立したゲート（`_default_db_locked_widgets`）として合成する。2つのゲートはいずれも「Trueなら制限なし」側で持ち、ANDで合成するため、一方の解除が他方の無効状態を誤って外すことがない。既定DBというフォルダ名（`config.DB_ROOT_FOLDER_NAME = "db"`）は予約語とし、新規作成・バックアップの呼び出しの両方でこの名前のフォルダ作成を拒否する | 本ファイル §21 |
+| D-57 | D-56の実装中、既定DBに対して一切のファイル読み書きを行わないという前提を破る実装上の見落としを発見・修正した：在庫値出力済み判定（`models.operation_log.get_inventory_diff_export_status()`）が内部で`init_operation_log_table()`（`CREATE TABLE IF NOT EXISTS`）を呼ぶため、`sqlite3.connect()`が存在しない既定DBファイルを新規作成してしまっていた。隔離環境での検証で、空の環境で起動しただけで既定DBファイルが作られてしまう事象・実データ入りの既定DBファイルのハッシュが起動〜終了で変化してしまう事象の両方を実際に確認した。`ui/main_window.py::_update_current_db_label()`・`_confirm_proceed_despite_exported_db()`の両方に「既定DBの間は在庫値出力済み判定自体を呼ばない」ガードを追加して解消した。**教訓**：「既定DBは読み書きしない」という方針は、既定DB判定（D-56）そのものの実装だけでなく、既定DBの状態に応じて分岐する機能（在庫値出力済み判定を含む）全てに同じ注意が必要になる横断的な制約であり、機能を1つ追加するたびに見落としがちである | 本ファイル §21 |
+| D-58 | 在庫値出力（`ui/inventory_diff_window.py::InventoryDiffWindow`の「7. 在庫値出力」）の完了を`operation_log`に記録し（`OPERATION_NAME_INVENTORY_DIFF_EXPORT = "在庫値出力"`、`on_export_pdf()`/`on_export_csv()`の成功時のみ。保存ダイアログのキャンセル・出力失敗時は記録しない）、出力済みのDBを開いている間はメインメニューに目立つ警告（最終出力日時付き）を常時表示し、月次データ1〜6の画面を開く際には確認ダイアログ（「いいえ」なら開かない）を表示する方針を確定した（2026-10-05）。**禁止ではなく警告とした理由**：出力後に誤りが見つかった場合の修正・再出力を妨げないため（在庫差異レポート自体は読み取り専用・何度でも再実行可能な設計であり、D-4未満の過去の決定とも整合する）。警告の対象外：在庫値出力自体・日報月報等の閲覧系・ツール・共通マスタ・DB管理（いずれも月次データへの新規入力を伴わない、または出力完了判定そのものに関わるため）。`operation_log`テーブルが存在しない古いDB（分離前の月次DBをバックアップの呼び出しで取り込んだ場合等）でも、`get_latest_operation_timestamp()`が`init_operation_log_table()`を呼ぶため例外にならないことを確認済み。**前月引き継ぎ**（`carry_over_incomplete_lots()`）は`operation_log`テーブル自体をコピー対象に含めていないため、引き継ぎ先の新DBは出力済みの記録を持ち越さない（未出力の状態で始まる）。**バックアップの呼び出し**（`restore_backup_as_new_local_db()`）は`sqlite3.Connection.backup()`によるファイル全体のページ単位コピーのため、`operation_log`を含め元のDBの出力済み状態がそのまま保持される。いずれも隔離環境で実際に確認済み。本機能より前に出力されたDBは、この記録の仕組み自体が無かったため「出力済み」と判定されない（既知の限界、記録開始時点からの運用で解消する） | 本ファイル §21 |
+| D-59 | 既定DB（未選択、D-56）の間は、DBファイル本体だけでなく**ロックファイル（`<DBファイル名>.lock`、`services/db_lock_service.py`）にも一切触れない**方針に拡張した（2026-10-05）。D-56・D-57策定時点では「既定DBに触れない」という方針がDB本体（`sqlite3.connect()`経由のアクセス）のみを対象にしており、ロックファイル（JSON、DB本体とは別ファイル）は対象に含めていなかった。`ui/main_window.py::MainWindow.__init__()`は既定DBであってもなくても無条件に`acquire_lock()`を呼んでいたため、既定DBパスに他者の有効なロックが残っていると「未選択」の状態にすら到達できず起動自体が拒否される、という本来の趣旨（名前の無いDBへの気づかない入力を防ぐだけで、起動そのものは妨げないはずだった）に反する動作になっていた。**理由**：①既定DBに触れない方針との整合、②残留ロックにより「未選択」の状態にすら入れず起動不能になる事態を避けるため。`__init__()`に`if not config.is_default_db():`の分岐を追加し、既定DBの間は`acquire_lock()`自体を呼ばないようにした。既存の`self._lock_acquired`（ロック保持の有無をMainWindow自身が明示的に保持するブール値、D-40参照）が、ハートビート（`_heartbeat()`）・解放（`_release_current_lock()`）双方の呼び出しを既にこのフラグでガードする設計だったため、`__init__()`側の1箇所の変更だけで、ハートビート・終了・ログアウト・切り替え・新規作成・引き継ぎの全経路が「ロック未保持なら何もしない」という振る舞いに安全に追随した（既存コードの事前確認で、ロック保持を前提にした安全に扱えない箇所は見つからなかった） | 本ファイル §22 |
+| D-60 | `inventory_app/db/inventory.db.lock`が、2026-09-04〜10-03の約1か月間にAdd→Delete→Add→Delete…を繰り返すパターンで合計9回コミットに混入していたことが判明した（2026-10-05）。`.gitignore`の`*.db`パターンは拡張子が`.lock`のため一致せず、このファイル（DBロック、実行時に作成・削除される runtime ファイル）を除外できていなかった。`.gitignore`に`*.db.lock`を追加し、`git rm --cached`で追跡対象から外した（ファイル自体は削除していない）。本セッション中に実環境の該当ファイルが一度削除される事象があったが、原因は特定できなかった（検証に使った4本のスクリプトを全て読み直し、config3パスの差し替えが常にMainWindow生成・ロック関連関数呼び出しより前に行われていることを確認済みで、隔離漏れは見つからなかった）。該当ロックは3日前（2026-10-02）の古い記録であり、`LOCK_STALE_SECONDS`（30分）を大幅に超過していたため、通常の起動・終了操作でも自然に上書き・削除され得る状態だった。`db/`配下には同様に`.gitignore`で除外できていない`.bak_*`バックアップファイルが他に6件存在するが、これらの扱いは本タスクでは変更していない（別タスク） | 本ファイル §22 |
+| D-61 | 画面が画面中央より若干下にずれて表示される（D-54）という報告を受けて調査し、`ui/window_utils.py::center_window()`を書き直した（2026-10-05）。原因は2つ：①`winfo_width/height()`・`winfo_rootx/rooty()`はタイトルバー・枠を除いた「クライアント領域」基準の値を返すのに対し、`geometry("WxH+X+Y")`の`+X+Y`は枠を含む「外枠」の位置を指定する仕様で、旧実装はクライアント領域基準の値をそのまま外枠位置に渡していたため、タイトルバーの高さ（実測約31px）・左右の枠（実測約8px）分だけ右下にずれていた。②`winfo_screenwidth/height()`はタスクバーを含むディスプレイ全体の解像度であり、作業領域ではなかった。対策として、追加の外部ライブラリを使わずctypes経由でWindows APIを直接呼び、`GetWindowRect`でウィンドウの実際の外枠サイズ、`MonitorFromWindow`+`GetMonitorInfoW`の`rcWork`でタスクバーを除いた作業領域を取得し、これらを基準に中央寄せの計算をやり直す設計に変更した。Windows以外の環境・API呼び出し失敗時は従来相当の近似値にフォールバックし、例外は発生させない。合わせて配置基準も「parentの中央」から「parent（省略時はwindow自身）が乗っているモニターの作業領域の中央」に変更し、メインメニューを移動していても開く画面の位置が変わらない（parentの位置そのものには依存しない）設計にした。本アプリはDPI非対応（DPI-unaware）のままで、Tkinter・ctypesのいずれも同じ「見せかけの」96 DPI座標系を使うため、表示倍率（125%・150%等）が変わっても単位変換は不要であることを実機確認済み | 本ファイル §23 |
+| D-62 | 構成基板数マスター・基板丁数マスターの両取込画面に、縦スクロールバー（登録済み一覧のTreeview）・登録件数表示（構成基板数マスターは「うち構成基板数なし」件数も併記）を追加した（2026-10-05）。登録件数は専用のCOUNT関数（`models/board_structure_master.py::get_board_structure_count_summary()`・`models/parts_attributes.py::get_parts_attributes_count()`、新設）で取得し、画面を開いたとき・取込完了後の両方で更新する | 本ファイル §24.1 |
+| D-63 | 両取込画面の取込処理を「即時反映」から「事前確認→確定」の2段階へ変更した（2026-10-05）。CSV解析・現在のテーブルとの差分計算（追加・更新・変更なし・削除、`compute_board_structure_sync_plan()`/`compute_parts_attributes_sync_plan()`、新設・読み取りのみ）を先に行い、内訳（削除がある場合は対象の先頭10件・CSV内の重複キーの扱い〈値が同じ重複は件数のみ、値が食い違う重複は該当行番号・各値・採用される値を明記〉を含む）を確認ダイアログで提示した上で、「はい」を選んだ場合のみ実際の反映に進む。「いいえ」の場合は一切DBへの書き込みを行わない | 本ファイル §24.2 |
+| D-64 | 両取込画面の登録・更新・削除を、1行ごとに個別コミットしていた既存の`upsert_board_structure()`/`upsert_parts_attributes()`（`services/master_merge_service.py`等、他の呼び出し元がそのまま使い続けるため変更していない）とは別に、取込専用の一括関数（`apply_board_structure_sync()`/`apply_parts_attributes_sync()`、新設）を設け、1つのトランザクションにまとめて確定するよう変更した（2026-10-05）。途中で例外が発生した場合、`sqlite3.Connection`の標準コンテキストマネージャ仕様（例外時は自動ロールバック）により、呼び出し前の状態にそのまま戻ることを実機確認済み。副次効果として、3000件規模のCSVの取込時間が約34.7秒（旧実装、行ごとに個別コミット）から約0.09秒（新実装、1トランザクション）に短縮された。部品属性側のBOMキャッシュ無効化（`invalidate_bom_master_by_part_no()`）は、本トランザクションのコミットが成功した後にまとめて行う（bom_masterは月次DB側の別接続のテーブルのため、本来はアトミック性に影響しないが、指示された設計意図に合わせてコミット後に移動した） | 本ファイル §24.3 |
+| D-65 | 両取込画面で、CSV解析中・取込確定中に発生した想定外の例外（従来は`ValueError`以外は利用者に表示されず、Tkinterの`after()`コールバック内で無言のまま再発生していた）を、エラーダイアログで利用者に通知するよう修正した（2026-10-05）。ダイアログには「データは取込前の状態のままです」と明記する（D-64の一括トランザクション化により、この文言が常に正しいことが保証されるようになった）。完了メッセージも、キー単位の追加/更新/変更なし/削除・登録されなかった行数（キー空欄）・値が読み取れず空で登録した件数（部品属性側にも新規追加）・取込後の登録件数、の内訳に整理し、ファイル形式についての注意文（notices）は行単位の警告件数（warnings）から分離した。警告が多数ある場合も全件を確認できるよう、専用のスクロール可能な一覧ウィンドウ（`ui/warnings_list_window.py::WarningsListWindow`、新設・両画面で共用）に分離表示する | 本ファイル §24.4 |
+| D-66 | 構成基板数マスター・基板丁数マスターの両取込画面に、検索（部分一致・全角半角/大文字小文字を区別しない）・列ソート（昇順/降順の切替、見出しに▲▼記号表示）・構成基板数マスター限定の「構成基板数なしのみ表示」チェックボックスを追加した（2026-10-05）。表示専用の機能であり、DBから取得した全件（`self._all_rows`）を元にTreeview表示のみを絞り込み・並べ替える設計とし、取込処理・差分計算（`compute_..._sync_plan()`/`apply_..._sync()`）は常にDBへ直接アクセスするため、検索・ソートの状態に一切影響されないことをコード構造・実機の両方で確認した | 本ファイル §25.1〜§25.2 |
+| D-67 | 列ソートにおいて、数値列（構成基板数・丁取り数・フル数量）は数値として比較し、文字列列は文字列として比較する。値が空のデータは、昇順・降順のいずれでも常に末尾にまとめる方式を採用した（2026-10-05）。既存の`ui/lot_progress_window.py`・`ui/unified_report_window.py`の`sort_by_column()`（数値変換失敗時に`float("-inf")`へフォールバックする方式）を調査したところ、この既存方式では降順ソート時に空値が先頭に来てしまい、今回の要件（常に末尾）を満たさないことが判明したため、意図的に別方式（値が有るデータ・無いデータを分離し、有るデータのみを昇順/降順でソートした後、無いデータを常に末尾に連結する）を採用した。他画面の既存実装は変更していない | 本ファイル §25.2 |
+| D-68 | 両画面の登録件数表示に、絞り込み中の表示件数を併記する仕様を追加した（例：「表示: 25件 / 登録件数: 3119件」）。登録件数自体（テーブル全体の件数）は、検索・ソート機能追加前と同じ`get_board_structure_count_summary()`/`get_parts_attributes_count()`（DBへのCOUNT(*)クエリ、D-62で新設）で取得する方式を維持し、Treeviewの表示行数を数える方式には変更していない（画面を開く前の状態でも使える、絞り込み中でもテーブル全体の件数を正しく示せるようにするため）。取込完了後の一覧再読込（`load_board_structure()`/`load_parts_attributes()`）は、検索語・チェックボックス・ソート列・ソート方向をクリアせずそのまま再適用する設計に変更した | 本ファイル §25.3 |
 
 ---
 
@@ -594,6 +613,430 @@ D-41（文字化けした出力を根拠に断定しない、自分自身の検�
 ### 19.7 未確認・申し送り事項（優先度の高い未着手タスク）
 
 - **`board_structure_master`の実データ（3119件）の`master.db`への再構築**：CSV再インポート等による再構築は未着手のまま（本ファイル §18.6参照）。
-- **.exeの手動動作確認**：生産実績入力画面・共通マスタ5画面・バックアップ機能・マスタデータ取り込み機能の実際のボタンクリックによる動作確認（§19.5参照）。
+- **.exeの手動動作確認**：生産実績入力画面・共通マスタ5画面・バックアップ機能・マスタデータ取り込み機能の実際のボタンクリックによる動作確認（§19.5参照）。本節§20のメインメニュー整理により画面構成が変わったため、.exeを再ビルドする際はこの変更後の構成で改めて確認が必要。
 - `multiprocessing.freeze_support()`の実際の効果（OCRの並列処理を実際に実行する場面）は、exe化検証では一度も実行しておらず未確認。
 - バックアップ・マスタデータ取り込み機能の複数PC間での実地検証（実際の共有フォルダ・ネットワーク越しのロック競合を含む）は未実施。
+
+---
+
+## 20. メインメニューの整理：共有フォルダ3ボタン廃止・「バックアップの呼び出し」新設・マスターデータ管理/マスターインポート削除・PDF読み取り/操作履歴のツール移動（2026-10-05、D-50〜D-52）
+
+### 背景
+
+共有フォルダ運用からローカル+バックアップ方式への転換（D-20）後も、メインメニューには転換前の設計を前提とした共有フォルダ直接アクセス用の3ボタンが残っていた。また、「4.マスターデータ管理」「5.マスターインポート」画面（`parts`・`final_products`テーブルのCRUD・CSV取込）が、D-4の訂正で「現役」と確認されていたものの、実際にこの2テーブルを読む機能がこの2画面以外に存在するかどうかは未確認のまま残っていた。これらを整理する作業の一環で実施した。
+
+### 20.1 事前調査で発見した想定外の依存（D-52の教訓の実例）
+
+削除対象として指示された`services/master_import_service.py`には、`import_parts_csv()`（マスタインポート専用）だけでなく、汎用CSVパーサ`parse_csv_generic()`（列名ゆらぎ対応）も定義されていた。この関数は`services/production_import_service.py`（実績CSV取込）からも`from services.master_import_service import parse_csv_generic`の形で再利用されていたため、ファイルを丸ごと削除すると実績CSV取込機能が壊れる状態だった。
+
+事前の参照調査が`import_parts_csv()`という**特定の関数名**のgrepに留まっていたため、この依存を一度見落とした。対応として、`parse_csv_generic`・`_open_csv_with_fallback`・`_resolve_column_map`・`_ENCODINGS_TO_TRY`（内容は一切変更せず）を新規モジュール`services/csv_parsing_common.py`へ切り出し、`production_import_service.py`の`import`文・docstringの参照先を差し替えた上で、`master_import_service.py`を削除した。
+
+以降、モジュール削除時の安全確認は「削除対象として指示された個々の関数」ではなく「モジュール名そのもの」でリポジトリ全体（テスト・`.spec`ファイル・ドキュメント内のコード例を含む）をgrepすることを原則とする（D-52）。
+
+### 20.2 共有フォルダ3ボタンの廃止と「バックアップの呼び出し」新設（D-50）
+
+**削除したもの**：
+- `ui/main_window.py`のヘッダー3ボタン（共有フォルダのDB一覧／共有フォルダのDBを開く／共有フォルダに新規作成）と対応するハンドラ（`open_shared_db_list`・`on_open_shared_database`・`on_create_shared_database`・`_switch_to_shared_db`・`_shared_dialog_initial_dir`）。
+- `ui/shared_db_list_window.py`（`SharedDbListWindow`）・`services/shared_db_scan_service.py`（`scan_shared_db_folders()`）・`services/app_settings_service.py`の`save_shared_db_root()`/`load_shared_db_root()`。いずれも他から参照されていないことをモジュール名でのgrepで確認した上で削除した。
+- ロック機構（`services/db_lock_service.py`）・`_try_switch_db_path()`・ローカルDBの切り替え・新規作成（前月引き継ぎ含む）・削除機能は変更していない。
+
+**旧D-45方針の問題点**：「共有フォルダのDBを開く」機能をバックアップの復元に転用する運用（D-45）には、①バックアップ原本そのものがそのまま本番DBになってしまう（コピーではなく原本を直接使い続ける）、②マスタDB（`master.db`）は復元されない（この機能が切り替えるのは`config.DB_PATH`のみ）、③D-20（ローカル+バックアップ方針への転換）と整合しない（共有フォルダへの直接アクセスを前提にした機能のため）、という3つの問題があった。
+
+**新設した「バックアップの呼び出し」機能**：ヘッダーの「バックアップ」ボタンの隣に、権限制限なしで配置した。処理は`services/backup_service.py`に集約し、UIから分離した：
+
+- `validate_monthly_db_backup(file_path)`：SQLiteとして開けるか・`PRAGMA integrity_check`が`"ok"`か・月次DB固有のテーブル（`kitting_plan_items`）を持ち、マスタDB固有のテーブル（`board_structure_master`・`parts_attributes`）を持たないか、を判定する（読み取り専用接続、`file:...?mode=ro`のURI指定で原本への書き込みを構造的に防ぐ）。マスタDBのバックアップ・SQLiteでないファイルはここで理由付きで拒否する。
+- `restore_backup_as_new_local_db(backup_file_path, folder_name)`：`config.APP_DATA_DIR/db/<folder_name>/inventory.db`へ`sqlite3.Connection.backup()`でコピーする（原本は読み取り専用で開く）。
+- `ui/main_window.py::on_restore_from_backup()`：ファイル選択→妥当性チェック→取り込み先フォルダ名の入力（既定値はバックアップ選択時刻から生成、`on_create_database()`と同じ非空・重複禁止の規則）→コピー→`_try_switch_db_path()`で切り替え→`init_kitting_plan_tables()`でテーブル構成を最新化、という流れ。失敗時（妥当性チェック不合格・コピー中の例外・ロック取得失敗）は作成途中のフォルダを削除し、現在のDB・ロックは変更しない。完了メッセージには「元のDBは『切り替え』で戻せる」「マスタデータは対象外（必要なら『マスタデータを他PCから取り込む』を使う）」を明記する。
+
+マスタDB（`master.db`）はこの機能の対象外のまま（D-47の「不足分のみ取り込み」機能で別途対応する）。共有フォルダ上のDBを直接開く・削除する手段は、この整理により廃止された（ローカルDB一覧からの切り替え・削除は従来通り利用できる）。
+
+### 20.3 「4.マスターデータ管理」「5.マスターインポート」の削除（D-4更新）
+
+`ui/master_management.py`（`MasterManagementWindow`）・`ui/master_import_window.py`（`MasterImportWindow`）・`services/master_import_service.py`（`parse_csv_generic`切り出し後の残り＝`import_parts_csv()`等）を削除した。
+
+**削除理由**：`models/master.py::get_all_parts()`/`get_all_products()`（`parts`・`final_products`を読む唯一の関数）の呼び出し元が、この2画面以外に存在しないことをリポジトリ全体のgrepで確認した。`parts`・`final_products`テーブル自体、および`models/master.py`のうち`services/master_merge_service.py`（「不足分のみ取り込み」機能、D-47）が使う関数（`upsert_part`・`upsert_product`・`init_master_tables`）は残置した。呼び出し元が無くなった`get_all_parts`・`get_all_products`・`delete_part`・`delete_product`・`upsert_part_master`（`master_import_service.py`専用）は`models/master.py`から削除した。
+
+### 20.4 PDF読み取り・操作履歴のツール移動
+
+「8. PDF読み取り（在庫照合）」「9. 操作履歴」を、月次データ列（右列）から共通マスタ列（左列）の末尾に新設した「ツール」見出し配下へ、番号を外して移動した（以降この2つに番号は付けない。右列「月次データ」の1〜7は変更なし。共通マスタ側の1〜3は4・5削除後も連番のまま変化なし）。
+
+依存先DB（`config.DB_PATH`、`inventory_stock`・`operation_log`いずれも月次DB側のテーブル）は変わっておらず、月をまたいで使い回す共通マスタになったわけではない。配置は使用頻度の低い補助機能をまとめるという、レイアウト上の都合による例外であることを、`ui/main_window.py`のコード上のコメントに明記した。
+
+### 20.5 schema.sqlに残っていた未使用テーブル定義の発見（D-51）
+
+検証の過程で、`db/schema.sql`（`init_database_at()`が新規の月次DBを作る際に使う定義）に、マスタDB分離（D-38・D-42）以前の名残である`workers`テーブルの`CREATE TABLE IF NOT EXISTS`定義が今も残っていることが判明した。`models/workers.py`は既に`get_master_connection()`経由（`master.db`側）に切り替わっているため、このテーブルは使われないが、新規作成した月次DBには物理的に作成され続ける。
+
+この事実は、`validate_monthly_db_backup()`の実装中に実際に問題を引き起こした：「`workers`テーブルの有無」を月次DB／マスタDBの判定材料に使うと、正しい月次DBのバックアップが誤ってマスタDBと判定され拒否される事象を検証で確認した。`schema.sql`には同様に`parts`・`final_products`・`lots`（`lots`はD-39で実DBからは削除済みだが、`schema.sql`側の定義は残っている）の定義も残っており、新規作成した月次DBには引き続きこれらの空テーブルが作られる。
+
+`schema.sql`自体の整理（不要な`CREATE TABLE`定義の削除）は本タスクのスコープ外のため見送った。`validate_monthly_db_backup()`の判定では、`schema.sql`に定義が無く、マスタDB分離後は`master.db`側にしか作られない`board_structure_master`・`parts_attributes`のみをマスタDBの目印として使うことで、この問題を回避した。**`schema.sql`の整理自体は、優先度の高い未着手タスクとして別途記録する。**
+
+### 20.6 動作確認
+
+隔離環境（`config.DB_PATH`・`config.APP_DATA_DIR`・`config.MASTER_DB_PATH`の3つを一時ディレクトリへ隔離）で以下を確認した：
+
+- バックアップの呼び出し：作成→検証→取り込み→切り替えの一連の流れで、取り込み先の`kitting_plan_items`件数が元と一致すること、呼び出し前後でバックアップファイルのハッシュが一致すること（原本不変）、元のDBファイルがそのまま残ること。
+- 拒否ケース3種（マスタDBのバックアップ・SQLiteでないファイル・重複フォルダ名）がいずれも理由付きで拒否され、フォルダが新規作成されないこと。
+- 失敗時（存在しないソースファイルを指定）に例外が発生し、呼び出し元の後始末ロジックでフォルダが残らないこと、現在のDBが変更されないこと。
+- ロック：新DBのロックを取得できること、旧DBのロックが解放されること、失敗時（他者使用中）は元のロックが維持されること。
+- 「不足分のみ取り込み」機能（D-47）が従来通り動作し、既存レコードが上書きされないこと。
+- 実績CSV取込が使う`parse_csv_generic()`（`csv_parsing_common.py`切り出し後）が、cp932エンコーディング・列名ゆらぎ（「ロットNo」「機種基板名」「数量」「払い出し日」）を含むCSVを移動前と同じ結果で解析できること。
+- admin・operatorの両ロールで`MainWindow`が例外なく起動し、想定する全ハンドラ（`open_*`・`on_*`）が存在すること。正規の終了経路（`_on_app_close()`、D-40）で後始末した。
+- ウィンドウの高さ（`winfo_reqheight()`、`update_idletasks()`後）が`940x600`の600px以内に収まること（admin:564px、operator:557px）。幅（`reqwidth=986px`）は本タスクの変更前から既に940pxを超えていたことをgit上の変更前コードとの比較で確認済みであり、本タスクが対象としていない「データベース選択」行に起因する**既存の問題**であるため、本タスクでは変更していない（高さのみを対象とする指示だったため）。
+- `pkgutil.walk_packages()`による`ui`/`models`/`services`限定のスコープ付きimportチェック（D-13）・既存の`pytest`（1 passed）に影響が無いこと。
+- 削除したモジュール名・関数名（`master_import_service`・`master_management`・`master_import_window`・`shared_db_scan_service`・`shared_db_list_window`・`save_shared_db_root`・`load_shared_db_root`・`get_all_parts`・`get_all_products`・`delete_part`・`delete_product`・`upsert_part_master`等）への参照がリポジトリ全体に残っていないことをgrepで確認した。
+
+### 20.7 未確認・申し送り事項
+
+- `schema.sql`に残る未使用テーブル定義（`workers`・`parts`・`final_products`・`lots`）の整理（§20.5、§20.8でも再度言及）。
+- .exeは未再ビルド。本変更（メインメニューの画面構成変化）を反映するには再ビルドが必要（D-48関連）。
+- ウィンドウ幅（`reqwidth=986px`）が`940px`を超える既存の問題（「データベース選択」行起因、本タスクでは未対応。§20.9で再確認）。
+
+### 20.8 バックアップ呼び出しの月次DB判定を、分離前の月次DBも受理できるよう修正（2026-10-05追記、D-53）
+
+#### 事実確認：分離前の月次DBにも5テーブルが同居していることをgit履歴・実ファイルで確認
+
+`models/board_structure_master.py`・`models/parts_attributes.py`・`models/workers.py`・`models/master.py`のgit履歴を確認したところ、マスタDB分離（D-38・D-42、2026-10-02頃）より前のコミットでは、いずれも`models.db_common.get_connection()`（月次DB、`config.DB_PATH`）を使っていた（分離後は`get_master_connection()`、`config.MASTER_DB_PATH`）。
+
+さらに、リポジトリに実在する分離直前の実バックアップファイル（`inventory_app/db/inventory.db.bak_before_master_tables_removal_20261002_084718`）を読み取り専用で確認したところ、`kitting_plan_items`・`production_daily`等の月次データと、`board_structure_master`・`parts_attributes`・`workers`・`parts`・`final_products`の5テーブルが**同一ファイルに同居**していることを直接確認した。さらに古い実バックアップ（`inventory_backup_before_migration_005_20260820_144033.db`、2026-08-20）でも同様に`workers`・`parts`・`final_products`・`lots`（当時の第一世代設計の名残、D-39参照）が月次データと同居していた。
+
+D-50で実装した`validate_monthly_db_backup()`（マスタDB固有テーブルがあれば拒否する否定的な判定）に、この分離前の実バックアップファイルを渡すと、実際に「これはマスタDBのバックアップのようです」と誤判定され拒否されることを確認した。
+
+#### 修正：肯定的な判定（月次DB固有テーブルの存在）へ変更
+
+判定方式を、「マスタDB固有テーブルがあれば拒否」から「月次DB固有テーブル（`kitting_plan_items`）があれば受理」に変更した（D-53）。
+
+マーカーに`kitting_plan_items`を選んだ根拠：
+- `db/schema.sql`には定義が無く、`models.kitting_plan.init_kitting_plan_tables()`（`get_connection()`＝月次DB経由）でのみ作成されるため、`master.db`には絶対に存在しない。
+- `init_kitting_plan_tables()`は、`init_database_at()`で新規の月次DBを作成した直後に必ず呼ばれる運用（`ui/main_window.py::on_create_database()`・`on_restore_from_backup()`等）になっているため、分離の前後を問わず、月次DBとして運用されたことのあるファイルには常にこのテーブルが存在する。
+
+マスタDB固有テーブル（`board_structure_master`・`parts_attributes`）の存在は、拒否条件からは外したが、「月次DB固有テーブルが無く、かつこれらを持つ」場合に限り「マスタDBのバックアップのようです」という具体的な拒否理由を出すためのヒントとして残した。
+
+#### 分離前の月次DBを取り込んだ場合の挙動（重要）
+
+分離前の月次DBのバックアップを「バックアップの呼び出し」で取り込んでも、同居している旧マスタテーブル（`board_structure_master`・`workers`等）の中身は、現行コードからは一切読まれない。理由：`models/board_structure_master.py`等は既に`get_master_connection()`（ローカル固定の`config.MASTER_DB_PATH`）経由に切り替わっており、取り込んだ月次DBファイル（`config.DB_PATH`側）内の同名テーブルを参照する経路はコード上存在しないため。
+
+検証（隔離環境、実バックアップファイルを使用）：取り込んだ旧DB内の`workers`・`board_structure_master`に判別可能な値（`OLD_W001`・`OLD-EMBEDDED-BOARD`）を仕込んだ上で取り込み、`models.workers.get_all_workers()`・`models.board_structure_master.get_board_structure()`のいずれからもこれらの値が一切見えないこと、取り込み後もローカルの`master.db`の`workers`・`board_structure_master`テーブルが空のまま（旧DBのデータが紛れ込んでいない）ことを確認した。
+
+旧DBに同居していたマスタ的なデータを実際に活用したい場合（例：旧DBの`workers`に他では登録されていない作業者がいた等）、本機能では対応しない。その場合は、旧DBのファイルから別途バックアップ相当のファイルを作り、既存の「マスタデータを他PCから取り込む」（`merge_master_from_backup()`、D-47）機能に渡すことで、`board_structure_master`・`parts_attributes`・`workers`・`parts`・`final_products`の不足分のみ`master.db`へ追加できる可能性がある（`merge_master_from_backup()`は引数のファイルから直接これら5テーブルをSELECTするだけで、月次DBかマスタDBかを判定しないため、月次DBファイルを渡しても技術的には動作する）。ただし、この用途は今回の指示・検証の対象外であり、動作確認はしていない。
+
+#### 動作確認（隔離環境、実バックアップファイルを使用）
+
+- 分離前スキーマ（5テーブル同居）の実バックアップファイルを月次DBとして正しく受理すること。
+- 呼び出し（`restore_backup_as_new_local_db()`）が例外なく完了し、原本（分離前バックアップファイル）が変更されないこと。
+- 取り込み後、主要画面（生産計画読込・生産実績入力・ロット進捗チェック・日報/月報（`UnifiedReportWindow`）・操作履歴）がいずれもエラーなく開くこと。
+- 取り込み直後の月次DBに存在しなかったテーブル（`operation_log`・`lot_status_history`等、分離前バックアップの時点ではまだ実装されていなかった機能のテーブル）が、各画面を開いた際の遅延初期化（`CREATE TABLE IF NOT EXISTS`）により補完されること。
+- 同居している旧マスタテーブルの中身（仕込んだ`OLD_W001`・`OLD-EMBEDDED-BOARD`）が現行コードから一切見えないこと、取り込み後もローカルの`master.db`の該当テーブルが空のままであること（バイト単位の完全一致は、`master.db`自身の遅延初期化＝新しいテーブルの追加により変化するため参考情報に留め、実際のレコード内容を判定基準とした）。
+- マスタDBのバックアップ・SQLiteでないファイルの拒否が、判定方式の変更後も引き続き成立すること（回帰確認）。
+- 既存の`pytest`（1 passed）・スコープ付きimportチェック（`ui`/`models`/`services`）・D-50の検証26項目に影響が無いこと。
+
+#### 教訓
+
+D-50実装時、新規作成した月次DB（schema.sqlの未整理に起因する`workers`テーブルの残存）だけを使って検証していたため、「分離前に実際に運用されていた、5テーブルが本当に同居する月次DB」という、より重要なケースでの動作確認が漏れていた。否定的な判定（「〜があれば拒否」）は、想定していなかった正常な状態（分離前の月次DB）まで誤って拒否してしまうリスクを持ちやすく、肯定的な判定（「〜があれば受理」）の方が、このアプリの運用実態（古い月次DBのバックアップも将来使われうる）に対して安全側に働くことを確認した事例として記録する。
+
+### 20.9 未確認・申し送り事項（追記）
+
+- `schema.sql`に残る未使用テーブル定義（`workers`・`parts`・`final_products`・`lots`）の整理は、本追記時点でも引き続き未着手（§20.5）。
+- ウィンドウ幅（`reqwidth=986px`）が`940px`を超える件は、実機での目視確認がまだ行われていない（「データベース選択」行のレイアウトが、940px幅のウィンドウで実際にどう見えるか・操作に支障が無いかの確認待ち）。
+
+---
+
+## 21. 画面の中央表示・DB未選択（既定DB）状態の操作禁止・在庫値出力済みDBの警告（2026-10-05、D-54〜D-58）
+
+### 21.1 画面の中央表示（D-54・D-55）
+
+事前調査（前回セッション）で「全29クラス＋関数内ダイアログ11か所、計40か所のうち`notice`トースト（`ui/production_import_staging_window.py`、対象外）を除く39か所が全て`geometry("WxH")`で固定サイズ指定済み」という前提を確認したつもりだったが、実装着手前に全箇所のコードを直接確認したところ、**関数内ダイアログ11か所のうち4か所（`ui/ng_input_window.py`の「対象外にする理由」・「実装ラインの選択」、`ui/kitting_production_entry.py`の「登録内容の確認」、`ui/wip_expansion_window.py`の「対象外にする理由」）には`geometry()`呼び出しが無く、パックしたウィジェットの内容に応じた自動サイズのままだった**ことが判明した（D-55）。前回調査の前提が誤りだったことになる。
+
+この発見を受けて着手を一度停止し、`center_window(window, parent=None)`（`ui/window_utils.py`、新規）の仕様を「サイズ指定済みの画面はその幅・高さを使う、未指定の画面は`update_idletasks()`後の自動計算サイズを使う（サイズ自体は変更しない）」という形に確定した上で実装した（D-54）。
+
+**実装の要点**：
+- `window.withdraw()`→（`parent`が無い・現在表示されていない`withdrawn`/`iconic`状態でなければ`parent`の中央、それ以外はディスプレイ中央の座標を計算）→`window.geometry(f"{w}x{h}+{x}+{y}")`→`window.deiconify()`、という順で実行する。ちらつき防止（配置完了まで非表示にし、位置決定後に表示する）を`center_window()`内部で完結させているため、呼び出し元のコードは「ウィジェットを配置し終えた後に1行呼ぶだけ」で済む。
+- 当初は「サイズ指定済みなら`winfo_width()`、未指定なら`winfo_reqwidth()`」という分岐を想定していたが、実機検証の結果、`update_idletasks()`後は`winfo_width()`がどちらの場合も正しい値（指定済みならその値、未指定なら内容に応じた自動計算値と同じ値）を返すことを確認したため、分岐を設けずに済んだ。
+- 画面外にはみ出す場合は、親ではなく**画面全体（`winfo_screenwidth()`/`winfo_screenheight()`）基準でクランプする**（親より大きいウィンドウを親の中心に配置しようとすると負の座標になりうるケースへの対応）。
+- 全40か所中、`notice`トースト（一時的な非ボーダー通知、3秒で自動`destroy()`）のみ対象外とし、残り39か所（29クラス＋関数内10か所）全てに適用した。
+- 既存の`_open_singleton_window()`（既に開いている画面を`lift()`/`focus_force()`で前面に出すだけの多重表示防止の仕組み）は、`center_window()`が各画面の`__init__`内で1回しか呼ばれない設計のため、再表示時に位置が動かないことを確認済み。
+
+### 21.2 DB未選択（既定DB）状態の操作禁止（D-56・D-57）
+
+#### 確定した方針
+
+既定DB（`config.APP_DATA_DIR/db/inventory.db`、`on_switch_database()`・`on_create_database()`・`on_restore_from_backup()`が組み立てる`APP_DATA_DIR/db/<フォルダ名>/inventory.db`より1階層浅い、モジュール読み込み時点のデフォルトパス）を、**ファイルの有無・データの有無を問わず一律「未選択」として扱う**方針を確定した。
+
+**理由**：名前の付いていない既定DBに、利用者が気づかないまま入力・CSV取込を行ってしまうリスクがあった（どの月の作業データか特定できない暗黙のDBが、意図せず実質的な作業領域になってしまう）。
+
+**既定DBに残っていたデータの扱い**：開発環境でこのマシンの既定DB（`inventory_app/db/inventory.db`）には実際にテストデータ（`kitting_plan_items`2740件等）が入っていることを確認したが、**これはテストデータであり、既定DB専用の移行機能は実装しない**（ユーザー判断）。既定DBのファイル自体はアプリからは一切読み書きされなくなるため、**今後アプリから到達不能な状態のまま残る**（削除する場合は手動で行う。実環境の`db/inventory.db`は本タスクでは削除・変更していない）。
+
+#### 判定方法（D-56）
+
+```python
+# config.py
+def is_default_db() -> bool:
+    return os.path.basename(os.path.dirname(DB_PATH)) == DB_ROOT_FOLDER_NAME  # "db"
+```
+
+フォルダ名付きDBは必ず`APP_DATA_DIR/db/<folder>/inventory.db`という1階層深い形でパスが組み立てられるため、親フォルダ名が`"db"`そのものになるのは既定DBのみ、という**パスの深さの違いだけで判定でき、追加の状態保持は不要**。この判定と衝突しないよう、`"db"`という名前のフォルダは新規作成（`on_create_database()`）・バックアップの呼び出し（`on_restore_from_backup()`）の両方で予約語として拒否する。
+
+#### 無効化の仕組み（既存の引き継ぎ中無効化との独立性）
+
+`ui/main_window.py`に、既存の`_menu_widgets`（`_set_menu_enabled()`が管理、`carry_over_incomplete_lots()`実行中の一括無効化に使う）とは**別に**`_default_db_locked_widgets`（既定DBの間に無効化する業務ボタン：月次データ1〜7・共通マスタ・ツール・バックアップ・マスタ取込）を新設した。DB選択・切り替え・新規作成・ローカルDB削除・バックアップの呼び出し・ログアウトは対象外（常に操作できる）。「前月から未完了分を引き継ぐ」チェックボックスは、既定DBの間は無効化し、チェック済みの状態も強制的に解除する（既定DBを引き継ぎ元にした不定な動作を防ぐため）。
+
+2つのゲート（`self._menu_enabled`・`config.is_default_db()`）は、いずれも「Trueなら制限なし」側で統一して持ち、`_apply_widget_states()`が両方をANDで合成して最終的な`state`を決める。これにより、一方の解除（例：`carry_over_incomplete_lots()`完了による`_menu_enabled=True`化）が、既定DBロックで無効のままにすべきボタンまで誤って有効化してしまうことがない（逆方向も同様）ことを、隔離環境での検証（引き継ぎ中の無効化→解除、既定DBロック→解除の4パターン全ての組み合わせ）で確認した。
+
+#### 発見・修正した実装上の見落とし（D-57）
+
+実装中、「既定DBは一切読み書きしない」という前提を破る見落としを発見した。在庫値出力済み判定（§21.3、`models.operation_log.get_inventory_diff_export_status()`）は内部で`init_operation_log_table()`（`CREATE TABLE IF NOT EXISTS`）を呼ぶため、`sqlite3.connect()`が**存在しない既定DBファイルを新規作成してしまう**ことが判明した。隔離環境での検証で、空の環境で起動しただけで既定DBファイルが作られてしまう事象、実データ入りの既定DBファイルのハッシュが起動〜正規終了で変化してしまう事象の両方を実際に確認した。
+
+`ui/main_window.py::_update_current_db_label()`・`_confirm_proceed_despite_exported_db()`の両方に「既定DBの間は在庫値出力済み判定自体を呼ばない」ガードを追加して解消した。**教訓**：「既定DBは読み書きしない」という方針は、既定DB判定そのものの実装だけでなく、既定DBの状態に応じて分岐する機能全てに同じ注意が必要になる横断的な制約であり、機能を1つ追加するたびに見落としがちである。D-18（確認できない状況で推測で断定しない）とは別の種類の教訓だが、「既定DBに関する変更は、新しいDB依存機能を追加するたびに再確認が必要」という点で、今後の開発でも意識すべき事項として記録する。
+
+### 21.3 在庫値出力済みDBの警告（D-58）
+
+#### 確定した方針
+
+在庫値出力（`ui/inventory_diff_window.py::InventoryDiffWindow`、メインメニュー「7. 在庫値出力」）の完了を`operation_log`に記録し、出力済みのDBに対する以降の操作に警告を出す。**禁止ではなく警告とした**理由は、出力後に誤りが見つかった場合の修正・再出力を妨げないため（在庫差異レポート自体が読み取り専用・何度でも再実行可能な設計であることと整合する）。
+
+#### 実装
+
+- `models/operation_log.py`に`OPERATION_NAME_INVENTORY_DIFF_EXPORT = "在庫値出力"`・`get_latest_operation_timestamp(operation_name)`・`get_inventory_diff_export_status()`を新設。`get_latest_operation_timestamp()`は`init_operation_log_table()`を呼んでからSELECTするため、`operation_log`テーブルが存在しない古いDB（分離前の月次DBを「バックアップの呼び出し」で取り込んだ場合等）でも例外にならない。
+- `InventoryDiffWindow.on_export_pdf()`/`on_export_csv()`の**成功時のみ**（保存ダイアログのキャンセル・出力失敗時は記録しない）`log_operation()`を呼ぶ。完了メッセージにも「次月分は新しいデータベースを作成して入力してください」という案内を追加した。
+- メインメニューのヘッダー直下（現在DBラベルの近く）に、出力済みの場合のみ目立つ色（赤系）で「在庫値出力済み（最終出力：…）」を常時表示する警告ラベルを新設。`pack(before=self._body_frame)`で、表示/非表示を繰り返しても常に同じ位置（現在DBラベルの直下）に挿入されるようにしている。
+- 月次データ1〜6（7の在庫値出力自体は対象外）の各画面を開く直前に`_confirm_proceed_despite_exported_db()`を呼び、出力済みなら確認ダイアログ（「いいえ」なら画面を開かない）を表示する。日報・月報等の閲覧系・ツール・共通マスタ・DB管理はいずれも対象外。
+
+#### 引き継ぎ・呼び出しとの関係（確認済み）
+
+- **前月引き継ぎ**（`services/db_migration_carryover.py::carry_over_incomplete_lots()`）は`operation_log`テーブル自体をコピー対象に含めていない（計画・実績データのみをコピーする既存の設計、本機能のための変更は不要だった）ため、引き継ぎ先の新DBは出力済みの記録を持ち越さず、未出力の状態で始まることを隔離環境で確認した。
+- **バックアップの呼び出し**（`services/backup_service.py::restore_backup_as_new_local_db()`）は`sqlite3.Connection.backup()`によるファイル全体のページ単位コピーのため、`operation_log`を含め元のDBの状態がそのまま保持される。出力済みDBをバックアップ→呼び出しで取り込んだ場合、取り込んだ新DBも出力済みのまま（最終出力日時も保持）であることを隔離環境で確認した。
+
+#### 既知の限界
+
+本機能より前に在庫値出力を行っていたDBは、記録の仕組み自体が無かったため「出力済み」と判定されない。今後、この機能の導入以降の運用で解消される。
+
+### 21.4 動作確認
+
+隔離環境（`config.DB_PATH`・`config.APP_DATA_DIR`・`config.MASTER_DB_PATH`の3つを一時ディレクトリへ隔離）で、以下を確認した（計54項目、全て合格）。
+
+- **中央表示**：サイズ指定済み・未指定それぞれの画面が親（または画面、`parent`省略時）の中央に配置されること（許容誤差3px）、画面より大きいウィンドウは画面内（0,0起点）にクランプされること、再表示（`lift()`/`focus_force()`）で位置が動かないこと、自動サイズの4ダイアログが幅・高さを変えずに中央寄せされ内容が切れないこと、実画面（`OperationLogWindow`・`LotProgressWindow`、および自動サイズの実ダイアログ3種）で実際に確認できたこと。
+- **未選択**：空の環境・実データ入りの既定DBいずれでも起動すると「未選択」と判定され業務ボタンが無効になること、DB管理ボタン・ログアウトは有効のままであること、起動〜正規終了を通じて既定DBファイルが作成・変更されないこと（ハッシュ一致で確認）、フォルダ名付きDBへの切り替え・新規作成後に業務ボタンが有効化されること、現在接続中のDBの削除は従来通り拒否されること、前回DBのフォルダが外部で削除・移動された状態でも例外なく起動し「未選択」になること、"db"という名前のフォルダが新規作成・バックアップの呼び出しの両方で拒否されること、引き継ぎ中の無効化と既定DBロックの無効化が相互に干渉しないこと（4パターンの組み合わせ）。
+- **出力済み**：出力前は警告が無いこと、PDF・CSVそれぞれの出力成功後に記録とメインメニュー表示が行われること、保存ダイアログのキャンセル時は記録されないこと、月次データ1〜6を開く際の確認ダイアログで「いいえ」なら開かず「はい」なら開くこと、在庫値出力自体にはこの確認ダイアログが出ないこと、`operation_log`テーブルの無い古いDBでも例外にならないこと、前月引き継ぎ先のDBは未出力のまま・バックアップの呼び出しで取り込んだDBは出力済み状態を保つこと。
+- **回帰**：admin・operatorの両ロールで例外なく起動し高さが600px以内に収まること、前回セッションのD-50〜D-53検証（26項目）・D-53追加検証（15項目）がいずれも引き続き合格すること、既存`pytest`（1 passed）・スコープ付きimportチェック（`ui`/`models`/`services`）に影響が無いこと、実環境の`inventory_app/db/inventory.db`（開発環境の既定DB）が本タスクの検証を通じて一切変更されていないこと（行数・ファイル更新時刻で確認）。
+
+### 21.5 未対応・申し送り事項
+
+- D-19（画面を開いたままDBを切り替えた場合、既存画面の操作対象が気づかないうちに新しいDBに変わる未解決の設計課題）は、本タスクのスコープ外のため従来通り未対応のまま。
+- .exeは未再ビルド。本変更（画面中央寄せ・既定DB無効化・在庫値出力警告）を反映するには再ビルドが必要（D-48関連）。
+- §20.5（`schema.sql`の未使用テーブル定義整理）・ウィンドウ幅986pxの実機目視確認（§20.9）は、本タスクでも引き続き未対応。
+
+---
+
+## 22. 未選択状態でのロック処理の停止と、ロックファイルのgit除外（2026-10-05、D-59〜D-60）
+
+### 22.1 背景：実環境のロックファイルが消えた事故
+
+D-56〜D-58（画面の中央表示・既定DB無効化・在庫値出力警告）の実装・検証作業中に、実環境の`inventory_app/db/inventory.db.lock`（git管理下、`worker_name: "テスト作業者"`、2026-10-02取得の古い記録）が意図せず削除される事故が発生した。`services/db_lock_service.py::release_lock()`は、そのプロセス内メモリ（`_owned_tokens`）が記憶するトークンと一致する場合のみファイルを削除する設計のため、本セッション中のどこかで実環境の既定DBパスに対して`acquire_lock()`→`release_lock()`が実行された形跡だった。
+
+事後調査の結果、**原因は特定できなかった**。本セッションで保存していた検証スクリプト4本（`verify_menu_reorg.py`・`verify_pre_separation_restore.py`・`verify_phase123.py`・`verify_phase3.py`）を全て読み直し、`config.APP_DATA_DIR`・`config.DB_PATH`・`config.MASTER_DB_PATH`の3パス差し替えが、`MainWindow`の生成・`db_lock_service`の関数呼び出しより常に先行していることを確認したが、隔離漏れは見つからなかった。該当ロックは発見時点で3日前（2026-10-02）の記録であり、`LOCK_STALE_SECONDS`（30分）を大幅に超過していたため、`acquire_lock()`の経過時間判定により、誰が・どの`worker_name`/`pc_name`で呼んでも確認なしに即座に成功し得る状態だった。実環境の`git log`を調べたところ、この`.lock`ファイルは2026-09-04〜10-03の約1か月間にAdd/Delete（上書き・削除）を繰り返すパターンで**合計9回**コミットに混入していたことが判明し、本セッションでの削除はこの既存パターンの最新の1回に過ぎなかったとみられる（人間の利用者や他セッションによる通常のログイン/ログアウト操作でも同じ現象が起こり得るため、原因を本セッションの操作だけに限定する根拠は無い）。
+
+事後、`git checkout -- inventory_app/db/inventory.db.lock`で復元済み。
+
+### 22.2 未選択（既定DB）の間はロックにも触れない（D-59）
+
+D-56・D-57で確定した「既定DBには一切のファイル読み書きを行わない」方針は、策定当初**DB本体（`sqlite3.connect()`経由のアクセス）のみ**を対象にしており、ロックファイル（JSON、`services/db_lock_service.py`が読み書きするDB本体とは別ファイル）は対象に含めていなかった。
+
+`ui/main_window.py::MainWindow.__init__()`は、既定DBかどうかを問わず無条件に`acquire_lock()`を呼んでいたため、既定DBパスに他者の有効なロックが残っていると、「未選択」の状態にすら到達できず起動自体が拒否されてしまっていた。これは、既定DBは「名前の無いDBへの気づかない入力を防ぐ」ためのものであり、起動そのものを妨げる意図は無かったという方針の趣旨に反する動作だった。
+
+**事前確認（§0相当）**：ロックを保持していることを前提にした既存処理（ハートビート`_heartbeat()`・切り替え`_try_switch_db_path()`・新規作成`on_create_database()`・引き継ぎ（lock取得は`on_create_database()`内で新DBに対して同期的に行われ、非同期の引き継ぎスレッド自体はロックに触れない）・終了`_on_app_close()`・ログアウト`on_logout()`）を全て確認したところ、いずれも`self._lock_acquired`（ロック保持の有無をMainWindow自身が明示的に保持するブール値、D-40で既に導入済み）でガードされた`_release_current_lock()`・`_heartbeat()`経由で呼ばれており、「ロック未保持」を安全に扱えない箇所は見つからなかった。
+
+**実装**：`MainWindow.__init__()`に`if not config.is_default_db():`の分岐を追加し、既定DBの間は`acquire_lock()`自体を呼ばないようにした（`self._lock_acquired`は`__init__()`冒頭で元々`False`に初期化されているため、この分岐をスキップするだけで済む）。既存の`self._lock_acquired`ガードにより、ハートビート・終了・ログアウト・切り替え・新規作成・引き継ぎの全経路が「ロック未保持なら何もしない」という振る舞いに自然に追随した。`services/db_lock_service.py`自体は変更していない。フォルダ名付きDBでのロックの挙動（取得・ハートビート・切り替え時の付け替え・失敗時の維持・破損時の処理）も変更していない。
+
+### 22.3 ロックファイルのgit除外（D-60）
+
+`.gitignore`の`*.db`パターンは拡張子が`.lock`のファイル（`<DBファイル名>.lock`）には一致しないため、このファイルを除外できていなかった。`.gitignore`に`*.db.lock`を追加し、`git rm --cached inventory_app/db/inventory.db.lock`で追跡対象から外した（ファイル自体は削除していない）。
+
+`db/`配下には同様に`.gitignore`で除外できていない`.bak_*`バックアップファイル（`inventory.db.bak_before_delete_20260924_110042`等、計6件）が存在するが、これらの追跡状態・ファイルとも本タスクでは一切変更していない（扱いは別タスクとして判断する）。
+
+### 22.4 動作確認
+
+隔離環境（`config.DB_PATH`・`config.APP_DATA_DIR`・`config.MASTER_DB_PATH`の3つを一時ディレクトリへ隔離）で、以下を確認した（計40項目、全て合格）。
+
+- 未選択で起動→ハートビート相当の実行→正規終了の間、既定DBの`.lock`が一度も作成されないこと。
+- 既定DBパスに別の作業者・別PC名の新しい（30分以内）ロックファイルが存在する状態でも、未選択として例外なく起動できること。そのロックファイルの内容が起動・ハートビート・正規終了の前後で一切変更・削除されないこと。
+- 未選択→新規作成・切り替え（ローカルDB一覧経由）・バックアップの呼び出しのそれぞれで、新DBのロックを正しく取得し（`self._lock_acquired is True`）、既定DBの`.lock`には一切触れないこと。
+- 未選択→切り替えに失敗（新DBが他者にロック中）した場合、`config.DB_PATH`・`self._lock_acquired`とも変化せず、既定DBの`.lock`も作られないまま、未選択の状態に安全に残ること。
+- フォルダ名付きDB同士の切り替え・他者使用中DBへの切り替え失敗時のロック維持・終了時の解放が、いずれも従来どおり機能すること（回帰確認）。
+- 前回DBのフォルダが外部で消えていて未選択で起動する場合も、同様にロックへ一切触れないこと。
+- 既存の検証（D-50〜D-58、計95項目：26+15+37+17）・既存`pytest`（1 passed）・スコープ付きimportチェック（`ui`/`models`/`services`）に影響が無いこと。
+- `git status`で`inventory_app/db/inventory.db.lock`が追跡対象から外れ（ステージ上は削除、ファイルは存在、再度未追跡としても現れない）、実環境の`db/inventory.db`本体・ロックファイルの中身がいずれも本タスクの作業前後で変化していないこと。
+
+### 22.5 未対応・申し送り事項
+
+- `db/`配下の`.bak_*`ファイル6件のgit管理の扱いは未着手（別タスク）。
+- 実環境のロックファイル消失の根本原因は特定できなかった（§22.1参照）。今後同様の事象が発生した場合に備え、`.gitignore`への`*.db.lock`追加（D-60）により、少なくとも「誤ってコミットに混入する」副作用は解消された。
+
+## 23. 中央表示の基準と計算方法の修正：クライアント領域と外枠の取り違え、作業領域基準への変更（2026-10-05、D-61）
+
+### 23.1 報告された症状と調査方針
+
+D-54で全画面に適用した中央寄せについて、「画面がディスプレイ中央より若干下に表示される」という報告を受けた。調査は、(1) 旧`center_window()`が幅・高さ・位置の算出にどの値を使っていたか、(2) タイトルバー・枠が計算に含まれているか、(3) Windowsの表示拡大（125%・150%等）の影響、(4) 実際の余白の差の実測、の4点で行った。
+
+### 23.2 原因1：クライアント領域と外枠の取り違え
+
+旧実装（D-54）は`winfo_width()`/`winfo_height()`で幅・高さを、`winfo_screenwidth()`/`winfo_screenheight()`（またはparent中央の場合は`winfo_rootx()`/`winfo_rooty()`+`winfo_width()`/`winfo_height()`）で中央座標を算出し、そのまま`geometry("WxH+X+Y")`に渡していた。
+
+実機で`ctypes.windll.user32.GetWindowRect()`と比較したところ、`winfo_width()`/`winfo_height()`・`winfo_rootx()`/`winfo_rooty()`はいずれもタイトルバー・枠を除いた「クライアント領域」の大きさ・位置を返すのに対し、`geometry()`の`+X+Y`部分はタイトルバー・枠を含む「外枠」の位置を指定する仕様であることを確認した。すなわち、クライアント領域基準で計算した値をそのまま外枠位置として渡していたため、タイトルバーの高さ（実測約31px）・左右の枠（実測約8px）の分だけ、意図した中央より右下にずれていた（特に高さはタイトルバーの影響で目立つ）。
+
+### 23.3 原因2：ディスプレイ全体と作業領域の取り違え
+
+`winfo_screenwidth()`/`winfo_screenheight()`はタスクバーを含むディスプレイ全体の解像度であり、タスクバー分を除いた「作業領域」ではなかった。タスクバーの高さだけ、実際に使える領域の中央とディスプレイ全体の中央がずれる。
+
+### 23.4 対策：ctypes経由のWindows API直接呼び出し
+
+追加の外部ライブラリを使わず、標準ライブラリの`ctypes`のみで以下を取得する設計に変更した（`ui/window_utils.py`を全面的に書き直し）。
+
+- **外枠サイズ**：`GetAncestor(hwnd, GA_ROOT)`でTkの`winfo_id()`から実際のOSトップレベルウィンドウのHWNDを求め、`GetWindowRect()`で外枠の矩形を取得する。
+- **作業領域**：`MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)`でモニターハンドルを求め、`GetMonitorInfoW()`の`rcWork`（タスクバー等を除いた作業領域）を使う。
+
+いずれもAPI呼び出しが失敗した場合（Windows以外の環境等）は、従来相当の近似値（`winfo_width/height()`・`winfo_screenwidth/height()`）にフォールパックし、例外を発生させない。`withdraw()`で非表示状態のウィンドウに対しても、これらのAPIがいずれも正しい値を返すことを実機確認済みであり、既存のちらつき防止設計（`withdraw()`→位置決定→`deiconify()`）はそのまま維持した。
+
+### 23.5 配置基準の変更：「parentの中央」から「作業領域の中央」へ
+
+今回の修正に合わせて、配置基準も変更した。旧実装は「parentの中央に重ねる」設計だったが、新実装は「parent（またはparent省略時・非表示時はwindow自身）が乗っているモニターの作業領域の中央」を基準にする。これにより、メインメニューを画面の端へ移動していても、そこから開く画面は作業領域の中央に表示される（parentの位置そのものには依存しない）。parent引数は「どのモニターを基準にするか」を決めるためだけに使われる。
+
+複数モニター時は、`MonitorFromWindow(..., MONITOR_DEFAULTTONEAREST)`により「最も近いモニター」が採用される。ウィンドウが2モニターの境界にまたがっている場合は、Windows標準の同API挙動に従って片方のモニターに決定される（本修正ではこの既定動作をそのまま採用し、独自のまたがり判定は行っていない）。
+
+画面（作業領域）よりウィンドウが大きい場合は、タイトルバー・左端が必ず作業領域内に収まるよう左上を作業領域の左上に揃える（右・下方向へのはみ出しは許容する）設計を維持した。
+
+### 23.6 DPIについて
+
+本アプリ・本関数はDPI非対応（DPI-unaware）のまま変更していない。実機確認では`GetDpiForWindow()`が常に96（100%相当）を返し、DPI非対応プロセスではWindowsが実際のモニターDPIに関わらず一律96 DPIとしてプロセスに見せかけることを確認した。ctypes経由の座標・サイズも、Tkinter自身が使う座標・サイズと同じこの「見せかけの」座標系で得られるため、両者の間で単位変換は不要であり、表示拡大（125%・150%等）が変わってもこの一貫性は保たれる。DPI対応化（per-monitorでの精密な表示）自体は本修正の対象外のまま。
+
+### 23.7 動作確認
+
+隔離環境（`config.APP_DATA_DIR`・`config.DB_PATH`・`config.MASTER_DB_PATH`を一時ディレクトリに差し替え）で、以下を確認した。
+
+- 単体での`center_window()`（10項目）：サイズ指定済み・自動サイズ両方の画面で、作業領域基準・外枠サイズ基準での左右／上下の余白の差が数px以内に収まること。parentを作業領域の左上端へ移動しても子の表示位置が変わらないこと（parent位置非依存の確認）。作業領域より大きいウィンドウでタイトルバー・左端が作業領域内に収まること。parentがwithdrawn状態でも例外が出ないこと。再表示（lift/focus_force）で位置が変わらないこと。
+- **実際のボタン起動経路での確認（29項目、全画面クラスを実際にインスタンス化）**：メインメニューを作業領域の端へ移動した状態から、別スレッドでデータを事前読み込みしてから開く非同期画面（生産実績入力`KittingProductionEntryWindow`・ロット進捗`LotProgressWindow`・日々の引落`DailyDrawdownWindow`）を含め、`center_window()`呼び出しを持つ29クラス全てを実際に生成し、作業領域基準での左右／上下の余白の差を実測した。結果は全て左右の差0px、上下の差1px以内（ウィンドウ高さの偶奇に由来する丸め、許容範囲内）で、29/29が合格した。
+- **関数内の一時ダイアログ・ポップアップ（10か所）**：「登録済みリストを表示」ダイアログ（`production_import_staging_window.py`）を実際に開いて実測し合格したことに加え、残り9か所についてはソースコードを直接確認し、いずれも「ウィジェットを配置し終えた後・`grab_set()`/`wait_window()`より前に`center_window()`を1回呼ぶ」という、既に実機確認済みの画面群と同一の呼び出しパターンであることを確認した。固定サイズ（`geometry("WxH")`）の画面では、`center_window()`呼び出し後に追加でウィジェットをpackしている箇所（チェックボックス式絞り込みポップアップ等）があるが、Tkinterの仕様上、明示的に`geometry("WxH")`で両方の寸法を指定済みのトップレベルウィンドウは、その後の`pack()`だけでは外枠サイズが変化しない（スクロール可能なCanvas等で内容の増加を吸収する設計になっている）ため、中央寄せ後にサイズ・位置がずれ直すことはない。
+- 既存の検証スイート（D-50〜D-60、計95＋40＋29項目）を再実行し、中央寄せの基準変更に直接関係する5項目（旧D-54仕様の「parentの中央に重ねる」ことを検証していたテスト）のみ、意図した仕様変更どおりに失敗することを確認した（リグレッションではなく、変更の反映）。それ以外の項目（既定DB無効化・在庫値出力警告・ロック制御等）は全て合格のままで、本修正による影響が無いことを確認した。
+- 既存`pytest`（1 passed）に影響が無いこと。
+- 実環境の`db/inventory.db`・`db/inventory.db.lock`のハッシュ・git状態が、本タスクの作業前後で変化していないこと（検証は全て`config.DB_PATH`等を一時ディレクトリへ差し替えた上で実行した）。
+
+### 23.8 未対応・申し送り事項
+
+- 関数内ダイアログ10か所のうち9か所は、実際に起動してのライブ実測ではなくソースコード上のパターン一致確認（§23.7参照）で代替した。いずれもトリガー条件が複雑な業務データを要するため、本タスクではこの確認範囲を妥当と判断したが、仮に将来これらのダイアログだけに固有の表示崩れが報告された場合は、個別にライブ実測を追加する余地がある。
+- DPI対応化（per-monitorでの精密表示）自体は本修正の対象外のまま（§23.6参照）。
+
+## 24. 構成基板数マスター・基板丁数マスター画面の改善：スクロールバー・登録件数表示・取込前確認・一括トランザクション化（2026-10-05、D-62〜D-65）
+
+前段の調査タスク（§0に記載した投資結果、CANONICAL_DESIGN_DECISIONS.md本節策定前の調査）で判明した、2画面共通の3つの課題（登録済み一覧にスクロールバーが無い・登録件数の常時表示が無い・取込が即時反映かつ1行ごとの個別コミットで途中失敗時に部分的な反映が残る）に対応した。`ui/board_structure_import_window.py`・`ui/parts_attributes_import_window.py`・対応する`models/board_structure_master.py`・`models/parts_attributes.py`に同じ内容の改善を適用している。
+
+### 24.0 着手前の確認（§0、いずれも停止要件に該当しなかった）
+
+- **既存の`upsert_board_structure()`/`upsert_parts_attributes()`の呼び出し元への影響**：`services/master_merge_service.py::merge_master_from_backup()`がこれら2関数を直接呼んでいることを確認した（`services/master_merge_service.py:24-25,39,48`）。1行ごとの個別コミットという既存の挙動を変更すると影響が及ぶため、**既存の2関数は変更せず**、取込専用の一括関数（`apply_board_structure_sync()`/`apply_parts_attributes_sync()`）を新設する方針とした。実機検証（§24.5）で、`merge_master_from_backup()`が従来通り動作することを確認済み。
+- **BOMキャッシュ無効化をコミット後にまとめて行えるか**：`invalidate_bom_master_by_part_no()`（`models/bom_master.py:74`）は`models.db_common.get_connection()`（月次DB、`config.DB_PATH`）を使う独立した接続・テーブルであり、`parts_attributes`が属する`master.db`（`get_master_connection()`）とは別のDBファイルであることを確認した（`models/parts_attributes.py:9-10`、`models/bom_master.py:10`）。このため、master.db側のトランザクションのコミット成功後にBOMキャッシュ無効化をまとめて呼んでも、アトミック性に影響しない（元々別DBのため、両方を1つのトランザクションにまとめることはできない関係にあった）。
+
+いずれも実装を妨げる要因ではなかったため、停止せずに実装した。
+
+### 24.1 スクロールバー・登録件数表示（D-62）
+
+- 縦スクロールバーは`ui/operation_log_window.py:63-69`の既存パターン（`vsb.pack(side=tk.RIGHT, fill=tk.Y)`を`self.tree.pack(...)`より先に呼ぶ）をそのまま踏襲した。マウスホイールでのスクロールは、ttk.Treeview（Windows）が標準で対応しているため追加のバインド処理は行っていない（実機確認済み、§24.5参照）。
+- 登録件数表示は、画面を開いたとき（`load_board_structure()`/`load_parts_attributes()`の末尾）・取込完了後（同じ関数を再度呼ぶ既存の経路）の両方で`_update_count_label()`が呼ばれるようにした。件数の取得は専用のCOUNT関数（`get_board_structure_count_summary()`・`get_parts_attributes_count()`、いずれも新設）を使い、Treeviewの行数を数える方式は採用していない（画面を開く前の状態でも使える、SQL側で集計する方が効率的という理由）。
+- 構成基板数マスターのみ「うち構成基板数なし」の件数を併記する（部品属性側は仕様上この追加表示を求められていないため、総件数のみ）。
+
+### 24.2 取込前の確認ダイアログ（D-63）
+
+取込を「CSVを解析→DBへ書き込み」という単純な即時実行から、「①CSV解析＋現在のテーブルとの差分計算（読み取りのみ）→②確認ダイアログ→③「はい」の場合のみ実際の反映」という2段階に変更した。
+
+- 差分計算（`compute_board_structure_sync_plan()`・`compute_parts_attributes_sync_plan()`、いずれも新設・読み取りのみ）は、CSVの重複キー解決後（後述）の1キー1件のリストと、現在のテーブル内容を比較し、追加・更新（値が変わる）・変更なし・削除の4カテゴリに分類する。
+- 確認ダイアログには、各カテゴリの件数に加え、削除がある場合はその旨を明記した上で対象の先頭10件を表示する。「いいえ」を選んだ場合はDBへの書き込みを一切行わない（実機確認済み、§24.5参照）。
+- CSV内の重複キー（同じ基板名／96コードの行が複数）は、解析時点で検出する。値が完全に同じ重複は件数のみを通知し、値が食い違う重複は該当キー・各行番号・各値・採用される値（最後の行の値、既存のON CONFLICT上書きの挙動と一致させるため）を確認ダイアログに明記する。続行するかどうかは、この重複の情報を含む同じ確認ダイアログで判断できるようにした（重複専用の別ダイアログは設けていない）。
+
+### 24.3 取込の一括トランザクション化（D-64）
+
+- 新設した`apply_board_structure_sync()`・`apply_parts_attributes_sync()`は、重複解決後の1キー1件のリストを受け取り、登録（INSERT ... ON CONFLICT DO UPDATE、既存のSQLと同一）・削除（差分同期で特定した対象）を**1つの`with get_master_connection() as con: ... con.commit()`ブロック内**で実行する。
+- 途中で例外が発生した場合、Pythonの`sqlite3.Connection`が標準で提供するコンテキストマネージャ仕様（`__exit__`で、例外が無ければ`commit()`、例外があれば`rollback()`）により、呼び出し前の状態にそのまま戻ることを、実際に3行目で例外を注入する実機検証で確認した（§24.5参照）。
+- 既存の`upsert_board_structure()`・`upsert_parts_attributes()`・`delete_board_structure_not_in()`・`delete_parts_attributes_not_in()`（1行・1処理ごとに個別コミット）はそのまま残し、`services/master_merge_service.py`等の既存の呼び出し元の動作は変更していない。
+- **副次的な効果（性能）**：3000件規模のCSVで実測したところ、旧実装（1行ごとに個別コミット）は約34.7秒を要したのに対し、新実装（1トランザクション）は解析＋差分計算＋確定の合計で約0.09秒だった（§24.5参照）。1行ごとの個別コミットがSQLiteのディスク同期（fsync相当）のオーバーヘッドを件数分発生させていたことが原因と考えられる。
+- 部品属性側のBOMキャッシュ無効化（`invalidate_bom_master_by_part_no()`）は、§24.0で確認した通り別DBの操作のため、本トランザクションのコミット成功後に、影響を受けた全part_no（追加・更新・削除）についてまとめて呼ぶよう変更した。
+
+### 24.4 エラー表示・結果表示の整理（D-65）
+
+- 従来、CSV解析・取込確定中の例外は`ValueError`のみエラーダイアログで通知し、それ以外の例外は`on_import_execute()`内の`self.after()`コールバック内でそのまま再発生させており、利用者には何も表示されなかった（調査タスクで判明した既存の問題）。両画面とも、解析段階・確定段階それぞれで`ValueError`以外の例外も捕捉し、エラーダイアログで「データは取込前の状態のままです」と明記して通知するよう修正した。D-64の一括トランザクション化により、確定段階で例外が発生した場合にこの文言が常に正しいことが保証される。
+- 完了メッセージを、読み込んだ行数（CSVの有効行）・追加/更新/変更なし/削除（キー単位）・登録されなかった行数（キー空欄）・値が読み取れず空で登録した件数（部品属性側にも新規に追加。丁取り数またはフル数量の数値変換に失敗した行数）・取込後の登録件数、の内訳に整理した。
+- ファイル形式についての注意文（区切り文字・文字コード不一致の疑いがある場合のヒント）は、`notices`という別カテゴリに分離し、行単位の警告件数（`warnings`、基板名／96コード空欄スキップ・数値変換失敗のみ）には含めない。
+- 警告が多数ある場合も全件を確認できるよう、専用のスクロール可能な一覧ウィンドウ（`ui/warnings_list_window.py::WarningsListWindow`、新設）を両画面で共用し、警告が1件以上ある場合は完了メッセージの直後に自動的に開く。完了メッセージ自体には件数のみを表示する。
+- `operation_log`に記録する内訳も、新しい分類（追加/更新/変更なし/削除の件数）に合わせて変更した。
+
+### 24.5 動作確認
+
+隔離環境（`config.APP_DATA_DIR`・`config.DB_PATH`・`config.MASTER_DB_PATH`を一時ディレクトリへ差し替え）で、以下を確認した。
+
+- 前回調査の実測5パターン（初回・再取込・値変更・行削除・CSV内重複〈値同じ/値違い〉）について、差分計算の結果（追加・更新・変更なし・削除の件数）と、実際にトランザクションを確定した後のテーブル内容が、全パターンで一致すること（board_structure側11項目・parts_attributes側7項目、全て合格）。
+- 確認ダイアログで「いいえ」相当（`apply_..._sync()`を呼ばない）の操作をした場合、テーブルが一切変化しないこと（合格）。
+- 途中の行で例外を注入した場合、例外が発生し、テーブルが例外発生前と完全に同じ内容に戻ること（board_structure側：`normalize_board_name()`の2件目呼び出しで例外注入、parts_attributes側：NOT NULL制約違反を注入、いずれも合格）。
+- 登録件数の表示が、画面を開いたとき・取込完了後の両方でテーブルの実際の行数と一致すること（合格）。
+- 3000件規模のCSVの取込時間：旧実装（HEADコミット時点のモジュールを直接ロードして計測）約34.7秒 → 新実装（解析＋確定の合計）約0.09秒（合格、性能劣化なし）。
+- 実際の`BoardStructureImportWindow`を生成し、スクロールバーの存在・マウスホイールイベントでのTreeviewスクロール（`<MouseWheel>`イベント生成後に`yview()`が変化すること）・「はい」選択での反映・登録件数ラベルの更新・「いいえ」選択での無変化・想定外の例外（`RuntimeError`を注入）でのエラーダイアログ表示（「データは取込前の状態のままです」を含む）とテーブル無変化、の計8項目を実機相当の経路で確認した（全て合格）。
+- 「不足分のみ取り込み」（`services/master_merge_service.py::merge_master_from_backup()`）・BOM計算（`invalidate_bom_master_by_part_no()`経由のキャッシュ無効化が、丁取り数更新後にコミット後まとめて正しく働くこと）が従来どおり動作すること（合格）。
+- TSV（タブ区切り）・cp932エンコーディング（全角文字を含む）の読み取りが、部品属性側・構成基板数マスター側のいずれも従来どおり動作すること（合格）。
+- 既存の検証スイート（D-50〜D-61、計26+15+38+17+40+29項目）・既存`pytest`（1 passed）に影響が無いこと（全て合格）。
+- 実環境の`db/inventory.db`・`db/inventory.db.lock`が、本タスクの作業前後で変化していないこと（確認済み。全ての検証は`config.DB_PATH`等を一時ディレクトリへ差し替えた上で実行した）。
+
+### 24.6 未対応・申し送り事項
+
+- ~~`ui/warnings_list_window.py::WarningsListWindow`も内部で`center_window()`を使うため...39か所の表に正式に追加する作業は本タスクのスコープ外として見送った。~~ → **後続タスクで反映済み（§25.4参照）**。
+- `board_structure_master`の実データ（3119件）の`master.db`への再構築自体は、本タスクの対象外のまま未着手（D-42他、既知の別課題）。
+
+## 25. 構成基板数マスター・基板丁数マスター画面への検索・ソート追加（2026-10-05、D-66〜D-68）
+
+§24で改善した両取込画面の登録済み一覧に、検索（絞り込み）・列ソート機能を追加した。
+
+### 25.0 着手前の確認（§0）
+
+アプリ内の他画面における検索・絞り込み・列ソートの既存実装を調査した。
+
+- **列ソート**：`ui/operation_log_window.py::sort_by_column()`が最も単純な実装（文字列比較のみ、クリックごとに昇順/降順をトグル、`_sort_reverse`辞書で列ごとに状態を保持）。`ui/lot_progress_window.py`・`ui/unified_report_window.py`の`sort_by_column()`は、数値列を`float()`変換して比較する`_NUMERIC_COLUMNS`方式を採用しているが、いずれも「ロット単位のブロックでまとめてソートする」という本件には無関係な業務要件（同一ロットの行が離れないようにする）のための設計が主目的であり、かつ数値変換に失敗した値（未登録等）を`float("-inf")`にフォールバックする方式のため、**降順ソート時に空値が先頭に来てしまい**、今回の「値が空のデータは昇順・降順どちらでも末尾」という要件を満たさない（D-67参照）。列ヘッダーにソート方向を記号で表示する既存実装は、調査した範囲では見つからなかった（`▼`は全画面で「チェックボックス式絞り込みポップアップを開くボタン」の意味で使われており、ソート方向の記号としては流用せず、本件で新たに`▲`/`▼`をヘッダーテキストへ直接追記する方式を採用した）。
+- **検索（テキスト絞り込み）**：`ui/ng_input_window.py`等のチェックボックス式絞り込みポップアップ内の検索欄（`search_var.trace_add("write", rebuild_visible)`）が、入力のたびに絞り込む設計の既存例。ただし`.lower()`のみで全角/半角は吸収しない。今回は「全角/半角を区別しない」という追加要件があるため、`models/board_structure_master.py::normalize_board_name()`と同じNFKC正規化を検索語・検索対象値の両方に適用する方式を新設した（UI層のため、既存のmodels層との依存を避ける方針に従い、models側の関数を呼ばず同一ロジックを複製した。D-52の教訓・既存の設計判断を踏襲）。
+- **採用方針**：列ソートの基本構造（列ごとの状態辞書、クリックでトグル、`Treeview.move()`での並べ替え）は`operation_log_window.py`に、数値列の判定方式（列名の集合で判定）は`lot_progress_window.py`/`unified_report_window.py`に合わせた。検索欄の「入力のたびに絞り込む」操作性は`ng_input_window.py`の検索欄に合わせたが、正規化方式（NFKC追加）とヘッダーの矢印表示は本タスクで新設した（既存のどの画面にも無い要件のため）。**既存画面（`operation_log_window.py`・`lot_progress_window.py`・`unified_report_window.py`・`ng_input_window.py`等）のコードは一切変更していない。**
+
+### 25.1 検索・絞り込み（D-66）
+
+- 一覧の上に検索欄（`ttk.Entry`＋`tk.StringVar`）と「クリア」ボタンを追加した。`search_var.trace_add("write", ...)`により、1文字入力するたびに絞り込みを再計算する。
+- 検索対象列：構成基板数マスターは基板名・構成基板数の2列、基板丁数マスターは96コード・丁取り数・部品種別・部品支給区分・フル数量の5列（いずれもTreeviewに表示している全列）。数値列もTreeviewに表示される文字列表現（`str(value)`）に変換した上で検索対象にする。
+- 正規化（`_normalize_for_search()`、両ファイルに同一ロジックを複製）：NFKC正規化＋小文字化＋前後空白除去により、全角/半角・大文字/小文字の違いを区別しない部分一致を実現した。
+- 該当が0件の場合：Treeviewを空にし、`self.lbl_empty`（「検索条件に一致するデータがありません。」）をTreeview直前に`pack()`して表示する。該当が1件以上に戻った場合は`pack_forget()`で隠す。
+- 構成基板数マスターのみ、「構成基板数なしのみ表示」チェックボックス（`self.missing_only_var`）を追加し、`board_count is None`の行だけに絞り込む機能を加えた（検索語との併用可、AND条件）。
+
+### 25.2 列ソート（D-67）
+
+- 列見出しをクリックすると、`sort_by_column(col)`が呼ばれる。同じ列を連続でクリックすると昇順/降順がトグルし、別の列をクリックした場合は常に昇順から始まる（`self._sort_column`・`self._sort_ascending`で状態を保持）。
+- 現在のソート列・方向は、見出しテキストに`" ▲"`（昇順）/`" ▼"`（降順）を追記して表示する（`_update_column_headers()`、ソート対象外の列は元の見出しテキストのまま）。
+- 数値列（構成基板数マスターは`board_count`、基板丁数マスターは`teitori`・`full_qty`）は`float()`変換して数値として比較し、それ以外の列は文字列として比較する（`_NUMERIC_COLUMNS`集合で判定、既存画面と同じ判定方式）。
+- **値が空のデータの扱い（既存画面との重要な違い）**：ソート対象列の値が空（数値列は`None`、文字列列は`None`または空文字列）の行を、ソート前に別リストへ分離し、値が有る行だけを指定方向でソートした後、値が空の行を常に末尾へ連結する方式を採用した。既存の`lot_progress_window.py`等が使う「`float("-inf")`へのフォールバック」方式では、降順ソート時に空値が先頭に来てしまい、今回の「昇順・降順どちらでも末尾」という要件を満たせないため、意図的に別方式にした（§25.0参照）。
+- 初期状態（画面を開いた直後、何もクリックしていない状態）は、キー列（構成基板数マスターは`board_name`、基板丁数マスターは`part_no`）の昇順。`list_board_structure()`/`list_parts_attributes()`のSQL自体が`ORDER BY`でキー昇順を返すことに加え、`self._sort_column`の初期値をキー列に設定しているため、ヘッダーの矢印表示も開いた直後から正しくキー列に付く。
+
+### 25.3 件数表示・既存機能との独立性（D-68）
+
+- 絞り込み中は、登録件数表示に「表示: N件 / 」を前置する（例：「表示: 25件 / 登録件数: 3119件（うち構成基板数なし 12件）」）。絞り込み無しの場合は従来と同じ表示のまま変化しない。
+- 登録件数自体（「/」の後ろの値）は、検索・ソート機能の追加前と同じCOUNT関数（D-62で新設の`get_board_structure_count_summary()`/`get_parts_attributes_count()`）から取得する。Treeviewの行数を数える方式には変更していない。
+- 検索・ソートは`self._all_rows`（DBから取得した全件のキャッシュ）に対してのみ適用し、Treeviewへの表示だけに影響する。取込処理（CSV解析・差分計算・確認ダイアログ・一括トランザクションでの確定）は、いずれも`self._all_rows`を参照せず、常にDBへ直接アクセスする設計（§24で確立済み）のままであるため、検索・ソートの状態は取込結果に一切影響しない。
+- 取込完了後の一覧再読込（`load_board_structure()`/`load_parts_attributes()`）は、`self._all_rows`を再取得した後、現在の検索語・チェックボックス・ソート状態をそのまま使って再描画する（`_apply_filter_and_render()`を呼ぶのみで、検索語等をクリアする処理は無い）ため、取込前に見ていた絞り込み結果が、取込後のデータで自然に更新される。
+
+### 25.4 center_window()適用箇所の反映（前回の見送り分）
+
+D-65で新設した`ui/warnings_list_window.py::WarningsListWindow`も`center_window()`を使用するため、D-54・D-61で「39か所（29クラス＋関数内ダイアログ10か所）」として整理していた適用箇所が、実際には40か所（30クラス＋関数内ダイアログ10か所）になっていたことを、今回あらためて確認・反映した（前回はスコープ外として反映を見送っていた、§24.6参照）。実機確認（作業領域中央への配置、§25.5参照）は合格している。
+
+### 25.5 動作確認
+
+隔離環境（`config.APP_DATA_DIR`・`config.DB_PATH`・`config.MASTER_DB_PATH`を一時ディレクトリへ差し替え）で、以下を確認した。
+
+- 検索：部分一致、全角/半角・大文字/小文字を区別しない、0件時の空表示・専用メッセージ、クリアでの全件復帰（構成基板数マスター：15項目、基板丁数マスター：3項目、全て合格）。
+- ソート：数値列の昇順・降順が数値順になること（2, 10, 100の順。文字列順の10, 100, 2にならないことを明示的に確認）、値が空のデータが昇順・降順いずれでも末尾にまとまること、見出しの▲▼記号表示、初期状態がキー列昇順であること（全て合格）。
+- 絞り込み中にソートしても絞り込みが維持されること（合格）。
+- 絞り込み中に取込を実行しても、差分同期がテーブル全体に正しく反映され（CSVに無い行の削除・新規行の追加を含む）、取込後の件数表示（COUNT関数）がテーブルの実件数と一致すること。取込完了後も検索語が保持されたまま一覧が更新されることも確認した（合格）。
+- 3000件規模での応答時間：画面を開く（読込＋初期表示）約0.12秒、検索（1回分の絞り込み）約0.03秒、ソート（数値列の昇順・降順切替）約0.03〜0.04秒。いずれも対話操作として遅延を感じない水準であることを確認した。
+- 既存の検証スイート（D-50〜D-65、計11項目×2画面＋8項目＋4項目＋既存164項目）・既存`pytest`（1 passed）に影響が無いこと（全て合格）。
+- `WarningsListWindow`が実際に作業領域の中央に表示されること（§25.4、合格）。
+- 実環境の`db/inventory.db`・`db/inventory.db.lock`が、本タスクの作業前後で変化していないこと（確認済み）。
+
+### 25.6 未対応・申し送り事項
+
+- 検索・ソートの導入により一覧上の見た目は変わるが、CSVインポート自体の仕様（差分同期・CSVに無いデータの削除）はD-53・D-63から変更していない。
+- `board_structure_master`の実データ（3119件）の`master.db`への再構築は、本タスクでも対象外のまま未着手（既知の別課題、D-42他）。

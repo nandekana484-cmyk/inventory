@@ -1,39 +1,41 @@
 ﻿import os
 import queue
+import shutil
 import socket
 import threading
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox, filedialog, simpledialog
 import tkinter.font as tkfont
+from datetime import datetime
 import config
 from db.init_db import init_database_at
 from models.kitting_plan import init_kitting_plan_tables
 from services.db_lock_service import (
     acquire_lock, release_lock, update_heartbeat, get_lock_info, LockFileCorruptedError,
 )
-from ui.master_management import MasterManagementWindow
 from ui.kitting_plan_import import KittingPlanImportWindow
 from ui.kitting_production_entry import KittingProductionEntryWindow
 from ui.loading_window import LoadingWindow
 from ui.inventory_input_window import InventoryInputWindow
 from ui.theoretical_inventory_import_window import TheoreticalInventoryImportWindow
 from ui.inventory_diff_window import InventoryDiffWindow
-from ui.master_import_window import MasterImportWindow
 from ui.ng_input_window import NgInputWindow
 from ui.parts_attributes_import_window import PartsAttributesImportWindow
 from ui.board_structure_import_window import BoardStructureImportWindow
 from ui.wip_expansion_window import WipExpansionWindow
 from ui.worker_management_window import WorkerManagementWindow
 from ui.worker_registration_window import WorkerRegistrationWindow
-from ui.shared_db_list_window import SharedDbListWindow
 from ui.operation_log_window import OperationLogWindow
-from models.operation_log import log_operation
+from models.operation_log import log_operation, get_inventory_diff_export_status
 from ui.db_delete_helper import confirm_and_delete_database
 from services.db_migration_carryover import carry_over_incomplete_lots
-from services.backup_service import backup_databases
+from services.backup_service import (
+    backup_databases, validate_monthly_db_backup, restore_backup_as_new_local_db,
+)
 from services.master_merge_service import merge_master_from_backup
 from services.unprocessed_check_service import check_unprocessed_items
 from services.app_settings_service import load_last_db_path
+from ui.window_utils import center_window
 
 
 class MainWindow(tk.Tk):
@@ -61,20 +63,32 @@ class MainWindow(tk.Tk):
             else:
                 self._restore_last_db_failed_path = last_db_path
 
-        # 起動時点のconfig.DB_PATHに対してロックを取得できなければ、他PC・他ユーザーが
-        # 使用中とみなしてここで起動を中断する（以降のUI構築は行わない）。
-        # LoginWindow側は self.winfo_exists() を見てから mainloop() を呼ぶ想定
-        # （destroy済みのTkルートでmainloop()を呼ばないようにするため）。
-        if not self._acquire_lock_with_corruption_handling(config.DB_PATH):
-            messagebox.showerror(
-                "データベース使用中",
-                "このデータベースは他の利用者が使用中のため起動できません。\n\n"
-                + self._format_lock_info(get_lock_info(config.DB_PATH)),
-                parent=self,
-            )
-            self.destroy()
-            return
-        self._lock_acquired = True
+        # 既定DB（未選択、config.is_default_db()）の間は、ロックファイルにも
+        # 一切触れない（D-56・D-57で確定した「既定DBは読み書きしない」方針を、
+        # .lock（services.db_lock_service.py、DB本体とは別ファイル）にも拡張する。
+        # 詳細はCANONICAL_DESIGN_DECISIONS.md参照）。既定DBパスに他プロセスの
+        # 古い・有効なロックが残っていても、ロック取得自体を試みないため影響を
+        # 受けず起動できる。self._lock_acquiredは__init__()冒頭（47行目付近）で
+        # 既にFalse初期化済みのため、ここでは単に取得処理をスキップするだけで、
+        # 以降のハートビート（_heartbeat()）・解放（_release_current_lock()）は
+        # 既存のif self._lock_acquired:ガードにより自然に何もしなくなる。
+        #
+        # 既定DB以外の場合は従来通り：起動時点のconfig.DB_PATHに対してロックを
+        # 取得できなければ、他PC・他ユーザーが使用中とみなしてここで起動を中断する
+        # （以降のUI構築は行わない）。LoginWindow側は self.winfo_exists() を見てから
+        # mainloop() を呼ぶ想定（destroy済みのTkルートでmainloop()を呼ばないように
+        # するため）。
+        if not config.is_default_db():
+            if not self._acquire_lock_with_corruption_handling(config.DB_PATH):
+                messagebox.showerror(
+                    "データベース使用中",
+                    "このデータベースは他の利用者が使用中のため起動できません。\n\n"
+                    + self._format_lock_info(get_lock_info(config.DB_PATH)),
+                    parent=self,
+                )
+                self.destroy()
+                return
+            self._lock_acquired = True
 
         self.title("部品在庫管理アプリ - メインメニュー")
         # 月次データ・共通マスタを左右2列表示にしたことで縦に短くなった分、
@@ -84,6 +98,7 @@ class MainWindow(tk.Tk):
         # 共有フォルダ関連の2ボタンはヘッダー行の右上へ移動したため、
         # 「データベース選択」領域は再び1段のみとなり、高さは元の940x600に戻す。
         self.geometry("940x600")
+        center_window(self)
 
         # メインメニューから開く画面の多重表示防止用：key -> 開いているToplevelインスタンス。
         # ウィンドウが閉じられたら _open_singleton_window() が設定した
@@ -166,35 +181,26 @@ class MainWindow(tk.Tk):
             font=("Helvetica", 11, "bold")
         ).pack(side=tk.LEFT)
 
-        # 共有フォルダ（UNCパス等）上のDBを直接開く／新規作成する2ボタン。
-        # 以前は「データベース選択」領域内の2段目（db_select_row2）に置かれて
-        # いたが、メインメニューの右上に配置する方針に変更した。side=tk.RIGHTで
-        # ヘッダー行の右端へパックする（先に「新規作成」を、後から「開く」を
-        # packすることで、右端から見て「開く」が左・「新規作成」が右という
-        # 従来通りの左右順序になる）。
-        self.btn_create_shared_database = ttk.Button(
-            header_frame, text="共有フォルダに新規作成", command=self.on_create_shared_database,
-        )
-        self.btn_create_shared_database.pack(side=tk.RIGHT)
-
-        self.btn_open_shared_database = ttk.Button(
-            header_frame, text="共有フォルダのDBを開く", command=self.on_open_shared_database,
-        )
-        self.btn_open_shared_database.pack(side=tk.RIGHT, padx=(0, 10))
-
-        self.btn_shared_db_list = ttk.Button(
-            header_frame, text="共有フォルダのDB一覧", command=self.open_shared_db_list,
-        )
-        self.btn_shared_db_list.pack(side=tk.RIGHT, padx=(0, 10))
-
         # 月次DB（config.DB_PATH）・マスタDB（config.MASTER_DB_PATH）を同時に
-        # バックアップする手動ボタン（2026-10-02追加）。共有フォルダ系3ボタンとは
-        # 別の操作のため、side=tk.RIGHTのpack順序上、この3ボタンよりさらに左側
-        # （ログイン作業者ラベルに近い側）に配置する。
+        # バックアップする手動ボタン（2026-10-02追加）。
         self.btn_backup_databases = ttk.Button(
             header_frame, text="バックアップ", command=self.on_backup_databases,
         )
         self.btn_backup_databases.pack(side=tk.RIGHT, padx=(0, 10))
+
+        # バックアップ済みの月次DB（.db）を選び、新しいローカルDBフォルダへ
+        # 取り込んで切り替えるボタン（メインメニュー整理、CANONICAL_DESIGN_
+        # DECISIONS.md D-50参照）。以前の「共有フォルダのDBを開く」機能を
+        # バックアップの復元に転用する運用（旧D-45）は、バックアップ原本が
+        # そのまま本番DBになってしまう・マスタDBは復元されない・D-20（ローカル+
+        # バックアップ方針）と整合しないという3点の問題があったため、本ボタン
+        # （新フォルダへコピーしてから切り替える、原本・元のDBとも不変）に
+        # 置き換えた。「バックアップ」ボタンの隣（pack順序上、直後にpackする
+        # ことでside=tk.RIGHTの並びで隣接表示になる）に配置し、権限制限は無い。
+        self.btn_restore_from_backup = ttk.Button(
+            header_frame, text="バックアップの呼び出し", command=self.on_restore_from_backup,
+        )
+        self.btn_restore_from_backup.pack(side=tk.RIGHT, padx=(0, 10))
 
         # バックアップ済みマスタDB（master_backup_*.db）から、現在のmaster.dbに
         # 不足しているレコードを取り込むボタン（2026-10-03追加）。マスタデータ
@@ -210,13 +216,12 @@ class MainWindow(tk.Tk):
             )
             self.btn_merge_master.pack(side=tk.RIGHT, padx=(0, 10))
 
-        # 現在接続中のDBパスを常時表示する行（ヘッダー直下）。ローカル・共有フォルダ
-        # （UNC）のどちらでも、切り替え操作のたびに最新のフルパスへ更新される
-        # （_update_current_db_label()参照。呼び出し箇所：起動時のこの直後、
-        # _try_switch_db_path()＝on_switch_database()・_switch_to_shared_db()
-        # （on_open_shared_database()・SharedDbListWindow「このDBに切り替える」共通）・
-        # on_create_shared_database()共通、on_create_database()の両分岐）。
-        # 長いUNCパスでウィンドウの横幅が押し広げられてレイアウトが崩れないよう、
+        # 現在接続中のDBパスを常時表示する行（ヘッダー直下）。切り替え操作の
+        # たびに最新のフルパスへ更新される（_update_current_db_label()参照。
+        # 呼び出し箇所：起動時のこの直後、_try_switch_db_path()＝
+        # on_switch_database()・on_restore_from_backup()共通、
+        # on_create_database()の両分岐）。
+        # 長いパスでウィンドウの横幅が押し広げられてレイアウトが崩れないよう、
         # _truncate_path_for_display()で必要に応じて中央を省略表示する
         # （フルパスは自己管理のself._current_db_full_pathに保持）。
         db_path_frame = ttk.Frame(self, padding=(10, 0, 10, 8))
@@ -225,18 +230,38 @@ class MainWindow(tk.Tk):
         self._current_db_full_path = ""
         self.lbl_current_db_path = ttk.Label(db_path_frame, text="-", font=("Helvetica", 9), foreground="#333333")
         self.lbl_current_db_path.pack(side=tk.LEFT)
-        self._update_current_db_label()
+
+        # 在庫値出力済みDBの警告（CANONICAL_DESIGN_DECISIONS.md D-5x参照）。
+        # 現在のDBラベルの直下に、出力済みの場合のみ目立つ色で常時表示する
+        # （禁止ではなく警告のため、表示するだけで入力自体は妨げない）。
+        # 再評価のタイミングは現在DBラベルと同じ（_update_current_db_label()
+        # から呼ばれる_refresh_inventory_diff_export_warning()に集約）。
+        self.lbl_inventory_diff_export_warning = ttk.Label(
+            self, text="", font=("Helvetica", 9, "bold"), foreground="#b00020",
+        )
+        # _update_current_db_label()の最初の呼び出しは、_menu_widgets・
+        # _default_db_locked_widgets（ボタン一覧）の構築後に行う
+        # （_apply_widget_states()がこれらを参照するため）。
 
         # メニューボタン領域
         # 月次データ（config.DB_PATH切り替えの対象＝月ごとのDBフォルダに入っている
-        # データ：キッティング計画・生産実績・在庫関連）と、共通マスタ（作業者・
-        # 部品マスタ等）を左右2列に分けて表示する（共通マスタを左、月次データを右）。
-        # 注：現状は月次・共通いずれのテーブルも同一のDBファイル（config.DB_PATH）に
-        # 同居しており、DB切り替え時は両方まとめて切り替わる（ファイルレベルでの
-        # 分離は無い）。ここでの区分けはあくまでデータの性質によるUI上の整理であり、
-        # 実際に別ファイルに分かれているわけではない。
+        # データ：キッティング計画・生産実績・在庫関連・操作履歴等）と、共通マスタ
+        # （config.MASTER_DB_PATH＝board_structure_master・parts_attributes・
+        # workers・parts・final_products、月次DB切り替えとは独立の固定ローカル
+        # ファイル）を左右2列に分けて表示する（共通マスタを左、月次データを右。
+        # マスタDB分離の経緯はCANONICAL_DESIGN_DECISIONS.md D-38・D-42参照）。
+        # 左列末尾の「ツール」見出し配下（PDF読み取り・操作履歴）は例外で、
+        # 依存先は月次DB（inventory_stock・operation_logいずれもconfig.DB_PATH
+        # 側のテーブル）のままであり、月をまたいで使い回す共通マスタではない。
+        # 使用頻度の低い補助機能をまとめて置くという配置上の都合であり、
+        # 依存DBによる厳密な列分けの例外であることに注意（D-50参照）。
         body_frame = ttk.Frame(self, padding=20)
         body_frame.pack(expand=True, fill=tk.BOTH)
+        # 在庫値出力済み警告ラベル（上で生成済み）をpack(before=...)で挿入する際の
+        # 基準。body_frameより前に挿入することで、db_path_frame（現在DBラベル）の
+        # 直下に常に表示される（警告ラベル自体はpack/pack_forget()を繰り返すため、
+        # 呼び出し順だけに依存せずこの基準で位置を固定する）。
+        self._body_frame = body_frame
 
         ttk.Label(body_frame, text="操作メニューを選択してください", font=("Helvetica", 12)).pack(pady=(0, 10))
 
@@ -288,26 +313,6 @@ class MainWindow(tk.Tk):
         )
         btn_inventory_diff.pack(fill=tk.X, pady=5)
 
-        # PDFから読み取った96コード一覧をinventory_stockと照合し、当部署の
-        # 部品だけを抽出する機能。既存の月次データ項目（1〜7）は番号が既に
-        # ドキュメント・利用者に定着しているため、割り込ませて振り直すのではなく
-        # 末尾に追加する形にした（在庫値入力・在庫値出力と同じinventory_stockを
-        # 扱う点では関連が深いが、月をまたいで使い回すマスタ的な性質ではなく
-        # 都度のPDF取込という運用データのため、共通マスタ側ではなくこちらに配置）。
-        btn_pdf_ocr_import = ttk.Button(
-            monthly_frame, text="8. PDF読み取り（在庫照合）", command=self.open_pdf_ocr_import
-        )
-        btn_pdf_ocr_import.pack(fill=tk.X, pady=5)
-
-        # operation_logテーブルは月次DB（config.DB_PATH）に同居し、DBを切り替える
-        # たびに履歴も切り替わる（月をまたいだ通算履歴にはならない）ため、月をまたいで
-        # 使い回す共通マスタ側ではなく、月次データ側に配置した（項目8と同じ理由・
-        # 同じ末尾追加の考え方）。
-        btn_operation_log = ttk.Button(
-            monthly_frame, text="9. 操作履歴", command=self.open_operation_log
-        )
-        btn_operation_log.pack(fill=tk.X, pady=5)
-
         ttk.Label(master_frame, text="共通マスタ", font=("Helvetica", 11, "bold")).pack(anchor=tk.W, pady=(0, 5))
 
         btn_board_structure_import = ttk.Button(
@@ -339,13 +344,25 @@ class MainWindow(tk.Tk):
             )
             self.btn_worker_management.pack(fill=tk.X, pady=5)
 
-        btn_master = ttk.Button(master_frame, text="4. マスターデータ管理", command=self.open_master_management)
-        btn_master.pack(fill=tk.X, pady=5)
+        # 「ツール」見出し：PDF読み取り・操作履歴（メインメニュー整理、
+        # CANONICAL_DESIGN_DECISIONS.md D-50参照）。以前は月次データ側に項目8・9
+        # として番号付きで配置されていたが、共通マスタ側へ移動し番号を外した
+        # （以降この2つに番号は付けない。右列「月次データ」の1〜7は変更なし）。
+        # 依存先DB自体は変わらず月次DB（config.DB_PATH、inventory_stock・
+        # operation_logいずれも月次DB側のテーブル）のままであり、月をまたいで
+        # 使い回す共通マスタになったわけではない。使用頻度の低い補助機能を
+        # まとめて置くという配置上の都合であることに注意。
+        ttk.Label(master_frame, text="ツール", font=("Helvetica", 11, "bold")).pack(anchor=tk.W, pady=(15, 5))
 
-        btn_master_import = ttk.Button(
-            master_frame, text="5. マスターインポート", command=self.open_master_import
+        btn_pdf_ocr_import = ttk.Button(
+            master_frame, text="PDF読み取り（在庫照合）", command=self.open_pdf_ocr_import
         )
-        btn_master_import.pack(fill=tk.X, pady=5)
+        btn_pdf_ocr_import.pack(fill=tk.X, pady=5)
+
+        btn_operation_log = ttk.Button(
+            master_frame, text="操作履歴", command=self.open_operation_log
+        )
+        btn_operation_log.pack(fill=tk.X, pady=5)
 
         ttk.Separator(body_frame, orient="horizontal").pack(fill=tk.X, pady=15)
 
@@ -359,15 +376,18 @@ class MainWindow(tk.Tk):
         # config.DB_PATHが旧DB→新DBの間で一時的に入れ替わるため、他のボタンから
         # 新規にウィンドウを開けたりDBを切り替えられたりすると、その一時的な
         # 切り替わりの間にデータ不整合が起きる恐れがある。
+        # 注意：chk_carry_over（前月引き継ぎチェック）はここには含めない。
+        # 既定DB（未選択）の間はこのチェック自体を使えなくする（かつチェック済み
+        # 状態も強制解除する）必要があり、通常のボタンと同じ単純なstate切替では
+        # 済まないため、_apply_widget_states()内で個別に扱う。
         self._menu_widgets = [
             self.db_folder_combobox, self.btn_switch_database, self.entry_new_db_folder,
-            self.chk_carry_over, self.btn_create_database,
-            self.btn_open_shared_database, self.btn_create_shared_database,
-            self.btn_backup_databases,
+            self.btn_create_database,
+            self.btn_backup_databases, self.btn_restore_from_backup,
             btn_kitting_import, btn_kitting_production, btn_inventory_input,
             btn_theoretical_import, btn_inventory_diff, btn_ng_input, btn_wip_expansion,
-            btn_pdf_ocr_import,
-            btn_master, btn_master_import, btn_parts_attributes_import,
+            btn_pdf_ocr_import, btn_operation_log,
+            btn_parts_attributes_import,
             btn_worker_registration, btn_board_structure_import, btn_logout,
         ]
         # 「3. 作業者管理」・「マスタデータを他PCから取り込む」はいずれも
@@ -377,6 +397,34 @@ class MainWindow(tk.Tk):
             self._menu_widgets.append(self.btn_worker_management)
         if self.btn_merge_master is not None:
             self._menu_widgets.append(self.btn_merge_master)
+
+        # 既定DB（APP_DATA_DIR/db/inventory.db、フォルダ名なし＝「未選択」）を
+        # 開いている間、無効化する業務ボタンの一覧（_apply_widget_states()参照、
+        # CANONICAL_DESIGN_DECISIONS.md D-5x参照）。_menu_widgetsとは別に新設した
+        # （carry_over_incomplete_lots()実行中の一括無効化とは独立に判定する
+        # ため）。DB選択・新規作成・ローカルDB削除・バックアップの呼び出し・
+        # ログアウトはここに含めない（既定DBの間も常に操作できる必要がある）。
+        # ここに含めた全ウィジェットは、_menu_widgetsにも含まれていること
+        # （_apply_widget_states()が両方のゲートを合成するため、どちらか一方にしか
+        # 含まれていないと一方のゲートが効かなくなる）。
+        self._default_db_locked_widgets = [
+            btn_kitting_import, btn_kitting_production, btn_inventory_input,
+            btn_theoretical_import, btn_inventory_diff, btn_ng_input, btn_wip_expansion,
+            btn_pdf_ocr_import, btn_operation_log,
+            btn_board_structure_import, btn_parts_attributes_import, btn_worker_registration,
+            self.btn_backup_databases,
+        ]
+        if self.btn_worker_management is not None:
+            self._default_db_locked_widgets.append(self.btn_worker_management)
+        if self.btn_merge_master is not None:
+            self._default_db_locked_widgets.append(self.btn_merge_master)
+
+        # _set_menu_enabled()が管理する一括無効化フラグ（carry_over_incomplete_lots()
+        # 実行中等）。_apply_widget_states()が、これと既定DBロック
+        # （config.is_default_db()）の両方を合成して最終的なstateを決める。
+        self._menu_enabled = True
+        self._apply_widget_states()
+        self._update_current_db_label()
 
         # ウィンドウを閉じる（×ボタン・Alt+F4等）際にロックファイルを解放してから
         # 終了する。on_logout()はdestroy()を直接呼ぶためこのprotocolハンドラを
@@ -458,15 +506,52 @@ class MainWindow(tk.Tk):
         一括で切り替える。carry_over_incomplete_lots()実行中の他画面操作を
         防ぐために使う（on_create_database()参照）。
 
+        実際のwidget.config(state=...)はここでは行わず、フラグ
+        （self._menu_enabled）を更新してから_apply_widget_states()に委ねる。
+        既定DB（未選択）による無効化（_default_db_locked_widgets）と
+        独立に管理し、どちらか一方の解除が他方の無効状態を誤って外さない
+        ようにするため（CANONICAL_DESIGN_DECISIONS.md D-5x参照）。
+        """
+        self._menu_enabled = enabled
+        self._apply_widget_states()
+
+    def _apply_widget_states(self):
+        """
+        _menu_widgets（_set_menu_enabled()が管理する一括無効化。
+        carry_over_incomplete_lots()実行中等）と_default_db_locked_widgets
+        （既定DB＝未選択の間の業務ボタン無効化。config.is_default_db()に連動）
+        の2つのゲートを合成し、各ウィジェットの最終的なstateを決める。
+
+        両ゲートとも「Trueなら制限なし」側で持つ（self._menu_enabled・
+        not default_db_open）ため、素直にANDするだけで「どちらかが無効化を
+        要求していれば無効」という振る舞いになり、一方の解除（例：carry_over
+        完了によるself._menu_enabled=True化）が、既定DBロックで無効のままに
+        すべきボタンまで誤って有効化してしまうことがない（逆方向も同様）。
+
         self.db_folder_combobox（state="readonly"が通常の有効状態。ttk.Comboboxは
         NORMALにすると自由入力が可能になってしまうため、readonly/disabledの
         2状態で切り替える）だけ特別扱いする。
+
+        chk_carry_over（前月引き継ぎチェック）は_menu_widgetsに含めていない：
+        既定DBの間は「新しいデータベースを作成」自体は有効のままにする一方、
+        このチェックボックスだけは使えなくし、チェック済みの状態も強制的に
+        解除する（既定DBを引き継ぎ元にした不定な動作を防ぐため）、という
+        他のボタンとは異なる挙動が必要なため個別に扱う。
         """
+        default_db_open = config.is_default_db()
+
         for widget in self._menu_widgets:
+            locked_by_default_db = default_db_open and widget in self._default_db_locked_widgets
+            enabled = self._menu_enabled and not locked_by_default_db
             if widget is self.db_folder_combobox:
                 widget.config(state="readonly" if enabled else "disabled")
             else:
                 widget.config(state=tk.NORMAL if enabled else tk.DISABLED)
+
+        carry_over_enabled = self._menu_enabled and not default_db_open
+        self.chk_carry_over.config(state=tk.NORMAL if carry_over_enabled else tk.DISABLED)
+        if not carry_over_enabled:
+            self.carry_over_var.set(False)
 
     def _open_singleton_window(self, key, factory):
         """
@@ -507,12 +592,38 @@ class MainWindow(tk.Tk):
         """
         return any(w.winfo_exists() for w in self._open_windows.values())
 
-    def open_master_management(self):
-        self._open_singleton_window(
-            "master_management", lambda: MasterManagementWindow(self, self.current_worker)
+    def _confirm_proceed_despite_exported_db(self) -> bool:
+        """
+        現在のDBが在庫値出力済み（models.operation_log.get_inventory_diff_
+        export_status()）の場合、月次データへ書き込む画面（1〜6）を開く前に
+        確認ダイアログを表示する（CANONICAL_DESIGN_DECISIONS.md D-5x参照）。
+        「いいえ」なら呼び出し元は画面を開かずに戻ること。
+
+        対象外（このチェックを呼ばない画面）：在庫値出力（7）自体・日報月報等の
+        閲覧系・ツール・共通マスタ・DB管理（いずれも月次データへの新規入力を
+        伴わない、または在庫値出力の完了判定そのものに関わるため）。
+
+        既定DB（未選択）の間は、これらの画面を開くボタン自体が無効化されている
+        （_default_db_locked_widgets参照）ため通常この関数は呼ばれないが、
+        念のため既定DBに対してはget_inventory_diff_export_status()を呼ばない
+        （既定DBのファイルを一切作らない方針を守るため、_update_current_db_label()
+        と同じ理由）。
+        """
+        if config.is_default_db():
+            return True
+        status = get_inventory_diff_export_status()
+        if not status["exported"]:
+            return True
+        return messagebox.askyesno(
+            "出力済みデータベース",
+            "このDBは在庫値出力済みです。入力した内容はこの古いDBに保存されます。\n"
+            "続けますか？",
+            parent=self,
         )
 
     def open_kitting_plan_import(self):
+        if not self._confirm_proceed_despite_exported_db():
+            return
         self._open_singleton_window(
             "kitting_plan_import", lambda: KittingPlanImportWindow(self, self.current_worker)
         )
@@ -546,6 +657,8 @@ class MainWindow(tk.Tk):
         open_pending_csv_staging_window()を呼ぶだけで済むようになったため、
         現在この引数を使う呼び出し元は無い）
         """
+        if not self._confirm_proceed_despite_exported_db():
+            return
         key = "kitting_production_entry"
         existing = self._open_windows.get(key)
         if existing is not None and existing.winfo_exists():
@@ -602,11 +715,15 @@ class MainWindow(tk.Tk):
         self.after(200, _poll)
 
     def open_inventory_input(self):
+        if not self._confirm_proceed_despite_exported_db():
+            return
         self._open_singleton_window(
             "inventory_input", lambda: InventoryInputWindow(self, current_worker=self.current_worker)
         )
 
     def open_theoretical_inventory_import(self):
+        if not self._confirm_proceed_despite_exported_db():
+            return
         self._open_singleton_window(
             "theoretical_inventory_import",
             lambda: TheoreticalInventoryImportWindow(self, current_worker=self.current_worker),
@@ -649,17 +766,18 @@ class MainWindow(tk.Tk):
                 )
                 return
 
-        self._open_singleton_window("inventory_diff", lambda: InventoryDiffWindow(self))
-
-    def open_master_import(self):
         self._open_singleton_window(
-            "master_import", lambda: MasterImportWindow(self, current_worker=self.current_worker)
+            "inventory_diff", lambda: InventoryDiffWindow(self, current_worker=self.current_worker),
         )
 
     def open_ng_input(self):
+        if not self._confirm_proceed_despite_exported_db():
+            return
         self._open_singleton_window("ng_input", lambda: NgInputWindow(self, self.current_worker))
 
     def open_wip_expansion(self):
+        if not self._confirm_proceed_despite_exported_db():
+            return
         self._open_singleton_window("wip_expansion", lambda: WipExpansionWindow(self, self.current_worker))
 
     def open_pdf_ocr_import(self):
@@ -729,19 +847,64 @@ class MainWindow(tk.Tk):
         """
         現在接続中のDBパス（config.get_current_db_label()、実体はconfig.DB_PATH
         をそのまま返す）を、ヘッダー直下のラベル（self.lbl_current_db_path）へ
-        反映する。
+        反映する。既定DB（config.is_default_db()、未選択として扱う）の場合は、
+        パスではなく「未選択」であることを示す案内文を表示する
+        （CANONICAL_DESIGN_DECISIONS.md D-5x参照）。
 
-        呼び出し箇所：__init__()の初回表示に加え、config.DB_PATHを変更する
-        全ての操作の後（_try_switch_db_path()＝on_switch_database()・
-        _switch_to_shared_db()（on_open_shared_database()・SharedDbListWindow
-        「このDBに切り替える」共通）・on_create_shared_database()が共通で経由する、
-        on_create_database()の引き継ぎ無し分岐、_poll_create_db_queue()＝
-        on_create_database()の引き継ぎ有り分岐の非同期完了時）。
+        この関数は、DB選択状態・在庫値出力済み状態のいずれかが変わり得る
+        全ての操作の後に呼ぶことで、両方の再評価（_apply_widget_states()・
+        _refresh_inventory_diff_export_warning()）を一括して行う入口として
+        機能する。呼び出し箇所：__init__()の初回表示に加え、config.DB_PATHを
+        変更する全ての操作の後（_try_switch_db_path()＝on_switch_database()・
+        on_restore_from_backup()が共通で経由する、on_create_database()の
+        引き継ぎ無し分岐、_poll_create_db_queue()＝on_create_database()の
+        引き継ぎ有り分岐の非同期完了時、on_delete_local_database()の削除後）。
         """
         self._current_db_full_path = config.get_current_db_label()
-        self.lbl_current_db_path.config(
-            text=self._truncate_path_for_display(self._current_db_full_path)
-        )
+        is_default = config.is_default_db()
+
+        if is_default:
+            self.lbl_current_db_path.config(
+                text="未選択（データベースを選択するか新規作成してください）",
+                foreground="#b00020",
+            )
+            # 既定DBは「アプリからは一切読み書きしない」方針（CANONICAL_
+            # DESIGN_DECISIONS.md D-5x参照）のため、在庫値出力済み判定
+            # （get_inventory_diff_export_status()）もここでは呼ばない。
+            # この関数は内部でmodels.operation_log.init_operation_log_table()
+            # （CREATE TABLE IF NOT EXISTS）を実行し、sqlite3.connect()が
+            # 存在しないDBファイルを新規作成してしまうため、既定DBに対して
+            # 呼ぶと「ファイルを作らない」という既定DBの前提を破ってしまう。
+            self.lbl_inventory_diff_export_warning.pack_forget()
+        else:
+            self.lbl_current_db_path.config(
+                text=self._truncate_path_for_display(self._current_db_full_path),
+                foreground="#333333",
+            )
+            self._refresh_inventory_diff_export_warning()
+
+        self._apply_widget_states()
+
+    def _refresh_inventory_diff_export_warning(self):
+        """
+        現在のDBが在庫値出力済みかどうかを再評価し、ヘッダー直下の警告ラベル
+        （self.lbl_inventory_diff_export_warning）の表示/非表示を切り替える
+        （CANONICAL_DESIGN_DECISIONS.md D-5x参照）。禁止ではなく警告のため、
+        表示するだけで他の操作を妨げない。
+        """
+        status = get_inventory_diff_export_status()
+        if status["exported"]:
+            self.lbl_inventory_diff_export_warning.config(
+                text=(
+                    f"※ 在庫値出力済み（最終出力：{status['last_exported_at']}）。"
+                    "新しい入力は新しいデータベースを作成して行ってください。"
+                ),
+            )
+            self.lbl_inventory_diff_export_warning.pack(
+                fill=tk.X, padx=10, pady=(0, 8), before=self._body_frame,
+            )
+        else:
+            self.lbl_inventory_diff_export_warning.pack_forget()
 
     # ラベル本体（接頭辞「接続中のデータベース：」を除いた、パス部分のみ）に
     # 許容する最大描画幅（ピクセル）。ウィンドウ幅940px・接頭辞ラベルの実測幅
@@ -799,10 +962,9 @@ class MainWindow(tk.Tk):
         """
         new_pathに対してロック取得を試み、成功すれば現在のロックを解放してから
         config.DB_PATHをnew_pathへ切り替える共通処理。on_switch_database()・
-        on_open_shared_database()・on_create_shared_database()から使う
-        （on_create_database()の前月引き継ぎ分岐は、config.DB_PATHの切り替え
-        タイミングがcarry_over_incomplete_lots()の契約と密接に絡むため、
-        ここでは共通化せず個別に処理している）。
+        on_restore_from_backup()から使う（on_create_database()の前月引き継ぎ
+        分岐は、config.DB_PATHの切り替えタイミングがcarry_over_incomplete_lots()
+        の契約と密接に絡むため、ここでは共通化せず個別に処理している）。
 
         失敗時（他者が有効なロックを保持中）はエラーダイアログで使用者情報を
         表示してFalseを返す。呼び出し元はこれ以上処理を進めないこと。
@@ -851,101 +1013,124 @@ class MainWindow(tk.Tk):
         db_path = os.path.join(config.APP_DATA_DIR, "db", folder, "inventory.db")
         if confirm_and_delete_database(self.winfo_toplevel(), db_path, current_worker=self.current_worker):
             self._load_db_folders()
+            # 削除対象は常に現在接続中のDB以外（is_current_database()が拒否する
+            # ため、現在のDBを削除できることは無い）だが、既定DB判定・在庫値
+            # 出力済み警告の再評価を一貫して行うため、他の変更操作と同じく
+            # ここでも呼んでおく（現在のconfig.DB_PATHは変化しないため実質的な
+            # 変化は無い想定だが、再評価のタイミングを一元化する方針に合わせる）。
+            self._update_current_db_label()
 
-    def _shared_dialog_initial_dir(self) -> str:
+    def on_restore_from_backup(self):
         """
-        共有フォルダ選択ダイアログの初期ディレクトリ。ドキュメントフォルダが
-        存在すればそこを、無ければユーザーのホームディレクトリを使う
-        （共有フォルダ自体をブックマークする仕組みは持たないため、実装しやすさ優先）。
-        """
-        documents = os.path.join(os.path.expanduser("~"), "Documents")
-        return documents if os.path.isdir(documents) else os.path.expanduser("~")
+        バックアップ済みの月次DB（.db）を選び、新しいローカルDBフォルダへ
+        取り込んで切り替える（メインメニュー整理、共有フォルダ3ボタン廃止に
+        伴う代替機能。CANONICAL_DESIGN_DECISIONS.md D-50参照）。
 
-    def on_open_shared_database(self):
-        """
-        共有フォルダ（UNCパス等）上の既存の.dbファイルを直接選択して切り替える。
-        ローカルのdb/フォルダ限定だった既存の「切り替え」プルダウンとは別経路で、
-        任意のパスをconfig.set_db_path()に渡せるようにする。
+        旧方針（D-45、「共有フォルダのDBを開く」機能をバックアップの復元に
+        転用する）は、バックアップ原本がそのまま本番DBになってしまう・
+        マスタDBは復元されない・D-20（ローカル+バックアップ方針）と整合
+        しないという3点の問題があったため、本機能（新フォルダへコピーして
+        から切り替える、原本・元のDBとも不変）に置き換えた。
 
-        実際の切り替え判定・処理は_switch_to_shared_db()に委ねる
-        （ui.shared_db_list_window.SharedDbListWindow「このDBに切り替える」と
-        同じ処理を共有するため）。
+        処理の流れ：
+        a. ファイル選択ダイアログで.dbファイルを選ぶ。
+        b. services.backup_service.validate_monthly_db_backup()で妥当性
+           チェック（SQLiteとして開ける・PRAGMA integrity_check・月次DBの
+           テーブル構成であること）。マスタDBのバックアップ・無関係な
+           ファイルはここで理由付きで拒否する。
+        c. 取り込み先フォルダ名を入力させる（既定値はバックアップ選択時刻
+           から生成。検証はon_create_database()と同じ規則＝非空・重複禁止）。
+        d. services.backup_service.restore_backup_as_new_local_db()で
+           sqlite3.Connection.backup()経由でコピーする（原本は読み取り専用
+           接続のみで開かれ、一切変更されない）。
+        e. _try_switch_db_path()で取り込んだDBへ切り替え、
+           init_kitting_plan_tables()で古いバックアップでもテーブル構成を
+           最新化する（on_create_database()の新規作成分岐と同じ考え方）。
+        f. 完了メッセージに「元のDBは残っており『切り替え』で戻せること」
+           「マスタデータは対象外であること」を明記する。
+
+        失敗時（妥当性チェック不合格・コピー中の例外・ロック取得失敗）は、
+        作成途中のフォルダ（存在すれば）を削除し、現在のDB・ロックは
+        変更しない。
         """
-        selected = filedialog.askopenfilename(
-            title="共有フォルダのデータベースファイルを選択",
-            initialdir=self._shared_dialog_initial_dir(),
+        backup_file_path = filedialog.askopenfilename(
+            title="取り込む月次DBバックアップファイルを選択",
             filetypes=[("SQLite データベース", "*.db"), ("すべてのファイル", "*.*")],
             parent=self.winfo_toplevel(),
         )
-        if not selected:
+        if not backup_file_path:
             return
 
-        self._switch_to_shared_db(selected)
+        validation = validate_monthly_db_backup(backup_file_path)
+        if not validation["ok"]:
+            messagebox.showerror("取り込み不可", validation["reason"], parent=self.winfo_toplevel())
+            return
 
-    def _switch_to_shared_db(self, path: str) -> bool:
-        """
-        共有フォルダ上のinventory.dbパス（絶対パス化前でも可）へ切り替える
-        共通処理。on_open_shared_database()（ファイル選択ダイアログ経由）と
-        ui.shared_db_list_window.SharedDbListWindow「このDBに切り替える」
-        （一覧からの選択経由）の両方から、パスの取得元だけを変えて共通で使う。
-
-        戻り値：切り替えが完了した（既に使用中だった場合を含む）ならTrue、
-        他者が使用中で切り替えられなかった場合はFalse。
-        SharedDbListWindow側は、Trueが返った場合のみ一覧画面を閉じる。
-        """
-        new_path = os.path.abspath(path)
-        if new_path == os.path.abspath(config.DB_PATH):
-            messagebox.showinfo("情報", "既にこのデータベースを使用中です。", parent=self.winfo_toplevel())
-            return True
-
-        if not self._try_switch_db_path(new_path, error_title="開けません"):
-            return False
-
-        messagebox.showinfo("完了", f"データベースを切り替えました：\n{new_path}", parent=self.winfo_toplevel())
-        return True
-
-    def open_shared_db_list(self):
-        """
-        共有フォルダ上の月別DB一覧画面（ui.shared_db_list_window.SharedDbListWindow）を
-        開く。一覧から選ばれたDBへの切り替えは_switch_to_shared_db()に委ねる
-        （既存のon_open_shared_database()と同じ切り替え経路を再利用する）。
-        """
-        self._open_singleton_window(
-            "shared_db_list",
-            lambda: SharedDbListWindow(self, self._switch_to_shared_db, current_worker=self.current_worker),
-        )
-
-    def on_create_shared_database(self):
-        """
-        共有フォルダ内の新規フォルダにinventory.dbを新規作成して切り替える。
-        既存のon_create_database()（ローカルdb/フォルダ限定・前月引き継ぎ対応）とは
-        別経路。前月引き継ぎには対応しない（必要な場合はローカルで作成してから
-        ファイルごと共有フォルダへ移動する運用を想定）。
-        """
-        selected_dir = filedialog.askdirectory(
-            title="新しいデータベースを作成するフォルダを選択",
-            initialdir=self._shared_dialog_initial_dir(),
+        default_folder_name = "restore_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+        folder_name = simpledialog.askstring(
+            "取り込み先フォルダ名",
+            "新しいデータベースを作成するフォルダ名を入力してください：",
+            initialvalue=default_folder_name,
             parent=self.winfo_toplevel(),
         )
-        if not selected_dir:
+        if not folder_name:
             return
-
-        new_path = os.path.join(os.path.abspath(selected_dir), "inventory.db")
-        if os.path.exists(new_path):
+        folder_name = folder_name.strip()
+        if not folder_name:
+            messagebox.showwarning("警告", "フォルダ名を入力してください。", parent=self.winfo_toplevel())
+            return
+        if folder_name.lower() == config.DB_ROOT_FOLDER_NAME:
+            # "db"という名前は、config.is_default_db()（親フォルダ名が"db"かどうか
+            # で既定DBを判定する仕組み）と衝突するため予約する（CANONICAL_
+            # DESIGN_DECISIONS.md D-5x参照）。
             messagebox.showwarning(
-                "警告",
-                f"選択したフォルダには既にデータベースが存在します：\n{new_path}",
+                "警告", f"フォルダ名「{folder_name}」は予約されているため使用できません。",
                 parent=self.winfo_toplevel(),
             )
             return
 
-        init_database_at(new_path)
+        new_folder = os.path.join(config.APP_DATA_DIR, "db", folder_name)
+        new_db_path = os.path.join(new_folder, "inventory.db")
+        if os.path.exists(new_db_path):
+            messagebox.showwarning(
+                "警告", f"フォルダ「{folder_name}」のデータベースは既に存在します。", parent=self.winfo_toplevel(),
+            )
+            return
 
-        if not self._try_switch_db_path(new_path, error_title="作成不可"):
+        try:
+            restore_backup_as_new_local_db(backup_file_path, folder_name)
+        except Exception as e:
+            if os.path.isdir(new_folder):
+                shutil.rmtree(new_folder, ignore_errors=True)
+            messagebox.showerror(
+                "取り込みエラー", f"バックアップの取り込み中にエラーが発生しました：\n{e}",
+                parent=self.winfo_toplevel(),
+            )
+            return
+
+        if not self._try_switch_db_path(new_db_path, error_title="切替不可"):
+            # ロック取得失敗：_try_switch_db_path()は失敗時に現在のDB・ロックを
+            # 変更しない契約のため、コピー済みの新フォルダだけを後始末する。
+            shutil.rmtree(new_folder, ignore_errors=True)
             return
 
         init_kitting_plan_tables()
-        messagebox.showinfo("完了", f"新しいデータベースを作成しました：\n{new_path}", parent=self.winfo_toplevel())
+        log_operation(
+            self.current_worker.get("name", "unknown"),
+            "バックアップからの取り込み",
+            detail=f"元ファイル: {backup_file_path} / 取り込み先: {folder_name}",
+        )
+
+        messagebox.showinfo(
+            "取り込み完了",
+            "バックアップからデータベースを取り込み、切り替えました。\n\n"
+            "・元のデータベースはそのまま残っており、「切り替え」で戻せます。\n"
+            "・マスタデータ（作業者・構成基板数マスタ等）はこの操作では取り込まれません。"
+            "必要な場合は「マスタデータを他PCから取り込む」（admin限定）を使ってください。",
+            parent=self.winfo_toplevel(),
+        )
+        self._load_db_folders()
+        self.db_folder_var.set(folder_name)
 
     def on_create_database(self):
         """
@@ -962,6 +1147,12 @@ class MainWindow(tk.Tk):
         folder = self.new_db_folder_var.get().strip()
         if not folder:
             messagebox.showwarning("警告", "作成するフォルダ名を入力してください。", parent=self.winfo_toplevel())
+            return
+        if folder.lower() == config.DB_ROOT_FOLDER_NAME:
+            messagebox.showwarning(
+                "警告", f"フォルダ名「{folder}」は予約されているため使用できません。",
+                parent=self.winfo_toplevel(),
+            )
             return
 
         new_db_path = os.path.join(config.APP_DATA_DIR, "db", folder, "inventory.db")

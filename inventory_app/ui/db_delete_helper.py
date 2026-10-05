@@ -1,9 +1,8 @@
 # ui/db_delete_helper.py
 """
-月別DB削除の確認ダイアログ＋実行の共通処理。ui/main_window.py（ローカルDB一覧）・
-ui/shared_db_list_window.py（共有フォルダDB一覧）の両方から使う（削除の安全確認
-ロジック自体はservices.db_delete_serviceに集約し、本モジュールはその結果に
-応じたダイアログの出し分け・実際の削除呼び出しのみを担当する）。
+月別DB削除の確認ダイアログ＋実行の共通処理。ui/main_window.py（ローカルDB一覧）から
+使う（削除の安全確認ロジック自体はservices.db_delete_serviceに集約し、本モジュールは
+その結果に応じたダイアログの出し分け・実際の削除呼び出しのみを担当する）。
 """
 from tkinter import messagebox
 

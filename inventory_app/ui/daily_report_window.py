@@ -14,6 +14,8 @@ importされているため、このファイル自体は削除せず残して�
 import tkinter as tk
 from tkinter import ttk
 
+from ui.window_utils import center_window
+
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.lib import colors
@@ -278,6 +280,7 @@ class ReportPreviewWindow(tk.Toplevel):
 
         self.title("印刷プレビュー")
         self.geometry("660x760")
+        center_window(self, parent)
 
         outer = ttk.Frame(self)
         outer.pack(expand=True, fill=tk.BOTH)

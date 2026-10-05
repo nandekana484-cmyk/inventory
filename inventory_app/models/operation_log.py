@@ -79,3 +79,39 @@ def list_operation_log(limit: int = None) -> list:
         else:
             cur = con.execute("SELECT * FROM operation_log ORDER BY id DESC LIMIT ?", (limit,))
         return [dict(row) for row in cur.fetchall()]
+
+
+# 在庫値出力済みDBの警告（CANONICAL_DESIGN_DECISIONS.md D-5x参照）で使う
+# operation_name。ui.inventory_diff_window.InventoryDiffWindowの
+# on_export_pdf()/on_export_csv()が成功時にこの名前でlog_operation()を呼ぶ。
+OPERATION_NAME_INVENTORY_DIFF_EXPORT = "在庫値出力"
+
+
+def get_latest_operation_timestamp(operation_name: str):
+    """
+    指定したoperation_nameの最新の記録時刻（timestamp列、"YYYY-MM-DD HH:MM:SS"
+    文字列）を返す。一度も記録が無い場合はNoneを返す。
+
+    init_operation_log_table()（CREATE TABLE IF NOT EXISTS）を呼んでから
+    SELECTするため、operation_logテーブル自体が存在しない古いDB（例：
+    マスタDB分離・操作履歴機能の導入より前に作成された月次DBを「バックアップの
+    呼び出し」で取り込んだ場合）を開いても例外にならない。
+    """
+    init_operation_log_table()
+    with get_connection() as con:
+        cur = con.execute(
+            "SELECT timestamp FROM operation_log WHERE operation_name = ? ORDER BY id DESC LIMIT 1",
+            (operation_name,),
+        )
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
+def get_inventory_diff_export_status() -> dict:
+    """
+    現在のDB（config.DB_PATH）が在庫値出力済みかどうかと、最終出力日時を返す。
+
+    戻り値：{"exported": bool, "last_exported_at": str または None}
+    """
+    last_exported_at = get_latest_operation_timestamp(OPERATION_NAME_INVENTORY_DIFF_EXPORT)
+    return {"exported": last_exported_at is not None, "last_exported_at": last_exported_at}

@@ -6,7 +6,17 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
 from services.inventory_diff_service import build_inventory_diff_report, count_unconfirmed_wip_boards
+from models.operation_log import log_operation, OPERATION_NAME_INVENTORY_DIFF_EXPORT
 from ui.daily_report_window import ReportPreviewWindow, build_daily_report_pdf
+from ui.window_utils import center_window
+
+# 出力完了時・メインメニューの警告表示（ui.main_window.MainWindow）で共通して
+# 使う案内文。「禁止ではなく警告」とした理由（出力後の修正・再出力を妨げない
+# ため）はCANONICAL_DESIGN_DECISIONS.md参照。
+_EXPORT_DONE_NOTICE = (
+    "このデータベースは在庫値出力まで完了しました。\n"
+    "次月分のデータは、新しいデータベースを作成して入力してください。"
+)
 
 REPORT_HEADERS = ["部品番号", "在庫数量", "仕掛数量", "仕損数量", "合計数量", "理論在庫数量", "差異数量"]
 COL_WIDTHS = [90, 70, 70, 70, 70, 90, 70]
@@ -34,14 +44,16 @@ class InventoryDiffWindow(tk.Toplevel):
     （services.inventory_diff_service._collect_wip_totals()参照）。この画面を
     開いた際、未確定の仕掛基板があれば注意メッセージを表示する。
     """
-    def __init__(self, parent):
+    def __init__(self, parent, current_worker=None):
         super().__init__(parent)
+        self.current_worker = current_worker or {}
         self.report_date = datetime.now().strftime("%Y-%m-%d")
         self.report_rows = build_inventory_diff_report()
         self.unconfirmed_wip_count = count_unconfirmed_wip_boards()
 
         self.title("在庫差異レポート")
         self.geometry("900x520")
+        center_window(self, parent)
 
         if self.unconfirmed_wip_count > 0:
             ttk.Label(
@@ -117,7 +129,14 @@ class InventoryDiffWindow(tk.Toplevel):
             messagebox.showerror("エラー", f"PDF出力に失敗しました：{e}", parent=self.winfo_toplevel())
             return
 
-        messagebox.showinfo("完了", f"PDFを保存しました：\n{save_path}", parent=self.winfo_toplevel())
+        log_operation(
+            self.current_worker.get("name", "unknown"),
+            OPERATION_NAME_INVENTORY_DIFF_EXPORT,
+            detail=f"PDF: {save_path}",
+        )
+        messagebox.showinfo(
+            "完了", f"PDFを保存しました：\n{save_path}\n\n{_EXPORT_DONE_NOTICE}", parent=self.winfo_toplevel(),
+        )
 
     def on_export_csv(self):
         if not self.report_rows:
@@ -142,4 +161,11 @@ class InventoryDiffWindow(tk.Toplevel):
             messagebox.showerror("エラー", f"CSV出力に失敗しました：{e}", parent=self.winfo_toplevel())
             return
 
-        messagebox.showinfo("完了", f"CSVを保存しました：\n{save_path}", parent=self.winfo_toplevel())
+        log_operation(
+            self.current_worker.get("name", "unknown"),
+            OPERATION_NAME_INVENTORY_DIFF_EXPORT,
+            detail=f"CSV: {save_path}",
+        )
+        messagebox.showinfo(
+            "完了", f"CSVを保存しました：\n{save_path}\n\n{_EXPORT_DONE_NOTICE}", parent=self.winfo_toplevel(),
+        )

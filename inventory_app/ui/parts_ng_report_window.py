@@ -10,6 +10,7 @@ from tkcalendar import DateEntry
 
 from ui.daily_report_window import build_daily_report_pdf, ReportPreviewWindow
 from models.scrap_records import query_scrap_totals_range
+from ui.window_utils import center_window
 
 PARTS_NG_HEADERS = ["96コード", "数量"]
 
@@ -35,6 +36,7 @@ class PartsNgReportWindow(tk.Toplevel):
 
         self.title("96NGレポート")
         self.geometry("500x560")
+        center_window(self, parent)
 
         period_frame = ttk.LabelFrame(self, text="集計期間", padding=10)
         period_frame.pack(fill=tk.X, padx=10, pady=10)

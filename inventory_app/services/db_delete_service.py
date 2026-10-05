@@ -1,7 +1,7 @@
 # services/db_delete_service.py
 """
-月別DB削除処理。ui/main_window.py（ローカルDB一覧）・ui/shared_db_list_window.py
-（共有フォルダDB一覧）の両方から、ui/db_delete_helper.py経由で共通利用する。
+月別DB削除処理。ui/main_window.py（ローカルDB一覧）から、ui/db_delete_helper.py
+経由で利用する。
 
 ダイアログ表示・最終的な削除可否のユーザー確認自体はUI層
 （ui/db_delete_helper.py）の責務とし、本モジュールは「削除してよいかの

@@ -18,6 +18,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
 from services.production_service import check_lot_progress
+from ui.window_utils import center_window
 from ui.loading_window import LoadingWindow
 from ui.daily_report_window import configure_lot_stripe_tags, configure_status_color_tags
 
@@ -161,6 +162,7 @@ class LotProgressWindow(tk.Toplevel):
         super().__init__(parent)
         self.title("ロット進捗チェック")
         self.geometry("1400x650")
+        center_window(self, parent)
 
         self._all_rows = []
         self._queue = queue.Queue()

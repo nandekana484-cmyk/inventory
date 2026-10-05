@@ -16,6 +16,7 @@ import os
 from models.kitting_plan import list_plan_batches, mark_batch_deleted
 from models.operation_log import log_operation
 from ui.loading_window import LoadingWindow
+from ui.window_utils import center_window
 
 class KittingPlanImportWindow(tk.Toplevel):
     def __init__(self, parent, current_worker):
@@ -23,6 +24,7 @@ class KittingPlanImportWindow(tk.Toplevel):
         self.current_worker = current_worker
         self.title("キッティング計画CSV取込 / 履歴（簡易）")
         self.geometry("1300x720")
+        center_window(self, parent)
 
         self._result_queue = queue.Queue()
         self._loading_window = None

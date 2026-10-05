@@ -2,8 +2,10 @@
 """
 実績CSV（lot_no + 製品名ベース）を取り込み、production_daily へ自動登録するサービス。
 
-CSVフォーマットは未確定のため、services.master_import_service と同様に
-COLUMN_MAP_PRODUCTION + parse_csv_generic による列名ゆらぎ吸収構造を採用する。
+CSVフォーマットは未確定のため、services.csv_parsing_common（元は
+services.master_import_service内にあったが、マスタインポート画面削除時に
+共有ユーティリティとして切り出された）と同様に、COLUMN_MAP_PRODUCTION +
+parse_csv_generic による列名ゆらぎ吸収構造を採用する。
 CSVには kitting_list_no が存在しないため、lot_no + 製品名（表記ゆらぎ許容）で
 kitting_plan_items を特定し（models.kitting_plan.resolve_plan_by_lot_and_name）、
 確定できた行のみ既存の services.production_service.register_daily_result() で保存する。
@@ -11,7 +13,7 @@ kitting_plan_items を特定し（models.kitting_plan.resolve_plan_by_lot_and_na
 import re
 import unicodedata
 
-from services.master_import_service import parse_csv_generic
+from services.csv_parsing_common import parse_csv_generic
 from services.production_service import (
     register_daily_result,
     overwrite_daily_result,

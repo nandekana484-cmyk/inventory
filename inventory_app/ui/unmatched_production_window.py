@@ -2,6 +2,8 @@
 import tkinter as tk
 from tkinter import ttk
 
+from ui.window_utils import center_window
+
 
 class UnmatchedProductionWindow(tk.Toplevel):
     """
@@ -20,6 +22,7 @@ class UnmatchedProductionWindow(tk.Toplevel):
         super().__init__(parent)
         self.title(title)
         self.geometry("760x400")
+        center_window(self, parent)
 
         tree_frame = ttk.Frame(self, padding=10)
         tree_frame.pack(expand=True, fill=tk.BOTH)

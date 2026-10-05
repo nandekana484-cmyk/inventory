@@ -4,6 +4,7 @@ from tkinter import ttk, messagebox
 
 from models.workers import get_all_workers, upsert_worker, set_worker_active
 from models.operation_log import log_operation
+from ui.window_utils import center_window
 
 
 class WorkerManagementWindow(tk.Toplevel):
@@ -46,6 +47,7 @@ class WorkerManagementWindow(tk.Toplevel):
         self._is_admin = self.current_worker.get("role") == "admin"
         self.title("作業者管理")
         self.geometry("640x480")
+        center_window(self, parent)
 
         if not self._is_admin:
             ttk.Label(

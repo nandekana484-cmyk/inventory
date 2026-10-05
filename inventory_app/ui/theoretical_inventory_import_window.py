@@ -9,6 +9,7 @@ from tkinter import ttk, messagebox, filedialog
 from models.theoretical_inventory import list_theoretical_inventory, upsert_theoretical_inventory
 from models.operation_log import log_operation
 from ui.loading_window import LoadingWindow
+from ui.window_utils import center_window
 
 # エンコーディング自動判定の候補（この順で試す）
 _ENCODINGS_TO_TRY = ["utf-8-sig", "utf-8", "cp932"]
@@ -81,6 +82,7 @@ class TheoreticalInventoryImportWindow(tk.Toplevel):
 
         self.title("理論在庫インポート")
         self.geometry("500x500")
+        center_window(self, parent)
 
         select_frame = ttk.Frame(self, padding=10)
         select_frame.pack(fill=tk.X)

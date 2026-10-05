@@ -13,6 +13,7 @@ from services.pdf_ocr_service import (
     get_pdf_page_count, log_ocr_start, log_ocr_complete, log_ocr_error,
 )
 from ui.loading_window import LoadingWindow
+from ui.window_utils import center_window
 
 # 信頼度（0〜100）がこの値未満の行は、左ペインで警告色に強調表示する。
 # テキスト抽出経路の行は常に100扱いのため、この強調はOCR経路でのみ発生する。
@@ -51,6 +52,7 @@ class PdfOcrImportWindow(tk.Toplevel):
         super().__init__(parent)
         self.title("PDF読み取り（在庫照合）")
         self.geometry("1150x600")
+        center_window(self, parent)
 
         self.selected_pdf_path = None
         self.extracted_rows = None

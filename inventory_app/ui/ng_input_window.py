@@ -22,6 +22,7 @@ from models.operation_log import log_operation
 from ui.checkable_treeview import CheckableTreeview
 from ui.loading_window import LoadingWindow
 from ui.scrap_correction_window import ScrapCorrectionWindow
+from ui.window_utils import center_window
 
 # アプリ全体で共有する単一のBOMServiceインスタンス（services.bom_service.
 # get_shared_bom_service()参照）。ui.wip_expansion_window.pyと共有するため、
@@ -106,6 +107,7 @@ class NgInputWindow(tk.Toplevel):
 
         self.title("NG（仕損）入力")
         self.geometry("1150x600")
+        center_window(self, parent)
 
         self.create_widgets()
 
@@ -404,6 +406,7 @@ class NgInputWindow(tk.Toplevel):
         dialog.bind("<Return>", on_ok)
         dialog.protocol("WM_DELETE_WINDOW", on_cancel)
 
+        center_window(dialog, self)
         dialog.wait_window()
         if not result["confirmed"]:
             return False
@@ -739,6 +742,7 @@ class NgInputWindow(tk.Toplevel):
         ttk.Button(btn_frame, text="OK", command=on_ok).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="キャンセル", command=on_cancel).pack(side=tk.LEFT, padx=5)
 
+        center_window(dialog, self)
         dialog.wait_window()
         return selected["value"]
 
@@ -1204,6 +1208,7 @@ class NgInputWindow(tk.Toplevel):
         popup = tk.Toplevel(self)
         popup.title(f"{label_text} の絞り込み")
         popup.geometry("280x420")
+        center_window(popup, self)
         popup.transient(self)
         popup.grab_set()
 

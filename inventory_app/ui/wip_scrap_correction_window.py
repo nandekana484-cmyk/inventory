@@ -6,6 +6,7 @@ from models.wip_scrap_records import (
     list_wip_scrap_records_by_kitting_no, update_wip_scrap_record, delete_wip_scrap_record,
 )
 from models.operation_log import log_operation
+from ui.window_utils import center_window
 
 
 class WipScrapCorrectionWindow(tk.Toplevel):
@@ -38,6 +39,7 @@ class WipScrapCorrectionWindow(tk.Toplevel):
 
         self.title(f"仕掛実績修正（{kitting_list_no}）")
         self.geometry("520x460")
+        center_window(self, parent)
 
         ttk.Label(
             self,

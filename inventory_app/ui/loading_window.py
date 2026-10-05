@@ -2,6 +2,8 @@
 import tkinter as tk
 from tkinter import ttk
 
+from ui.window_utils import center_window
+
 
 class LoadingWindow(tk.Toplevel):
     """
@@ -12,6 +14,7 @@ class LoadingWindow(tk.Toplevel):
         self.title("読み込み中")
         self.geometry("300x120")
         self.resizable(False, False)
+        center_window(self, parent)
 
         frame = ttk.Frame(self, padding=20)
         frame.pack(expand=True, fill=tk.BOTH)

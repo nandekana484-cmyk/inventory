@@ -18,6 +18,8 @@ from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox
 
+from ui.window_utils import center_window
+
 _COLS = ("lot_no", "board_name", "setup_file_no", "production_side", "plan_start_datetime",
          "planned_qty", "order_qty")
 _HEADERS = {
@@ -165,6 +167,7 @@ def _show_candidate_list_dialog(parent, title, description, candidates, daily_qt
     dialog = tk.Toplevel(parent)
     dialog.title(title)
     dialog.geometry("650x320")
+    center_window(dialog, parent)
     dialog.transient(parent)
     dialog.grab_set()
 

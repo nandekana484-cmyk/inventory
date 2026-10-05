@@ -10,6 +10,7 @@ from tkinter import ttk, messagebox, filedialog
 from tkcalendar import DateEntry
 
 from services.lot_status_history import get_daily_drawdown
+from ui.window_utils import center_window
 
 DRAWDOWN_HEADERS = [
     "ロットNo", "基板名", "ファイルNo", "面", "その日の引落", "累計引落", "仕掛", "未生産",
@@ -55,6 +56,7 @@ class DailyDrawdownWindow(tk.Toplevel):
 
         self.title("日々の引落一覧")
         self.geometry("900x520")
+        center_window(self, parent)
 
         date_frame = ttk.Frame(self, padding=10)
         date_frame.pack(fill=tk.X)

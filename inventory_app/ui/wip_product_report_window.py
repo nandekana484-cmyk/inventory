@@ -9,6 +9,7 @@ from tkinter import ttk, messagebox, filedialog
 
 from ui.daily_report_window import build_daily_report_pdf, ReportPreviewWindow
 from models.wip_scrap_records import list_wip_scrap_summary
+from ui.window_utils import center_window
 
 WIP_PRODUCT_HEADERS = ["キッティングNo", "ファイルNo", "ロットNo", "仕掛数量"]
 
@@ -67,6 +68,7 @@ class WipProductReportWindow(tk.Toplevel):
 
         self.title("仕掛製品レポート")
         self.geometry("900x520")
+        center_window(self, parent)
 
         tree_frame = ttk.Frame(self, padding=10)
         tree_frame.pack(expand=True, fill=tk.BOTH)

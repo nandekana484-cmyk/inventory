@@ -81,6 +81,7 @@ from ui.plan_candidate_dialog import (
     _HEADERS as _CANDIDATE_HEADERS,
     _RIGHT_ALIGNED as _CANDIDATE_RIGHT_ALIGNED,
 )
+from ui.window_utils import center_window
 
 # "候補なし"（find_matching_plan_items()の候補が0件）行をCSV出力する際の理由欄。
 # services.production_import_service.import_production_csv()のunmatched理由
@@ -253,6 +254,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
         self._parent = parent
         self.title("実績CSV取込：登録待ち一覧")
         self.geometry("1150x520")
+        center_window(self, parent)
 
         self._row_by_iid = {}
         # "no_candidates"（候補なし＝登録不可）と判定された行を、一覧から消えても
@@ -1551,6 +1553,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
         window = tk.Toplevel(self)
         window.title("実績CSV取込：登録済みリスト（重複取込のためスキップ）")
         window.geometry("900x400")
+        center_window(window, self)
         window.transient(self)
         # 親（本ウインドウ）が最小化状態だとtransientウインドウが実際には
         # 表示されない既知の問題（UI_WORKFLOW_FIXES_NOTES.mdグループO参照）

@@ -8,6 +8,13 @@ __pycache__/
 # SQLite DB（本番DBをGit管理しない場合）
 *.db
 
+# DBロックファイル（services/db_lock_service.py、"<DBファイル名>.lock"形式）。
+# "*.db"パターンには一致しない（拡張子が.lockのため）ため個別に追加する。
+# 実行時に作成・削除される runtime ファイルで、約1か月の間に9回誤って
+# コミットに混入していたことが判明したため除外した
+# （CANONICAL_DESIGN_DECISIONS.md参照）。
+*.db.lock
+
 # 環境ファイル
 .env
 .env.*

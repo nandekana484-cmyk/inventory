@@ -3,6 +3,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from models.operation_log import list_operation_log
+from ui.window_utils import center_window
 
 
 class OperationLogWindow(tk.Toplevel):
@@ -37,6 +38,7 @@ class OperationLogWindow(tk.Toplevel):
         super().__init__(parent)
         self.title("操作履歴")
         self.geometry("1050x600")
+        center_window(self, parent)
 
         self._sort_reverse = {}
 

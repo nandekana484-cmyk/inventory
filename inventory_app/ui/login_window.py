@@ -7,6 +7,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from models.workers import get_active_workers
 from ui.main_window import MainWindow
 from ui.worker_registration_window import WorkerRegistrationWindow
+from ui.window_utils import center_window
 
 class LoginWindow(tk.Tk):
     def __init__(self):
@@ -14,6 +15,7 @@ class LoginWindow(tk.Tk):
         self.title("部品在庫管理アプリ - ログイン")
         self.geometry("350x220")
         self.resizable(False, False)
+        center_window(self)
 
         frame = ttk.Frame(self, padding=20)
         frame.pack(expand=True, fill=tk.BOTH)

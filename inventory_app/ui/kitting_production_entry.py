@@ -34,6 +34,7 @@ from ui.daily_drawdown_window import DailyDrawdownWindow
 from ui.production_import_staging_window import open_or_notify
 from ui.loading_window import LoadingWindow
 from ui.plan_candidate_dialog import _parse_flexible_date
+from ui.window_utils import center_window
 
 
 def _resolve_csv_report_date(raw_value):
@@ -208,6 +209,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         # 265px→234px（約1行分）に縮み、登録ボタン等は引き続きウィンドウ内に
         # 収まることを確認済み。
         self.geometry("1150x700")
+        center_window(self, parent)
 
         self.create_widgets()
 
@@ -631,6 +633,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         popup = tk.Toplevel(self)
         popup.title(f"{label_text} の絞り込み")
         popup.geometry("280x420")
+        center_window(popup, self)
         popup.transient(self)
         popup.grab_set()
 
@@ -1955,6 +1958,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         dialog.protocol("WM_DELETE_WINDOW", cancel)
 
         btn_ok.focus_set()
+        center_window(dialog, self)
         dialog.wait_window()
         return result["confirmed"]
 
@@ -2229,6 +2233,7 @@ class ActualCorrectionWindow(tk.Toplevel):
 
         self.title(f"実績修正（{kitting_list_no}）")
         self.geometry("500x420")
+        center_window(self, parent)
 
         hist_frame = ttk.LabelFrame(self, text="実績履歴", padding=10)
         hist_frame.pack(expand=True, fill=tk.BOTH, padx=15, pady=(15, 5))

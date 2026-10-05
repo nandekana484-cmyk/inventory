@@ -10,6 +10,7 @@ from tkinter import ttk, messagebox, filedialog
 from ui.daily_report_window import build_daily_report_pdf, ReportPreviewWindow
 from models.scrap_records import list_scrap_summary_by_kitting_no
 from models.kitting_plan import find_plan_item_by_kitting_no
+from ui.window_utils import center_window
 
 PRODUCT_NG_HEADERS = ["キッティングNo", "ファイルNo", "ロットNo", "NG数量"]
 
@@ -80,6 +81,7 @@ class ProductNgReportWindow(tk.Toplevel):
 
         self.title("製品NGレポート")
         self.geometry("900x520")
+        center_window(self, parent)
 
         tree_frame = ttk.Frame(self, padding=10)
         tree_frame.pack(expand=True, fill=tk.BOTH)

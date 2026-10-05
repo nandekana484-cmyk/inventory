@@ -1,24 +1,15 @@
-# services/master_import_service.py
+# services/csv_parsing_common.py
 """
-部品マスタ（parts）のCSVインポートサービス。
+列名ゆらぎに対応した汎用CSVパーサ（複数のCSVインポート機能が共有する）。
 
-CSVフォーマットが未確定のため、列名ゆらぎ・追加列・欠損列に耐えられる
-汎用パーサ（parse_csv_generic）と、列名候補を定義する列名マッピング辞書
-（COLUMN_MAP_PARTS）を拡張ポイントとして用意する。
-
-BOM（新BOM基盤）のインポートは services.bom_service / ui.parts_attributes_import_window
-側に完全移行しており、本ファイルは対象外。
+元は services/master_import_service.py（部品マスタCSVインポート専用）に
+置かれていたが、services/production_import_service.py（実績CSV取込）も
+同じ parse_csv_generic() を再利用していたため、master_import_service.py
+削除時に本モジュールへ切り出した（メインメニュー整理、CANONICAL_DESIGN_DECISIONS.md
+D-50参照）。中身（_ENCODINGS_TO_TRY・_open_csv_with_fallback・
+_resolve_column_map・parse_csv_generic）は移動前から一切変更していない。
 """
 import csv
-
-from models.master import upsert_part_master
-
-# 列名マッピング辞書（拡張ポイント）：canonical key -> 候補列名リスト
-COLUMN_MAP_PARTS = {
-    "part_no": ["part_no", "code96", "部品番号", "部品ID"],
-    "name": ["name", "部品名"],
-    "shelf": ["shelf", "棚番"],
-}
 
 # エンコーディング自動判定の候補（この順で試す）
 _ENCODINGS_TO_TRY = ["utf-8-sig", "utf-8", "shift_jis", "cp932"]
@@ -54,7 +45,7 @@ def parse_csv_generic(file_path, column_map):
     """
     列名ゆらぎに対応した汎用CSVパーサ（拡張ポイント）。
 
-    column_map（例：COLUMN_MAP_PARTS / COLUMN_MAP_BOM）で指定された
+    column_map（例：COLUMN_MAP_PARTS / COLUMN_MAP_PRODUCTION）で指定された
     canonical key ごとに、候補列名リストから実際のCSV列名を解決し、
     各行を以下の形式の dict に変換したリストを返す：
 
@@ -65,7 +56,7 @@ def parse_csv_generic(file_path, column_map):
         }
 
     列名解決のみを行い、必須列チェック・重複検知・型変換などの
-    ドメイン固有ロジックは呼び出し側（import_parts_csv）が担う。
+    ドメイン固有ロジックは呼び出し側が担う。
     追加列（column_map に定義のない列）は "_extra" にそのまま保持する
     （将来の拡張のため）。
     """
@@ -92,39 +83,3 @@ def parse_csv_generic(file_path, column_map):
             rows.append(row)
 
     return rows
-
-
-def import_parts_csv(file_path):
-    """
-    部品マスタCSVを解析し、parts テーブルへ保存する。
-
-    - 必須列：part_no（欠けている・空の行は警告してスキップ）
-    - part_no が重複する行は警告してスキップ
-    - 追加列は無視する（_extra には保持されるが未使用）
-
-    戻り値：{"rows": 解析した全行, "imported": 取込件数, "warnings": 警告メッセージのリスト}
-    """
-    rows = parse_csv_generic(file_path, COLUMN_MAP_PARTS)
-
-    imported = 0
-    warnings = []
-    seen_part_no = set()
-
-    for i, row in enumerate(rows, start=2):  # 1行目はヘッダーのためCSV上の行番号に合わせる
-        part_no = row.get("part_no")
-        if not part_no:
-            warnings.append(f"{i}行目: part_no が空のためスキップしました。")
-            continue
-
-        if part_no in seen_part_no:
-            warnings.append(f"{i}行目: part_no「{part_no}」が重複しているためスキップしました。")
-            continue
-        seen_part_no.add(part_no)
-
-        name = row.get("name") or ""
-        shelf = row.get("shelf") or ""
-
-        upsert_part_master(part_no, name, shelf)
-        imported += 1
-
-    return {"rows": rows, "imported": imported, "warnings": warnings}
