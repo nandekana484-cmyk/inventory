@@ -27,6 +27,7 @@ from ui.worker_management_window import WorkerManagementWindow
 from ui.worker_registration_window import WorkerRegistrationWindow
 from ui.operation_log_window import OperationLogWindow
 from models.operation_log import log_operation, get_inventory_diff_export_status
+from models.db_lifecycle_log import record_db_lifecycle_event, OPERATION_TYPE_CREATE, OPERATION_TYPE_CREATE_WITH_CARRY_OVER, OPERATION_TYPE_RESTORE_FROM_BACKUP
 from ui.db_delete_helper import confirm_and_delete_database
 from services.db_migration_carryover import carry_over_incomplete_lots
 from services.backup_service import (
@@ -36,6 +37,7 @@ from services.master_merge_service import merge_master_from_backup
 from services.unprocessed_check_service import check_unprocessed_items
 from services.app_settings_service import load_last_db_path
 from ui.window_utils import center_window
+from version import get_version_label
 
 
 class MainWindow(tk.Tk):
@@ -90,7 +92,7 @@ class MainWindow(tk.Tk):
                 return
             self._lock_acquired = True
 
-        self.title("部品在庫管理アプリ - メインメニュー")
+        self.title(f"部品在庫管理アプリ - メインメニュー {get_version_label()}")
         # 月次データ・共通マスタを左右2列表示にしたことで縦に短くなった分、
         # ウィンドウの高さは詰め、横幅は上部のデータベース選択欄（前月引き継ぎ
         # チェックボックス等を含む）と左右2列のボタン群の両方が収まる幅に広げた
@@ -327,20 +329,23 @@ class MainWindow(tk.Tk):
 
         # 作業者登録（新規登録のみ、role不問で常に表示）は、ui/login_window.py
         # （ログイン前）と同じ導線をログイン後にも提供する（2026-10-03追加）。
+        # 表記は「3. 新規アカウント登録」（2026-10-06改称、D-8x参照。画面
+        # 自体やこの画面以外の「作業者」表記は変更していない）。
         btn_worker_registration = ttk.Button(
-            master_frame, text="作業者登録（新規）", command=self.open_worker_registration
+            master_frame, text="3. 新規アカウント登録", command=self.open_worker_registration
         )
         btn_worker_registration.pack(fill=tk.X, pady=5)
 
-        # 「3. 作業者管理」（既存作業者の編集・有効/無効切替）は、admin役割の
-        # 作業者にのみメニューへ表示する（2026-10-03追加）。operatorの場合は
+        # 「4. アカウント管理」（既存作業者の編集・有効/無効切替、旧「3. 作業者
+        # 管理」。2026-10-06改称）は、admin役割の作業者にのみメニューへ表示する
+        # （2026-10-03追加、表示条件自体は変更していない）。operatorの場合は
         # ボタン自体を生成・packしない（CANONICAL_DESIGN_DECISIONS.md参照）。
         # ボタンが存在しない場合に備え、self.btn_worker_managementはNoneで
         # 初期化しておく（_menu_widgetsへの追加もこの条件に合わせる）。
         self.btn_worker_management = None
         if current_worker.get("role") == "admin":
             self.btn_worker_management = ttk.Button(
-                master_frame, text="3. 作業者管理", command=self.open_worker_management
+                master_frame, text="4. アカウント管理", command=self.open_worker_management
             )
             self.btn_worker_management.pack(fill=tk.X, pady=5)
 
@@ -358,6 +363,13 @@ class MainWindow(tk.Tk):
             master_frame, text="PDF読み取り（在庫照合）", command=self.open_pdf_ocr_import
         )
         btn_pdf_ocr_import.pack(fill=tk.X, pady=5)
+        # 常に無効化する（2026-10-06、D-8x参照）。ボタン自体・コマンドの配線・
+        # 機能のコードはいずれも削除せず残す（将来再度有効化する可能性に備える）。
+        # _menu_widgets・_default_db_locked_widgetsのいずれにも含めない
+        # （_apply_widget_states()はこの2つのリストに含まれるウィジェットの
+        # stateしか書き換えないため、含めなければDBの選択状態や前月引き継ぎ中の
+        # 一括有効化/無効化の対象から外れ、ここで設定したDISABLEDが常に保たれる）。
+        btn_pdf_ocr_import.config(state=tk.DISABLED)
 
         btn_operation_log = ttk.Button(
             master_frame, text="操作履歴", command=self.open_operation_log
@@ -386,10 +398,12 @@ class MainWindow(tk.Tk):
             self.btn_backup_databases, self.btn_restore_from_backup,
             btn_kitting_import, btn_kitting_production, btn_inventory_input,
             btn_theoretical_import, btn_inventory_diff, btn_ng_input, btn_wip_expansion,
-            btn_pdf_ocr_import, btn_operation_log,
+            btn_operation_log,
             btn_parts_attributes_import,
             btn_worker_registration, btn_board_structure_import, btn_logout,
         ]
+        # btn_pdf_ocr_importは意図的にここへ含めない（常に無効化、上記の
+        # config(state=tk.DISABLED)参照）。
         # 「3. 作業者管理」・「マスタデータを他PCから取り込む」はいずれも
         # admin役割の場合のみ生成されるため、存在する場合だけ_menu_widgetsへ
         # 追加する（2026-10-03追加）。
@@ -410,7 +424,7 @@ class MainWindow(tk.Tk):
         self._default_db_locked_widgets = [
             btn_kitting_import, btn_kitting_production, btn_inventory_input,
             btn_theoretical_import, btn_inventory_diff, btn_ng_input, btn_wip_expansion,
-            btn_pdf_ocr_import, btn_operation_log,
+            btn_operation_log,
             btn_board_structure_import, btn_parts_attributes_import, btn_worker_registration,
             self.btn_backup_databases,
         ]
@@ -1120,6 +1134,14 @@ class MainWindow(tk.Tk):
             "バックアップからの取り込み",
             detail=f"元ファイル: {backup_file_path} / 取り込み先: {folder_name}",
         )
+        # バックアップの呼び出しの履歴をmaster.dbへ記録する（2026-10-06追加。
+        # 上のlog_operation()への記録は変更しない。この記録は、取り込み先の
+        # 新DBを後で削除しても消えない）。
+        record_db_lifecycle_event(
+            OPERATION_TYPE_RESTORE_FROM_BACKUP, folder_name,
+            worker_name=self.current_worker.get("name", "unknown"),
+            source_info=backup_file_path,
+        )
 
         messagebox.showinfo(
             "取り込み完了",
@@ -1193,6 +1215,12 @@ class MainWindow(tk.Tk):
             config.set_db_path(new_db_path)
             init_kitting_plan_tables()
             self._update_current_db_label()
+            # DB新規作成（引き継ぎ無し）の履歴をmaster.dbへ記録する
+            # （2026-10-06追加。以前はこの分岐に記録が一切無かった）。
+            record_db_lifecycle_event(
+                OPERATION_TYPE_CREATE, folder,
+                worker_name=self.current_worker.get("name", "unknown"),
+            )
             messagebox.showinfo("完了", "新しいデータベースを作成しました。", parent=self.winfo_toplevel())
             self._load_db_folders()
             self.db_folder_var.set(folder)
@@ -1204,6 +1232,9 @@ class MainWindow(tk.Tk):
         # ここで個別に呼ぶ必要はない。
         self._set_menu_enabled(False)
         self._create_db_loading_window = LoadingWindow(self, message="前月からの未完了分を引き継いでいます…")
+        # _poll_create_db_queue()の成功時にdb_lifecycle_logへ記録する際、
+        # 引き継ぎ元フォルダ名として使う（2026-10-06追加）。
+        self._create_db_old_db_folder = os.path.basename(os.path.dirname(old_db_path))
 
         t = threading.Thread(
             target=self._run_carry_over_in_thread,
@@ -1255,6 +1286,13 @@ class MainWindow(tk.Tk):
                 "未完了計画のDB間引き継ぎ",
                 detail=f"成功{summary['lots_copied']}件 / スキップ{len(skipped_lot_nos)}件 / "
                        f"失敗{len(failed_lot_nos)}件",
+            )
+            # DB新規作成（前月から引き継ぎ）の履歴をmaster.dbへ記録する
+            # （2026-10-06追加。上のlog_operation()への記録は変更しない）。
+            record_db_lifecycle_event(
+                OPERATION_TYPE_CREATE_WITH_CARRY_OVER, folder_name,
+                worker_name=self.current_worker.get("name", "unknown"),
+                source_info=self._create_db_old_db_folder,
             )
 
             msg = (

@@ -22,6 +22,7 @@ created_atはDB挿入時にSQLite側が自動付与する日時（models.ng_excl
 import socket
 from datetime import datetime
 
+import config
 from models.db_common import get_connection
 
 
@@ -52,7 +53,18 @@ def log_operation(worker_name: str, operation_name: str, detail: str = None):
     detail：任意の補足文字列（例：対象のkitting_list_no等）。省略時はNULL。
     pc_name：呼び出し元には渡させず、models.db_lock_serviceと同じ
     socket.gethostname()で本関数が自動取得する。
+
+    既定DB（未選択、config.is_default_db()）の間は、一切書き込まずそのまま
+    戻る（例外にはしない）。「既定DBには一切のファイル読み書きを行わない」
+    という方針（D-56・D-57）が、本関数経由の操作履歴記録には適用されて
+    いなかった見落とし（D-71）への対応。ログイン画面・作業者登録（新規）
+    画面等、DB選択前に到達できる経路を含め、呼び出し元ごとに
+    is_default_db()の確認を書かせるのではなく本関数に集約することで、
+    新しい呼び出し元が増えるたびに同じ対応を繰り返す必要をなくしている。
+    そのため、未選択の間に行った操作（作業者登録等）は操作履歴に残らない。
     """
+    if config.is_default_db():
+        return
     init_operation_log_table()
     pc_name = socket.gethostname()
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

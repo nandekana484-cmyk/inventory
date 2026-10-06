@@ -108,6 +108,18 @@ class KittingPlanImportWindow(tk.Toplevel):
         self.result_label = ttk.Label(bottom, text="", foreground="blue")
         self.result_label.pack(side=tk.LEFT)
 
+        # 「閉じる」ボタン（2026-10-06追加）。ほかの取込画面（ui.board_structure_
+        # import_window.py・ui.parts_attributes_import_window.py）と同じ位置
+        # （ウインドウ右下）・同じ見た目（command=self.destroy）にする。本画面は
+        # ×ボタン（WM_DELETE_WINDOW）にも元々カスタムの処理（protocol()での
+        # 上書き）を割り当てていないため、×も既定の動作（self.destroy()相当）の
+        # ままであり、取込処理中に押した場合の扱いも含めて×と同じ動作になる
+        # （どちらも処理の完了を待たずウインドウを破棄する、という既存の動作を
+        # 変更していない）。
+        btn_frame = ttk.Frame(self, padding=10)
+        btn_frame.pack(fill=tk.X)
+        ttk.Button(btn_frame, text="閉じる", command=self.destroy).pack(side=tk.RIGHT, padx=5)
+
     def browse_file(self):
         path = filedialog.askopenfilename(filetypes=[("CSV files","*.csv"),("All files","*.*")], parent=self.winfo_toplevel())
         if path:

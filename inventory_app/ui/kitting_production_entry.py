@@ -1872,6 +1872,12 @@ class KittingProductionEntryWindow(tk.Toplevel):
         lot_no = self.current_plan["lot_no"]
         existing = get_daily_history(kitting_no, lot_no)
         existing_daily_qty = existing[-1]["daily_qty"] if existing else None
+        existing_report_date = existing[-1]["report_date"] if existing else None
+        # これから登録する実績の日付（表示用）。実績CSVステージング経由なら
+        # self._pending_csv_report_dateを解決した値、通常の手入力では
+        # Noneのまま（register_daily_result()/overwrite_daily_result()側で
+        # 実行日にフォールバックするのと同じ意味）。
+        new_report_date = _resolve_csv_report_date(self._pending_csv_report_date)
 
         mismatch_lines = []
         for side in ("1", "2"):
@@ -1890,6 +1896,8 @@ class KittingProductionEntryWindow(tk.Toplevel):
         return {
             "daily_qty": daily_qty,
             "existing_daily_qty": existing_daily_qty,
+            "existing_report_date": existing_report_date,
+            "new_report_date": new_report_date,
             "save_qty_by_side": save_qty_by_side,
             "mismatch_lines": mismatch_lines,
         }
@@ -1907,7 +1915,15 @@ class KittingProductionEntryWindow(tk.Toplevel):
         plan = self.current_plan
         lines = []
         if preview["existing_daily_qty"] is not None:
-            lines.append(f"・既に実績が登録されています（{preview['existing_daily_qty']:.0f}）。上書きします。")
+            existing_date_text = preview.get("existing_report_date") or "(日付不明)"
+            new_date_text = preview.get("new_report_date") or "(本日)"
+            lines.append(
+                f"・登録済みの実績：{existing_date_text}　数量：{preview['existing_daily_qty']:g}"
+            )
+            lines.append(
+                f"・これから登録する実績：{new_date_text}　数量：{preview['daily_qty']:g}"
+            )
+            lines.append("・続けると、登録済みの実績は置き換えられます。")
         lines.append(f"・本日の実績（{plan['kitting_list_no']}）：{preview['daily_qty']:g}")
         for side in ("1", "2"):
             if side in preview["save_qty_by_side"]:
@@ -1961,6 +1977,43 @@ class KittingProductionEntryWindow(tk.Toplevel):
         center_window(dialog, self)
         dialog.wait_window()
         return result["confirmed"]
+
+    def confirm_overwrite_if_existing(self, kitting_list_no, lot_no, new_daily_qty, new_report_date_raw):
+        """
+        実績CSVステージング一覧の右クリック「即時登録」（ui.production_import_
+        staging_window.ProductionImportStagingWindow._register_candidate_
+        immediately()）から、登録の実行前に呼ぶ。対象の計画（kitting_list_no・
+        lot_no）に既にproduction_daily行がある場合のみ、登録済みの実績
+        （日付・数量）とこれから登録する実績（日付・数量）を示す確認
+        ダイアログを表示し、「続けると登録済みの実績は置き換えられます」と
+        明記する。既存レコードが無ければダイアログを出さずTrueを返す
+        （即時登録の「即時」性を保つ）。
+
+        通常の手入力登録フロー（_start_registration()→_show_registration_
+        confirm_dialog()）は、既存レコードの有無を問わず常に確認ダイアログを
+        経由するため、この専用メソッドを呼ぶ必要はない（そちらの表示内容は
+        _show_registration_confirm_dialog()側で同様に日付・数量を示すよう
+        拡張済み）。
+
+        戻り値：続行してよければTrue（既存レコード無し、または「はい」）。
+        既存レコードがあり「いいえ」を選んだ場合はFalse（呼び出し元は
+        登録処理・保留行の削除のいずれも行わないこと）。
+        """
+        existing = get_daily_history(kitting_list_no, lot_no)
+        if not existing:
+            return True
+
+        last = existing[-1]
+        new_report_date = _resolve_csv_report_date(new_report_date_raw)
+        existing_date_text = last.get("report_date") or "(日付不明)"
+        new_date_text = new_report_date or "(本日)"
+        message = (
+            f"この計画（{kitting_list_no}）には既に実績が登録されています。\n\n"
+            f"・登録済みの実績：{existing_date_text}　数量：{last['daily_qty']:g}\n"
+            f"・これから登録する実績：{new_date_text}　数量：{new_daily_qty:g}\n\n"
+            "続けると、登録済みの実績は置き換えられます。続けますか？"
+        )
+        return messagebox.askyesno("既存の実績を置き換えます", message, parent=self.winfo_toplevel())
 
     def _perform_registration(self, daily_qty, preview, record_history=True):
         """
@@ -2085,13 +2138,17 @@ class KittingProductionEntryWindow(tk.Toplevel):
             msg_lines.extend(errors)
 
         messagebox.showinfo("登録完了", "\n".join(msg_lines), parent=self.winfo_toplevel())
-        self.entry_daily_qty.focus_set()
 
-        # 実績CSVステージング一覧経由の登録であれば、ここで一覧を手前に戻す。
-        # 直前のentry_daily_qty.focus_set()で本ウインドウ（KittingProduction
-        # EntryWindow）側が前面に来ており、ステージング一覧が背後に隠れたままに
-        # なるため（本メソッド冒頭のremove_callback呼び出し直後にlift()しても、
-        # このfocus_set()で再び隠れてしまうため、末尾で行う必要がある）。
+        # 実績CSVステージング一覧経由の登録であれば、ここで一覧を手前に戻し、
+        # かつキーボードフォーカスも一覧側（self._csv_staging_window.tree）へ
+        # 渡す（2026-10-06修正）。以前はここで無条件にself.entry_daily_qty.
+        # focus_set()を呼んでおり、その後lift()で一覧を視覚的に前面へ戻しても、
+        # lift()はウインドウの重ね順（Z順）を変えるだけでTkのキーボード
+        # フォーカスは移動しないため、画面上は一覧が手前に見えても実際の
+        # キー入力は本ウインドウの実績数入力欄（entry_daily_qty）に残り
+        # 続けていた。この状態で一覧側でShift+Sを押すと、実際には実績数
+        # 入力欄へ「s」が1文字入力されるだけになり、一括登録が効かない
+        # 不具合の直接の原因になっていた。
         # 常時最前面（topmost）は、この後に開く可能性がある他のモーダル
         # ダイアログ（候補選択・登録確認・エラー等）まで覆い隠してしまう恐れが
         # あるため採用せず、登録完了のこのタイミングでのみ前面に戻す方式とした。
@@ -2103,6 +2160,12 @@ class KittingProductionEntryWindow(tk.Toplevel):
             if self._csv_staging_window.state() == "iconic":
                 self._csv_staging_window.deiconify()
             self._csv_staging_window.lift()
+            self._csv_staging_window.focus_force()
+            self._csv_staging_window.tree.focus_set()
+        else:
+            # CSVステージング経由でない通常の手動登録では、従来通り実績数
+            # 入力欄へフォーカスを戻し、続けて次の実績を入力しやすくする。
+            self.entry_daily_qty.focus_set()
 
     def _register_opposite_side_daily_result(self, daily_qty, worker_id, report_date=None,
                                                record_history=True):

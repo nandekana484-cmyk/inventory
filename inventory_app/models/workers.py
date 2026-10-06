@@ -1,4 +1,36 @@
+import unicodedata
+
 from models.db_common import get_master_connection
+
+
+def normalize_worker_id(worker_id: str) -> str:
+    """
+    作業者IDの重複判定用の正規化（2026-10-06追加）。全角/半角・大文字/小文字
+    だけが違うIDを同じIDとみなすため、unicodedata.normalize("NFKC", ...)で
+    全角/半角を統一し、小文字化する（services.production_import_service.
+    normalize_product_name()と同じ考え方・同じ処理内容）。worker_id自体の
+    保存値はここで変換しない（元の表記のまま保存する。重複チェックのみに
+    使う正規化であり、実際のPRIMARY KEY値・表示には影響しない）。
+    """
+    if worker_id is None:
+        return ""
+    return unicodedata.normalize("NFKC", str(worker_id)).strip().lower()
+
+
+def is_worker_id_taken(worker_id: str) -> bool:
+    """
+    worker_idが既存の作業者ID（有効/無効を問わず全件）と、全角/半角・
+    大文字/小文字の違いを無視して重複するかどうかを判定する（2026-10-06
+    追加、自由入力の作業者ID登録時の重複拒否用）。有効/無効を問わず全件を
+    対象にする理由：無効化された作業者のIDも、過去の実績・NG・操作履歴等
+    から参照され続けるため、再利用されると履歴の意味が変わってしまう
+    （models.workers.set_worker_active()のdocstring「レコード自体は削除
+    しない」方針と同じ理由）。
+    """
+    normalized = normalize_worker_id(worker_id)
+    if not normalized:
+        return False
+    return any(normalize_worker_id(w["worker_id"]) == normalized for w in get_all_workers())
 
 
 def init_workers_table():

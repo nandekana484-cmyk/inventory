@@ -18,29 +18,45 @@ else:
     BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 
 # アプリ固有データ（ローカルDB・ログ・OCR言語データ・設定ファイル等、実行時に
-# 読み書きするデータ）の保存先。BASE_DIR（インストール先。.exe化時は
-# 典型的にProgram Files配下等を想定）とは意図的に分離する。理由：
-#   - Program Files配下は標準ユーザーだと書き込み権限が無いことが多い。
-#   - アンインストール・再インストール（バージョンアップ）のたびにインストール
-#     フォルダの中身が入れ替えられるのが一般的で、その中にDB等のデータを
-#     置いていると再インストールのたびに失われるリスクがある。
-# そのため.exe化時は、常に書き込み可能なユーザーごとの領域
-# （%LOCALAPPDATA%）配下の専用フォルダに分離する。
-# 開発環境では、従来通りBASE_DIR配下のまま（開発時の利便性を優先する方針）。
-if IS_FROZEN:
-    _local_app_data = os.getenv("LOCALAPPDATA")
-    if _local_app_data:
-        APP_DATA_DIR = os.path.join(_local_app_data, "InventoryApp")
-    else:
-        # 通常のWindows環境ではLOCALAPPDATAは必ず設定されているはずだが、
-        # 万一取得できない場合のフォールバックとしてBASE_DIRを使う。
-        APP_DATA_DIR = BASE_DIR
-else:
-    APP_DATA_DIR = BASE_DIR
+# 読み書きするデータ）の保存先。
+#
+# 2026-10-06変更：.exe実行時は%LOCALAPPDATA%\InventoryApp\から「.exe本体が
+# 置かれているフォルダ」（BASE_DIR）へ変更した。理由：利用者がデータの場所を
+# 把握しやすくし、.exeをフォルダごと移動・複製（コピー運用）できるようにする
+# ため。旧方式（%LOCALAPPDATA%、CANONICAL_DESIGN_DECISIONS.md D-48・§19.5）を
+# 選んだ当時の理由
+# （Program Files配下は標準ユーザーだと書き込み権限が無いことが多い／
+# アンインストール・再インストールのたびにインストール先フォルダの中身が
+# 入れ替えられる）は、本アプリがインストーラを持たない単一.exe配布（本体を
+# 任意の書き込み可能なフォルダに置いて使う運用）であるため、今回の変更でも
+# 実質的には再発しない。ただし「書き込み不可なフォルダに置かれる」という
+# 問題自体は依然あり得るため、以下で起動時に明示的に検査し、書き込めない
+# 場合は（%LOCALAPPDATA%等への自動切り替えは行わず）エラーを表示して終了する
+# （.exe実行時のみ。開発環境の保存先・挙動は変更していない）。
+APP_DATA_DIR = BASE_DIR
 
-# 初回起動時、専用フォルダが存在しなければ作成する（開発環境ではBASE_DIRと
-# 同一のため既に存在しており、実質何もしない）。
-os.makedirs(APP_DATA_DIR, exist_ok=True)
+if IS_FROZEN:
+    try:
+        os.makedirs(APP_DATA_DIR, exist_ok=True)
+        _write_test_path = os.path.join(APP_DATA_DIR, ".write_test")
+        with open(_write_test_path, "w", encoding="utf-8") as _f:
+            _f.write("ok")
+        os.remove(_write_test_path)
+    except OSError:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(
+            0,
+            "このフォルダにはデータを保存できません。\n"
+            "書き込み可能なフォルダへ .exe を移動してください。\n\n"
+            f"保存先: {APP_DATA_DIR}",
+            "起動エラー",
+            0x10,  # MB_ICONERROR
+        )
+        sys.exit(1)
+else:
+    # 初回起動時、専用フォルダが存在しなければ作成する（開発環境ではBASE_DIRと
+    # 同一のため既に存在しており、実質何もしない）。
+    os.makedirs(APP_DATA_DIR, exist_ok=True)
 
 # ローカルDBの親フォルダ名。新規作成・バックアップの呼び出しが組み立てる
 # フォルダ名付きDBパスは os.path.join(APP_DATA_DIR, DB_ROOT_FOLDER_NAME, folder,
@@ -141,7 +157,7 @@ TESSERACT_CMD = os.getenv(
 # 標準インストール先（Program Files配下）は開発環境によって書き込み権限が無く
 # 追加の言語データを配置できない場合があったため、APP_DATA_DIR配下の
 # tessdata_local/ に個別配置する運用とした（開発環境ではBASE_DIR直下、
-# .exe化時は%LOCALAPPDATA%\InventoryApp\tessdata_local\。.gitignore対象、
+# .exe化時は.exe本体のフォルダ配下のtessdata_local\。.gitignore対象、
 # Git管理外。新しい開発環境では jpn.traineddata・eng.traineddata・
 # osd.traineddata を別途このフォルダに配置する必要がある）。
 # 環境変数 TESSDATA_DIR で上書き可能。

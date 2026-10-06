@@ -19,12 +19,28 @@ group_active_plan_items_by_lot()によるN+1解消）により、再照合コス
 （delete_pending_csv_import_row()）。ステータス列自体を持たない（テーブルに
 存在する＝未処理、という単純な設計）。
 
-識別キー：(lot_no, 正規化済みproduct_name)。異なるタイミングで取り込まれた
-CSVに同一キーの行が含まれる場合、古い保留行を削除してから新しい内容を
-挿入する（delete-then-insert。models.kitting_plan.
-upsert_pending_kitting_plan_item()と同じ「後から取り込んだ方が優先される」
-考え方。production_daily自体も同一計画は常に上書きする方針のため、
-ステージング段階でもこれに揃えた）。
+識別キー（2026-10-06改訂）：以前は(lot_no, 正規化済みproduct_name)が一致する
+既存の保留行を無条件に削除してから挿入していたが、これだと**同一CSV内に
+同じロットNo・製品名の行が複数（別日の実績）ある場合、最後の1行を除く全てが
+消えてしまう**という問題があった（実データで約22%の実績数量が消失する
+ことを確認済み、CANONICAL_DESIGN_DECISIONS.md D-7x参照）。業務ルール：
+同じロットNo・製品名でも、日付が異なれば別のキッティング計画の実績である
+（どの計画の実績かは、払出し日を手がかりに人が判断して割り当てる）。
+そのため実績CSVの行は、同一CSV内では**まとめたり捨てたりせず、1行を1件の
+保留行として必ず残す**。
+
+一方で「同じCSVをもう一度読み込んだ場合に二重に増えない」という目的
+（本来の導入経緯）は維持する必要がある。そこで、重複判定の対象を
+**「今回の取込バッチ（import_batch_id）とは別のバッチに属する既存の保留行」
+のみに限定**し、かつ一致条件を(lot_no, 正規化済みproduct_name)だけでなく
+**report_date・daily_qtyも含めた完全一致**に変更した：
+  - 同一バッチ内の行同士は互いに比較しない（＝1回の取込で読み込んだ行は、
+    内容が重複していても全て別々の行として残る）。
+  - 別バッチ（＝以前の取込）の既存行と、lot_no・正規化product_name・
+    report_date・daily_qtyが完全に一致する場合のみ「同じ内容が既に
+    保留中」とみなし、新規挿入せず既存行をそのまま使う（再取込しても
+    行が増えない）。日付や数量が少しでも異なれば、別の実績として新規に
+    追加する。
 """
 from models.db_common import get_connection
 
@@ -87,18 +103,36 @@ def create_csv_import_batch(source_file: str, imported_by: str = None) -> int:
         return cur.lastrowid
 
 
-def upsert_pending_csv_import_row(data: dict, import_batch_id: int = None) -> int:
+def upsert_pending_csv_import_row(data: dict, import_batch_id: int = None, claimed_pending_row_ids: set = None) -> int:
     """
-    実績CSVの1行をpending_csv_import_rowsへ保存する。
+    実績CSVの1行をpending_csv_import_rowsへ保存する（2026-10-06改訂、
+    本モジュールのdocstring「識別キー」参照）。
 
-    識別キー (lot_no, 正規化済みproduct_name) が一致する既存の保留行が
-    あれば削除してから新しい内容を挿入する（delete-then-insert。
-    本モジュールのdocstring参照）。lot_noは呼び出し元
-    （parse_production_csv_for_staging()）で既にstr().strip()済みの値を
-    渡す想定。product_nameの正規化はservices.production_import_service.
-    normalize_product_name()を使う（本モジュールが逆方向にservicesを
-    トップレベルでインポートすると循環importになるため、models.kitting_plan.
-    find_matching_plan_items()と同じく関数内インポートで回避する）。
+    同一import_batch_id内の既存行とは比較しない（1回の取込で読み込んだ行は
+    内容が重複していても全て別々の行として残る）。import_batch_idが異なる
+    （＝以前の取込由来の）既存行のうち、lot_no・正規化済みproduct_name・
+    report_date・daily_qtyが完全に一致するものが見つかった場合のみ、
+    「既に同じ内容の保留行がある」とみなして新規挿入せず、その既存行の
+    pending_row_idをそのまま返す（再取込しても行が増えない）。
+
+    claimed_pending_row_ids：同一のparse_production_csv_for_staging()呼び出し
+    （＝1回の取込処理）内で、既に再利用済みの既存行のpending_row_idを集める
+    集合。呼び出し元が1回の取込の開始時に空集合を作り、ループ全体で同じ
+    集合を使い続けて渡す想定（2026-10-06追加）。これが無いと、今回のCSVに
+    リテラルに全く同じ内容の行が複数ある場合（例：同じ行が誤って2回入力
+    された等）、別バッチの既存行1件が、今回の複数の新規行すべてから
+    繰り返し「再利用」されてしまい、2行目以降が新規挿入されず消えてしまう
+    不具合があった（1行につき1回しか再利用されないよう、再利用した既存行の
+    pending_row_idをこの集合に記録し、以降の同一取込内の比較では対象外にする）。
+    省略時（None）は従来通り保護なしで動作する（テスト等、保護が不要な
+    単発呼び出し向け）。
+
+    lot_noは呼び出し元（parse_production_csv_for_staging()）で既に
+    str().strip()済みの値を渡す想定。product_nameの正規化はservices.
+    production_import_service.normalize_product_name()を使う（本モジュールが
+    逆方向にservicesをトップレベルでインポートすると循環importになるため、
+    models.kitting_plan.find_matching_plan_items()と同じく関数内インポートで
+    回避する）。
 
     data：{"csv_row_no", "lot_no", "product_name", "daily_qty",
            "report_date", "worker_id"}。未知のキーは無視する。
@@ -110,27 +144,41 @@ def upsert_pending_csv_import_row(data: dict, import_batch_id: int = None) -> in
     CREATE TABLE/INDEX IF NOT EXISTS文を再実行するとボトルネックになる
     ため、あえて呼ばない）。
 
-    戻り値：保存した行のpending_row_id。
+    戻り値：保存した行（または再利用した既存行）のpending_row_id。
     """
     from services.production_import_service import normalize_product_name
 
     lot_no = str(data.get("lot_no") or "").strip()
     product_name = data.get("product_name")
     product_name_normalized = normalize_product_name(product_name)
+    report_date = data.get("report_date")
+    daily_qty = data.get("daily_qty")
 
     with get_connection() as con:
         cur = con.cursor()
 
         existing_rows = cur.execute(
-            "SELECT pending_row_id, product_name FROM pending_csv_import_rows WHERE lot_no = ?",
+            "SELECT pending_row_id, product_name, report_date, daily_qty, import_batch_id "
+            "FROM pending_csv_import_rows WHERE lot_no = ?",
             (lot_no,),
         ).fetchall()
         for row in existing_rows:
-            if normalize_product_name(row["product_name"]) == product_name_normalized:
-                cur.execute(
-                    "DELETE FROM pending_csv_import_rows WHERE pending_row_id = ?",
-                    (row["pending_row_id"],),
-                )
+            # 同一バッチ内の行は比較対象にしない（1回の取込内の行は常に
+            # 全て新規追加する。内容が重複していても消さない）。
+            if import_batch_id is not None and row["import_batch_id"] == import_batch_id:
+                continue
+            # 既に今回の取込内で別の行から再利用済みの既存行は、二重に
+            # 再利用しない（claimed_pending_row_ids参照、本関数のdocstring）。
+            if claimed_pending_row_ids is not None and row["pending_row_id"] in claimed_pending_row_ids:
+                continue
+            if (
+                normalize_product_name(row["product_name"]) == product_name_normalized
+                and row["report_date"] == report_date
+                and row["daily_qty"] == daily_qty
+            ):
+                if claimed_pending_row_ids is not None:
+                    claimed_pending_row_ids.add(row["pending_row_id"])
+                return row["pending_row_id"]
 
         cur.execute("""
             INSERT INTO pending_csv_import_rows (
@@ -142,8 +190,8 @@ def upsert_pending_csv_import_row(data: dict, import_batch_id: int = None) -> in
             data.get("csv_row_no"),
             lot_no,
             product_name,
-            data.get("daily_qty"),
-            data.get("report_date"),
+            daily_qty,
+            report_date,
             data.get("worker_id"),
         ))
         pending_row_id = cur.lastrowid

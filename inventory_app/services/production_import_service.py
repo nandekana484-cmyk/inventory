@@ -12,6 +12,7 @@ kitting_plan_items を特定し（models.kitting_plan.resolve_plan_by_lot_and_na
 """
 import re
 import unicodedata
+from datetime import datetime
 
 from services.csv_parsing_common import parse_csv_generic
 from services.production_service import (
@@ -26,7 +27,7 @@ from models.kitting_plan import (
     find_plan_item_by_kitting_no,
     list_active_plan_items,
 )
-from models.production import get_app_cumulative_qty
+from models.production import list_daily_production_by_kitting_no
 from models.production_import_staging import (
     create_csv_import_batch,
     upsert_pending_csv_import_row,
@@ -75,6 +76,28 @@ def normalize_product_name(name):
     return normalized
 
 
+# report_dateの表記ゆらぎ吸収用（is_already_registered()専用、2026-10-06追加）。
+# CSV側は"2026/7/14"のようなスラッシュ区切り・ゼロ埋め無し、production_daily側は
+# "2026-07-14"のようなハイフン区切り・ゼロ埋め済みで保存されており、書式が
+# 異なるため、比較前に同じ形式へ正規化する必要がある。ui.plan_candidate_dialog.
+# _parse_flexible_date()と同じ対応形式だが、services層からui層を参照すると
+# 依存方向が逆転するため、本モジュール専用に同等のロジックを複製している。
+_REPORT_DATE_FORMATS_FOR_MATCH = ("%Y-%m-%d", "%Y/%m/%d")
+
+
+def _normalize_report_date_for_match(value):
+    """report_dateを"%Y-%m-%d"形式へ正規化する。パース不能・値が無い場合はNone。"""
+    if not value:
+        return None
+    text = str(value).strip()
+    for fmt in _REPORT_DATE_FORMATS_FOR_MATCH:
+        try:
+            return datetime.strptime(text, fmt).strftime("%Y-%m-%d")
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def group_active_plan_items_by_lot(include_completed=False):
     """
     list_active_plan_items()を1回だけ呼び、lot_noをキーにグルーピングした辞書を
@@ -114,10 +137,11 @@ def group_active_plan_items_by_lot(include_completed=False):
     return grouped
 
 
-def is_already_registered(lot_no, product_name, daily_qty, plan_items_by_lot=None):
+def is_already_registered(lot_no, product_name, daily_qty, plan_items_by_lot=None, report_date=None):
     """
-    このCSV行（lot_no・product_name・daily_qty）が指す計画について、
-    production_dailyへ既に同じ数量で登録済みかどうかを判定する。
+    このCSV行（lot_no・product_name・daily_qty・report_date）が指す計画に
+    ついて、production_dailyへ既に同じ数量かつ同じ日付で登録済みかどうかを
+    判定する。
     実績CSVステージング一覧（parse_production_csv_for_staging()）で、
     重複登録の必要が無い行を一覧から除外し、代わりに「登録済みリスト」
     （ui.production_import_staging_window.ProductionImportStagingWindow.
@@ -125,17 +149,54 @@ def is_already_registered(lot_no, product_name, daily_qty, plan_items_by_lot=Non
 
     対象計画の特定：find_matching_plan_items(lot_no, 正規化済み
     product_name, plan_items_by_lot)を呼び、製品名まで一致した計画
-    （matched）がちょうど1件に定まる場合のみ判定を行う。0件（該当計画なし）
-    または複数件（lot_no+製品名だけでは一意特定できない、あいまい）の
-    場合は「判定不可」として`already_registered=False`を返す（＝一覧からは
-    除外しない。誤って有効な行を隠してしまうことを避けるため、判定できない
-    場合は常に「未登録」側に倒す）。
+    （matched）を取得する。0件（該当計画なし）の場合は「判定不可」として
+    `already_registered=False`を返す（＝一覧からは除外しない）。
 
-    判定：matchedの1件について、models.production.get_app_cumulative_qty(
-    kitting_list_no, lot_no)（既存の実績取得関数、production_dailyの
-    daily_qty合計）を取得し、CSVのdaily_qtyと完全一致する場合のみ
-    「登録済み」（True）と判定する。数量が異なる場合（訂正が必要な
-    ケース）はFalse（一覧に表示し、通常通り確認・上書きの対象とする）。
+    複数件（lot_no+製品名だけでは一意特定できない、あいまい）の場合
+    （2026-10-06改訂）：候補のうち1件でもCSVのdaily_qtyと完全一致する実績が
+    既に登録されていれば「登録済み」と判定する。これは、候補が複数ある行を
+    人が候補を選んで確定した後に同じCSVを再取込した際、確定済みの計画の
+    実績と照合できず保留一覧へ同じ内容の行が復活してしまう不具合
+    （CANONICAL_DESIGN_DECISIONS.md D-8x参照）への対応。一致する候補が無い
+    場合は「判定不可」として`already_registered=False`を返す（誤って有効な
+    行を隠してしまうことを避けるため、判定できない場合は常に「未登録」側に
+    倒す、という方針自体は変えていない）。
+
+    判定：matchedの1件について、models.production.
+    list_daily_production_by_kitting_no(kitting_list_no, lot_no)（既存の実績
+    取得関数）で、その計画に対応するproduction_daily行を取得する。
+
+    **行が1件も無い場合は、CSVのdaily_qtyの値に関わらず「登録済み」とは
+    判定しない**（2026-10-06修正、CANONICAL_DESIGN_DECISIONS.md D-7x参照）。
+    以前はmodels.production.get_app_cumulative_qty()（COALESCE(SUM(...), 0)）
+    を使っていたため、「実績が1件も無い（合計0）」場合と「実績はあるが
+    合計がたまたま0」の場合を区別できず、CSVのdaily_qtyが0の行は常に
+    「登録済み」と誤判定されていた（本DBに実績が1件も無い新規作成直後の
+    月次DBで、daily_qty=0の行が全て誤ってスキップされる不具合として発覚）。
+
+    行が1件以上ある場合、その合計（SUM(daily_qty)）とCSVのdaily_qtyが完全
+    一致し、**かつ**、そのうちの少なくとも1行のreport_dateがCSVのreport_date
+    と一致する場合のみ「登録済み」（True）と判定する（2026-10-06再改訂、
+    CANONICAL_DESIGN_DECISIONS.md D-8x参照）。日付の比較は
+    _normalize_report_date_for_match()で"%Y-%m-%d"形式に正規化した上で行う
+    （CSV側は"2026/7/14"のようなスラッシュ区切り・ゼロ埋め無し、
+    production_daily側は"2026-07-14"のようなハイフン区切り・ゼロ埋め済みで
+    保存されており、書式が異なるため正規化しないと一致しない）。
+
+    日付も見る理由：以前は数量のみで判定していたため、同じロットNo・製品名で
+    日付が異なる複数の実績（別々の計画の実績、本モジュールのdocstring
+    「業務ルール」参照）が同じ数量だった場合（実務上よくある、例：同じ
+    ロットを複数日に分けて同数量ずつ生産するケース）、1件を確定しただけで
+    残りの未確定行まで全て「登録済み」と誤判定し、黙って一覧から消してしまう
+    不具合が見つかった（実際には1件も登録されていないのに消えるため、D-78の
+    「1行は1件のまま残す」という方針に反する）。
+
+    数量は一致するが日付が一致しない場合（訂正が必要なケース、または単に
+    別日の実績が別途ある場合）はFalse（一覧に表示し、通常通り確認・上書きの
+    対象とする）。report_dateが省略された場合（呼び出し元が明示的に渡さない
+    場合）は、日付での絞り込みを行わず数量のみで判定する従来動作のまま
+    （後方互換のためのデフォルト。実際の呼び出し元
+    parse_production_csv_for_staging()は必ずreport_dateを渡す）。
 
     plan_items_by_lot：group_active_plan_items_by_lot(include_completed=True)の
     戻り値を渡すこと（省略時はlist_active_plan_items(include_completed=True)を
@@ -160,15 +221,66 @@ def is_already_registered(lot_no, product_name, daily_qty, plan_items_by_lot=Non
     （どの計画のどの実績値と一致したためスキップされたのか）を表示できる
     ようにするため、判定に使った詳細情報も返すよう拡張した。呼び出し元は
     引き続き`result["already_registered"]`だけを見ればbool時代と同じ判定に
-    使える。matched_kitting_list_no・existing_qtyは、判定不可
-    （matchedが1件に定まらない）の場合はNoneになる。
+    使える。matched_kitting_list_noは判定不可（matchedが1件に定まらない）の
+    場合にNoneになる。**existing_qtyは、判定不可の場合に加えて、計画は
+    1件に定まったが対応するproduction_daily行が1件も無い場合もNoneになる**
+    （2026-10-06改訂。「実績が無い」ことと「実績はあるが合計0」を呼び出し元が
+    区別できるようにするため。後者は実績が存在するためNoneではなく0.0が入る）。
     """
     if plan_items_by_lot is None:
         plan_items_by_lot = group_active_plan_items_by_lot(include_completed=True)
 
     product_name_normalized = normalize_product_name(product_name)
     _, matched = find_matching_plan_items(lot_no, product_name_normalized, plan_items_by_lot)
-    if len(matched) != 1:
+
+    normalized_csv_date = _normalize_report_date_for_match(report_date)
+
+    def _qty_and_date_match(existing_rows):
+        """existing_rowsの合計がdaily_qtyと一致し、かつ（report_dateが
+        指定されている場合）そのうち少なくとも1行の日付がCSVの日付と一致
+        するかどうかを判定する（本関数のdocstring参照）。existing_qty
+        （合計、表示用）とのタプルを返す。"""
+        existing_qty = sum(row["daily_qty"] for row in existing_rows)
+        if existing_qty != daily_qty:
+            return False, existing_qty
+        if normalized_csv_date is None:
+            return True, existing_qty
+        date_match = any(
+            _normalize_report_date_for_match(row["report_date"]) == normalized_csv_date
+            for row in existing_rows
+        )
+        return date_match, existing_qty
+
+    if len(matched) > 1:
+        # 候補が複数ある（曖昧）行でも、そのうちどれか1件に既にCSVのdaily_qty・
+        # report_dateと完全一致する実績が登録されていれば「登録済み」と判定する
+        # （2026-10-06追加）。背景：候補が複数あるため人が候補を選んで確定した後、
+        # 同じCSVを再取込すると、is_already_registered()がmatched!=1を理由に
+        # 常に「判定不可」を返し、確定済みの計画の実績と照合できず、再取込の
+        # たびに保留一覧へ同じ内容の行が復活してしまう不具合が見つかった
+        # （別の候補を選んで確定すると二重登録になるリスクがあった）。
+        # 該当する候補が無ければ従来通り「判定不可」のまま返す
+        # （誤って有効な行を隠さないため）。
+        for plan in matched:
+            existing_rows = list_daily_production_by_kitting_no(plan["kitting_list_no"], lot_no)
+            if not existing_rows:
+                continue
+            matched_ok, existing_qty = _qty_and_date_match(existing_rows)
+            if matched_ok:
+                return {
+                    "already_registered": True,
+                    "matched_kitting_list_no": plan["kitting_list_no"],
+                    "existing_qty": existing_qty,
+                    "daily_qty": daily_qty,
+                }
+        return {
+            "already_registered": False,
+            "matched_kitting_list_no": None,
+            "existing_qty": None,
+            "daily_qty": daily_qty,
+        }
+
+    if len(matched) == 0:
         return {
             "already_registered": False,
             "matched_kitting_list_no": None,
@@ -177,9 +289,18 @@ def is_already_registered(lot_no, product_name, daily_qty, plan_items_by_lot=Non
         }
 
     plan = matched[0]
-    existing_qty = get_app_cumulative_qty(plan["kitting_list_no"], lot_no)
+    existing_rows = list_daily_production_by_kitting_no(plan["kitting_list_no"], lot_no)
+    if not existing_rows:
+        return {
+            "already_registered": False,
+            "matched_kitting_list_no": plan["kitting_list_no"],
+            "existing_qty": None,
+            "daily_qty": daily_qty,
+        }
+
+    matched_ok, existing_qty = _qty_and_date_match(existing_rows)
     return {
-        "already_registered": existing_qty == daily_qty,
+        "already_registered": matched_ok,
         "matched_kitting_list_no": plan["kitting_list_no"],
         "existing_qty": existing_qty,
         "daily_qty": daily_qty,
@@ -392,6 +513,18 @@ STAGING_STATUS_LABELS = {
     "no_candidates": "候補なし",
     "needs_selection": "候補あり（要選択）",
     "auto_resolvable": "自動確定可能（要確認）",
+    "needs_confirmation_existing": "要確認（既に実績あり）",
+    "needs_confirmation_duplicate": "要確認（同一計画への重複候補）",
+}
+
+# 対象外の理由（2026-10-06新設）。ui.production_import_staging_window.
+# ProductionImportStagingWindowの「対象外一覧」（旧「登録済みリスト」を
+# 理由列付きに拡張したもの）で使う。
+EXCLUSION_REASON_ALREADY_REGISTERED = "登録済み"
+EXCLUSION_REASON_ZERO_QTY = "数量0のため対象外"
+EXCLUSION_REASON_LABELS = {
+    EXCLUSION_REASON_ALREADY_REGISTERED: "登録済み（登録済み数量とCSVの数量が一致）",
+    EXCLUSION_REASON_ZERO_QTY: "数量0のため対象外（実績が無く、CSVの数量も0）",
 }
 
 
@@ -401,7 +534,10 @@ def parse_production_csv_for_staging(file_path, default_worker_id=None):
     models.production_import_staging.pending_csv_import_rows へ永続化する
     （「確認・選択・転記」方式の実績取込一覧向け）。import_production_csv()
     （即時登録版）とは別のエントリーポイントとして新設した。
-    import_production_csv()自体は後方互換のため変更していない。
+    import_production_csv()自体は後方互換のため変更していない（本関数と
+    同種の「実績0件の誤判定」は無い。import_production_csv()はis_already_
+    registered()を使わず、register_daily_result(check_duplicate=True)の
+    例外ハンドリングで無条件に登録・上書きする設計のため。2026-10-06確認）。
 
     必須列の検証（lot_no・product_name・daily_qtyの空欄チェック、daily_qtyの
     数値変換）・9割スキップ時の注意喚起は import_production_csv() と同じ
@@ -416,57 +552,81 @@ def parse_production_csv_for_staging(file_path, default_worker_id=None):
     保存し、候補の再照合はui.production_import_staging_window側で表示・
     再開のたびに行う方針とした（models.production_import_staging参照）。
 
-    同一lot_no+正規化済みproduct_nameの行が既存の保留行と重複する場合、
-    upsert_pending_csv_import_row()が古い保留行を削除して新しい内容で
-    置き換える（delete-then-insert。異なるタイミングで取り込んだCSVに
-    同じ行が含まれる場合、後から取り込んだ方が優先される）。
+    **1回のCSV取込で読み込んだ行は、同じロットNo・製品名であっても、全て
+    別々の保留行として残す（まとめたり捨てたりしない）**。業務ルール：
+    同じロットNo・製品名でも、日付が異なれば別のキッティング計画の実績で
+    あり、どの計画の実績かは払出し日を手がかりに人が判断して割り当てる。
+    同じCSVを再度取り込んだ場合に保留一覧が二重に増えない仕組みは
+    models.production_import_staging.upsert_pending_csv_import_row()側に
+    ある（本関数のdocstring参照）。
 
-    既に登録済み（数量一致）の行はステージング対象にしない：
-    is_already_registered()で判定し、Trueの行はupsert_pending_csv_import_row()
-    を呼ばずスキップする（既に同じ内容がproduction_dailyへ登録済みであり、
-    改めて確認・登録する必要が無いため）。パース時点（本関数）でスキップする
-    方式を採用した理由：CSV取込完了時のメッセージ（呼び出し元）に「スキップ
-    件数」をその場で表示する必要があり、パース時点であれば戻り値に件数を
-    含めるだけで済むが、表示時点（ステージング一覧を開くたび）でのフィルタ
-    リングだと、取込完了時点ではまだ何件スキップされるか確定しない
-    （ウインドウを開くまで計算しない）ため、要件（3）に合わない。
-    is_already_registered()自体は再照合可能な情報（find_matching_plan_items()・
-    get_app_cumulative_qty()）のみで判定しており、DBに何かを永続化するわけ
-    ではないため、後からこの行の状況が変わった（登録が取り消された等）場合も
-    次回CSV再取込時に改めて判定されるだけで、データの整合性上の問題は無い。
+    判定結果は次の3種類に分類する：
+      a. **既に登録済み**（EXCLUSION_REASON_ALREADY_REGISTERED）：対象の
+         計画にproduction_daily行が1件以上あり、その合計がCSVのdaily_qtyと
+         完全一致する。ステージング対象にしない。
+      b. **数量0のため対象外**（EXCLUSION_REASON_ZERO_QTY）：対象の計画に
+         production_daily行が1件も無く、かつCSVのdaily_qtyが0。登録すべき
+         実績が無い（0produced）ため、ステージング対象にしない。
+      c. **取込対象**：上記以外（候補が1件に定まらない行・実績はあるが
+         数量が食い違う行・実績が無くdaily_qtyが0でない行）。従来通り
+         pending_csv_import_rowsへ保存する。
+    a・bいずれも、is_already_registered()の拡張された戻り値（existing_qty
+    がNone＝実績無し、0以上＝実績あり）から判定する（2026-10-06改訂、
+    is_already_registered()のdocstring参照）。
+
+    CSV内の重複キー（同一lot_no・正規化済みproduct_name）の検出：件数のみ
+    集計し、戻り値のnoticesに件数を含める（行はまとめない・捨てない。
+    どの計画の実績かは候補提示・人の判断に委ねる）。
 
     戻り値：{
-        "imported_count": 保留行として保存した件数,
-        "already_registered_count": 既に登録済み（数量一致）と判定してスキップした件数,
-        "already_registered_rows": [既に登録済みと判定された行の詳細（下記参照）],
+        "imported_count": 保留行として保存した件数（c. 取込対象）,
+        "already_registered_count": a. の件数,
+        "already_registered_rows": [a. と判定された行の詳細（下記参照）],
+        "zero_excluded_count": b. の件数,
+        "zero_excluded_rows": [b. と判定された行の詳細（下記参照）],
+        "duplicate_key_group_count": CSV内で同一lot_no・製品名が複数回
+            出現したキーの組数,
+        "duplicate_key_row_count": 上記の組に含まれる行の総数,
         "warnings": [CSV解析時点の警告メッセージ（必須列欠落・数値変換エラー等）],
+        "notices": [重複キーの件数等、警告件数には含めない情報メッセージ],
     }
     "report_date"はCSVの「払い出し日」相当の値をそのまま保持するが、
     参考情報としての表示用であり、実際の登録時（呼び出し元がこのモジュールの
     外で行う）にはこの値を使わない方針（登録ボタンを押した日を使うため）。
 
-    "already_registered_rows"の各要素：{"csv_row_no", "lot_no", "product_name",
-    "daily_qty", "report_date", "worker_id", "matched_kitting_list_no",
-    "existing_qty", "import_batch_id"}。is_already_registered()が返す詳細
-    情報（判定に使った一致計画・既存実績値）に、通常の保留行と同じCSV由来の
-    フィールドを合わせたもの。ui.production_import_staging_window.
-    ProductionImportStagingWindow.self._already_registered_rows（「登録済み
-    リスト」）の元データとして使う。pending_csv_import_rowsへは保存しない
-    （本関数のdocstring既存部分の通り）ため、この戻り値がこの情報の唯一の
-    持ち出し口である。"訂正する"（登録済みリストから通常のステージング一覧へ
-    戻す）操作のためにcsv_row_no・worker_id・import_batch_idも保持しておき、
-    通常の保留行と同じ形でupsert_pending_csv_import_row()へ再投入できるように
+    "already_registered_rows"・"zero_excluded_rows"の各要素：{"csv_row_no",
+    "lot_no", "product_name", "daily_qty", "report_date", "worker_id",
+    "matched_kitting_list_no", "existing_qty", "import_batch_id", "reason"}。
+    is_already_registered()が返す詳細情報（判定に使った一致計画・既存実績値）
+    に、通常の保留行と同じCSV由来のフィールドとreason（上記
+    EXCLUSION_REASON_*）を合わせたもの。ui.production_import_staging_window.
+    ProductionImportStagingWindow.self._excluded_rows（「対象外一覧」、旧
+    「登録済みリスト」）の元データとして使う。pending_csv_import_rowsへは
+    保存しない（本関数のdocstring既存部分の通り）ため、この戻り値がこの
+    情報の唯一の持ち出し口である。「対象外一覧から取込対象へ戻す」操作の
+    ためにcsv_row_no・worker_id・import_batch_idも保持しておき、通常の
+    保留行と同じ形でupsert_pending_csv_import_row()へ再投入できるように
     している。
     """
     rows = parse_csv_generic(file_path, COLUMN_MAP_PRODUCTION)
 
     warnings = []
+    notices = []
     required_column_skipped_count = 0
     imported_count = 0
     already_registered_count = 0
     already_registered_rows = []
+    zero_excluded_count = 0
+    zero_excluded_rows = []
 
     import_batch_id = create_csv_import_batch(file_path, imported_by=default_worker_id)
+
+    # 今回の取込処理全体で共有する、既に再利用済みの既存保留行idの集合
+    # （models.production_import_staging.upsert_pending_csv_import_row()の
+    # claimed_pending_row_ids参照）。CSVにリテラルに全く同じ内容の行が複数
+    # ある場合でも、別バッチの既存行1件が繰り返し再利用されて2行目以降が
+    # 消えてしまわないようにするための保護（2026-10-06追加）。
+    claimed_pending_row_ids = set()
 
     # is_already_registered()もfind_matching_plan_items()経由でlist_active_plan_items()
     # を使うため、CSV行数分のN+1を避けるためループに入る前に1回だけ取得する
@@ -474,6 +634,10 @@ def parse_production_csv_for_staging(file_path, default_worker_id=None):
     # 完了済み計画こそ検出対象のため、include_completed=Trueで取得する
     # （is_already_registered()のdocstring参照）。
     plan_items_by_lot = group_active_plan_items_by_lot(include_completed=True)
+
+    # CSV内の重複キー（同一lot_no・正規化済みproduct_name）の件数集計用
+    # （行はまとめない・捨てない。件数の報告のみに使う）。
+    seen_keys = {}
 
     for i, row in enumerate(rows, start=2):  # 1行目はヘッダーのためCSV上の行番号に合わせる
         lot_no = row.get("lot_no")
@@ -500,7 +664,10 @@ def parse_production_csv_for_staging(file_path, default_worker_id=None):
         report_date = row.get("report_date") or None
         worker_id = row.get("worker_id") or default_worker_id or "CSV_IMPORT"
 
-        registration_check = is_already_registered(lot_no, product_name, daily_qty, plan_items_by_lot)
+        key = (lot_no, normalize_product_name(product_name))
+        seen_keys.setdefault(key, []).append(i)
+
+        registration_check = is_already_registered(lot_no, product_name, daily_qty, plan_items_by_lot, report_date=report_date)
         if registration_check["already_registered"]:
             already_registered_count += 1
             already_registered_rows.append({
@@ -513,6 +680,23 @@ def parse_production_csv_for_staging(file_path, default_worker_id=None):
                 "matched_kitting_list_no": registration_check["matched_kitting_list_no"],
                 "existing_qty": registration_check["existing_qty"],
                 "import_batch_id": import_batch_id,
+                "reason": EXCLUSION_REASON_ALREADY_REGISTERED,
+            })
+            continue
+
+        if registration_check["existing_qty"] is None and daily_qty == 0:
+            zero_excluded_count += 1
+            zero_excluded_rows.append({
+                "csv_row_no": i,
+                "lot_no": lot_no,
+                "product_name": product_name,
+                "daily_qty": daily_qty,
+                "report_date": report_date,
+                "worker_id": worker_id,
+                "matched_kitting_list_no": registration_check["matched_kitting_list_no"],
+                "existing_qty": registration_check["existing_qty"],
+                "import_batch_id": import_batch_id,
+                "reason": EXCLUSION_REASON_ZERO_QTY,
             })
             continue
 
@@ -523,7 +707,7 @@ def parse_production_csv_for_staging(file_path, default_worker_id=None):
             "daily_qty": daily_qty,
             "report_date": report_date,
             "worker_id": worker_id,
-        }, import_batch_id=import_batch_id)
+        }, import_batch_id=import_batch_id, claimed_pending_row_ids=claimed_pending_row_ids)
         imported_count += 1
 
     total_rows = len(rows)
@@ -537,9 +721,24 @@ def parse_production_csv_for_staging(file_path, default_worker_id=None):
             "あります。列名をご確認ください。",
         )
 
+    duplicate_groups = {k: v for k, v in seen_keys.items() if len(v) > 1}
+    duplicate_key_group_count = len(duplicate_groups)
+    duplicate_key_row_count = sum(len(v) for v in duplicate_groups.values())
+    if duplicate_key_group_count:
+        notices.append(
+            f"※ 同じロットNo・製品名の行がCSV内に複数ある組が{duplicate_key_group_count}組"
+            f"（合計{duplicate_key_row_count}行）あります。まとめずに全て別々の保留行として"
+            "残しています。どの計画の実績かは、払出し日を手がかりにご確認のうえ候補を選択してください。"
+        )
+
     return {
         "imported_count": imported_count,
         "already_registered_count": already_registered_count,
         "already_registered_rows": already_registered_rows,
+        "zero_excluded_count": zero_excluded_count,
+        "zero_excluded_rows": zero_excluded_rows,
+        "duplicate_key_group_count": duplicate_key_group_count,
+        "duplicate_key_row_count": duplicate_key_row_count,
         "warnings": warnings,
+        "notices": notices,
     }

@@ -21,8 +21,12 @@ inventory_app.spec
   デフォルトのまま（未設定）とする。
 """
 import os
+import sys
 
 from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.win32.versioninfo import (
+    VSVersionInfo, FixedFileInfo, StringFileInfo, StringTable, StringStruct, VarFileInfo, VarStruct,
+)
 
 block_cipher = None
 
@@ -30,6 +34,40 @@ block_cipher = None
 # 実行時にSPECPATH（.specファイル自身の場所）を名前空間へ注入する。
 PROJECT_ROOT = os.path.abspath(SPECPATH)
 APP_DIR = os.path.join(PROJECT_ROOT, "inventory_app")
+
+# バージョン番号・ビルド日付は inventory_app/version.py を唯一の参照元とする
+# （二重管理しない）。.exeのファイルバージョン情報（Windowsのプロパティ→詳細
+# タブに表示される値）もここから生成する。
+sys.path.insert(0, APP_DIR)
+from version import APP_VERSION, BUILD_DATE  # noqa: E402
+
+_version_tuple = tuple(int(p) for p in APP_VERSION.split(".")) + (0,)
+version_info = VSVersionInfo(
+    ffi=FixedFileInfo(
+        filevers=_version_tuple,
+        prodvers=_version_tuple,
+        mask=0x3F,
+        flags=0x0,
+        OS=0x4,
+        fileType=0x1,
+        subtype=0x0,
+        date=(0, 0),
+    ),
+    kids=[
+        StringFileInfo([
+            StringTable("041104B0", [
+                StringStruct("CompanyName", ""),
+                StringStruct("FileDescription", "部品在庫管理アプリ"),
+                StringStruct("FileVersion", f"{APP_VERSION} ({BUILD_DATE})"),
+                StringStruct("InternalName", "InventoryApp"),
+                StringStruct("OriginalFilename", "InventoryApp.exe"),
+                StringStruct("ProductName", "部品在庫管理アプリ"),
+                StringStruct("ProductVersion", f"{APP_VERSION} ({BUILD_DATE})"),
+            ]),
+        ]),
+        VarFileInfo([VarStruct("Translation", [1041, 1200])]),
+    ],
+)
 
 # pandas・opencv-python-headless・reportlab・babel（tkcalendarの依存）・
 # pdfplumber（pdfminer.six等を内部で使う）は、通常のimport解析だけでは
@@ -45,6 +83,16 @@ for pkg in ("pandas", "cv2", "reportlab", "babel", "pdfplumber", "pdfminer", "tk
     datas += pkg_datas
     binaries += pkg_binaries
     hiddenimports += pkg_hiddenimports
+
+# db/schema.sql は db/init_db.py::init_database()/init_database_at() が
+# os.path.join(os.path.dirname(__file__), 'schema.sql') で実行時に読む非Pythonの
+# データファイルであり、PyInstallerの通常のimport解析では検出・同梱されない
+# （2026-10-06、.exeの再ビルド・実機検証中に発見：「新しいデータベースを作成」
+# 操作時にFileNotFoundErrorが発生し、新規DBフォルダだけ作成されてinventory.db
+# 本体が作られない不具合として判明した。コード自体の既存の振る舞い・バグでは
+# なく、.spec側でのバンドル漏れだったため、ここで明示的にdatasへ追加して
+# 修正する）。
+datas.append((os.path.join(APP_DIR, "db", "schema.sql"), "db"))
 
 # requirements.txtに記載の各パッケージ・標準ライブラリのうち、import解析での
 # 取りこぼしが起きやすいものを明示的に追加する。
@@ -110,4 +158,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=None,
+    version=version_info,
 )

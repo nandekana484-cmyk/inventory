@@ -14,21 +14,19 @@ admin役割の選択可否：master.dbにrole='admin'の作業者が1人も存�
 adminが存在する場合は、選択肢を"operator"のみとする（以後のadmin追加は、
 既存adminが管理画面から役割を変更する運用を想定）。
 """
-import uuid
-
 import tkinter as tk
 from tkinter import ttk, messagebox
 
-from models.workers import upsert_worker, any_admin_exists
+from models.workers import create_worker, any_admin_exists, is_worker_id_taken
 from ui.window_utils import center_window
 
-
-def _generate_worker_id() -> str:
-    """
-    氏名・役割の入力のみで登録できるようにするため、作業者IDはUUID由来で
-    自動生成する（ユーザーに入力させない）。
-    """
-    return "W" + uuid.uuid4().hex[:8].upper()
+# 作業者IDの長さ上限（2026-10-06追加、自由入力化に伴う実装上の判断）。
+# DBのworker_id列自体はTEXT型で長さ制約が無く、既存のログイン画面も
+# 作業者IDを直接入力させる場面が無いため、他の既存の型・制約からの
+# 直接の制限値は存在しない。実用上の一覧表示・入力欄の見た目を考慮し、
+# 1〜32文字という常識的な上限を本画面側の検証として新たに設けた
+# （DBスキーマ自体は変更していない）。
+WORKER_ID_MAX_LENGTH = 32
 
 
 class WorkerRegistrationWindow(tk.Toplevel):
@@ -41,8 +39,8 @@ class WorkerRegistrationWindow(tk.Toplevel):
         super().__init__(parent)
         self.current_worker = current_worker or {}
         self.on_registered = on_registered
-        self.title("作業者登録")
-        self.geometry("360x220")
+        self.title("新規アカウント登録")
+        self.geometry("360x260")
         self.resizable(False, False)
         center_window(self, parent)
 
@@ -50,6 +48,14 @@ class WorkerRegistrationWindow(tk.Toplevel):
         frame.pack(expand=True, fill=tk.BOTH)
 
         ttk.Label(frame, text="新規作業者登録", font=("Helvetica", 14, "bold")).pack(pady=(0, 15))
+
+        # 作業者ID入力欄（2026-10-06追加、自由入力化。以前はUUID由来で
+        # 自動生成しユーザーには入力させていなかった）。
+        row_id = ttk.Frame(frame)
+        row_id.pack(fill=tk.X, pady=5)
+        ttk.Label(row_id, text="ID:", width=8).pack(side=tk.LEFT)
+        self.entry_worker_id = ttk.Entry(row_id)
+        self.entry_worker_id.pack(side=tk.LEFT, expand=True, fill=tk.X)
 
         row_name = ttk.Frame(frame)
         row_name.pack(fill=tk.X, pady=5)
@@ -78,15 +84,36 @@ class WorkerRegistrationWindow(tk.Toplevel):
         ttk.Button(frame, text="閉じる", command=self.destroy).pack()
 
     def register(self):
+        worker_id = self.entry_worker_id.get().strip()
         name = self.entry_name.get().strip()
         role = self.combo_role.get().strip() or "operator"
 
+        if not worker_id:
+            messagebox.showwarning("エラー", "IDを入力してください。", parent=self.winfo_toplevel())
+            return
+        if len(worker_id) > WORKER_ID_MAX_LENGTH:
+            messagebox.showwarning(
+                "エラー", f"IDは{WORKER_ID_MAX_LENGTH}文字以内で入力してください。",
+                parent=self.winfo_toplevel(),
+            )
+            return
+        if is_worker_id_taken(worker_id):
+            messagebox.showwarning(
+                "エラー",
+                f"ID「{worker_id}」は既に使われています（全角/半角・大文字/小文字の"
+                "違いのみの場合も含みます）。別のIDを入力してください。",
+                parent=self.winfo_toplevel(),
+            )
+            return
         if not name:
             messagebox.showwarning("エラー", "氏名を入力してください。", parent=self.winfo_toplevel())
             return
 
-        worker_id = _generate_worker_id()
-        upsert_worker(worker_id, name, role, is_active=1)
+        # 新規登録のため、既存IDへの上書きを許すupsert_worker()ではなく
+        # create_worker()（単純なINSERT）を使う（2026-10-06変更。重複チェック
+        # は上で既に行っているが、念のため新規登録という操作の意味に即した
+        # 関数を使う）。
+        create_worker(worker_id, name, role)
 
         # ログイン前（current_workerが空）に登録した場合、操作者名として
         # 記録しようが無いため"unknown"のままになる（既存のmain_window.py等の

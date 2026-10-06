@@ -51,10 +51,12 @@ from tkinter import ttk, messagebox, filedialog, simpledialog
 
 from services.production_import_service import (
     STAGING_STATUS_LABELS,
+    EXCLUSION_REASON_LABELS,
     normalize_product_name,
     group_active_plan_items_by_lot,
 )
 from models.kitting_plan import find_matching_plan_items
+from models.production import list_daily_production_by_kitting_no
 from models.production_import_staging import (
     list_pending_csv_import_rows,
     delete_pending_csv_import_row,
@@ -158,6 +160,19 @@ def _load_staged_rows_from_db():
     docstring参照。plan_items_by_lot（services.production_import_service.
     group_active_plan_items_by_lot()）は本関数内で1回だけ取得し、未処理行数分の
     find_matching_plan_items()呼び出しで使い回す（CSV取込時と同じN+1回避）。
+
+    status（2026-10-06拡張）：計画の候補が1件に定まる行（従来は常に
+    "auto_resolvable"）でも、以下のいずれかに該当する場合は人の判断が必要な
+    行として区別する（自動確定の対象から外す、ui.production_import_staging_
+    window::is_auto_confirmable()を参照する側（_populate_candidates()の
+    ハイライト・_on_bulk_register()）がこのstatusを尊重する）：
+      - "needs_confirmation_existing"：その計画（kitting_list_no・lot_no）に
+        既にproduction_daily行が1件以上ある（既存実績を黙って上書きしない
+        ため）。両方に該当する場合はこちらを優先する（より直接的な上書き
+        リスクのため）。
+      - "needs_confirmation_duplicate"：同じ計画（kitting_list_no）を候補とする
+        保留行が、他にも存在する（複数の別日の実績が同じ計画に割り当て
+        られようとしている状態。どちらが正しい割り当てかは人が判断する）。
     """
     pending_rows = list_pending_csv_import_rows()
     if not pending_rows:
@@ -190,7 +205,48 @@ def _load_staged_rows_from_db():
             "matched": matched,
             "status": status,
         })
+
+    _mark_rows_needing_confirmation(staged_rows)
     return staged_rows
+
+
+def _mark_rows_needing_confirmation(staged_rows):
+    """
+    staged_rows（_load_staged_rows_from_db()が組み立てた辞書のリスト）のうち、
+    status=="auto_resolvable"の行を対象に、以下の2条件を判定し、該当すれば
+    statusを上書きする（候補が1件に定まっていても、自動確定の対象から外す
+    ための印）。
+
+    a. "needs_confirmation_duplicate"：同じ(kitting_list_no, lot_no)を候補とする
+       auto_resolvableの行が、自分以外にも存在する。D-6の一意キーは
+       (kitting_list_no, lot_no)のペアであり、kitting_list_noだけでは
+       ない（1つのkitting_list_noに複数のlot_noが紐づく計画があり得る
+       ため、lot_noが異なれば実際には競合しない。2026-10-06確認・修正）。
+    b. "needs_confirmation_existing"：その計画（kitting_list_no・lot_no）に
+       既にproduction_daily行が1件以上ある。
+
+    両方に該当する場合はb（"needs_confirmation_existing"）を優先する。
+    判定はauto_resolvableの行数分のみ行う（CSV取込全体の行数より十分少ない
+    想定のため、models.production.list_daily_production_by_kitting_no()を
+    行ごとに呼んでもN+1の実害は小さいと判断した）。
+    """
+    auto_resolvable_rows = [r for r in staged_rows if r["status"] == "auto_resolvable"]
+    if not auto_resolvable_rows:
+        return
+
+    rows_by_plan_key = {}
+    for row in auto_resolvable_rows:
+        kitting_list_no = row["matched"][0]["kitting_list_no"]
+        rows_by_plan_key.setdefault((kitting_list_no, row["lot_no"]), []).append(row)
+
+    for (kitting_list_no, lot_no), rows in rows_by_plan_key.items():
+        existing = list_daily_production_by_kitting_no(kitting_list_no, lot_no)
+        if existing:
+            for row in rows:
+                row["status"] = "needs_confirmation_existing"
+        elif len(rows) > 1:
+            for row in rows:
+                row["status"] = "needs_confirmation_duplicate"
 
 
 def open_or_notify(parent, already_registered_rows=None):
@@ -305,6 +361,12 @@ class ProductionImportStagingWindow(tk.Toplevel):
         self._clear_candidate_pane()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # ウインドウを開いた直後、キーボードフォーカスを登録待ち一覧へ置く
+        # （2026-10-06追加、Shift+Sが効かなくなる不具合の修正の一環。何も
+        # 明示的にfocus_set()しないと、開いた直後はどのウィジェットにも
+        # Tkのキーボードフォーカスが無い状態になりうる）。
+        self.tree.focus_set()
 
     def _create_widgets(self, staged_rows):
         """
@@ -444,6 +506,13 @@ class ProductionImportStagingWindow(tk.Toplevel):
         ttk.Button(action_frame, text="登録済みリストを表示", command=self.on_show_already_registered_list).pack(
             side=tk.LEFT,
         )
+        # Shift+Sと同じ処理を呼ぶボタン（2026-10-06追加、Shift+Sが効かない
+        # 不具合の対策の一環。キーボードフォーカスの状態に依存せず確実に
+        # 一括登録を実行できる手段として、ショートカットとは独立に常に
+        # 使える）。ボタンの表記にショートカットを明記する。
+        ttk.Button(
+            action_frame, text="自動確定可能な行を一括登録（Shift+S）", command=self._on_bulk_register,
+        ).pack(side=tk.LEFT, padx=(5, 0))
 
         # 登録不可（machine判定）・不一致（人間の判断で除外）、それぞれの件数を
         # 分かりやすく常時表示する。件数が変わるたび_update_status_label()で
@@ -501,7 +570,18 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
         self.tree.bind("<<TreeviewSelect>>", self._on_staging_select)
         self.tree.bind("<Button-3>", self._on_right_click)
-        self.tree.bind("<Shift-S>", self._on_bulk_register)
+        # self.tree単体ではなく、ウインドウ全体（self）にbindする
+        # （2026-10-06修正、Shift+Sが効かなくなる不具合の原因の1つ）。
+        # self.tree.bind(...)だと、tree自身がTkのキーボードフォーカスを
+        # 持っている時にしか発火しない。本ウインドウ内にテキスト入力欄は
+        # 無いため、ウインドウ全体にbindしても「入力中の文字入力を妨げる」
+        # 副作用は無く、ボタン等にフォーカスがあっても確実に発火する
+        # （Tkのbindtagsにより、子ウィジェットの既定バインドタグには所属する
+        # トップレベルの名前が含まれ、子ウィジェット自身に同じイベントの
+        # バインドが無ければ、ここで登録したウインドウレベルの束縛まで
+        # イベントが伝播してくる）。self.tree固有のバインドは残さない
+        # （同じキー入力で二重に発火するのを避けるため）。
+        self.bind("<Shift-S>", self._on_bulk_register)
 
     def _insert_staging_row(self, row):
         """
@@ -857,6 +937,16 @@ class ProductionImportStagingWindow(tk.Toplevel):
         kitting_list_no = candidate["kitting_list_no"]
         lot_no = candidate["lot_no"]
         planned_qty = candidate.get("planned_qty")
+
+        # 既にこの計画に実績が登録されている場合、黙って上書きせず確認
+        # ダイアログを出す（2026-10-06追加）。一括登録（_on_bulk_register()）は
+        # この条件に該当する行を事前に除外しているため、通常は一括登録経由で
+        # ここに到達することはないが、念のため経路を問わず常にこの確認を行う。
+        # 「いいえ」の場合は何も変更せず（検索欄の転記も行わず）即座に戻る。
+        # 保留行（staging_iid）もそのまま残る。
+        if not parent.confirm_overwrite_if_existing(kitting_list_no, lot_no, daily_qty, row.get("report_date")):
+            return
+
         # 登録（＝staging_iidの行削除）が成功した後に選択し直す「次の行」を、
         # 削除前のうちに記録しておく（削除後にtree.next()を呼んでも、既に
         # ツリーから消えたiidを起点にはできないため）。次の行が無い場合は
@@ -997,8 +1087,32 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
         plan_items_by_lot = group_active_plan_items_by_lot()
 
+        # 一括登録の対象から外す2条件（a・b）の事前判定用：現在一覧に残っている
+        # 全行（選択中かどうかを問わない）について、候補が1件に定まるものだけを
+        # 対象に、同じ(kitting_list_no, lot_no)を候補とする行が複数あるかを数える
+        # （_mark_rows_needing_confirmation()と同じ考え方、画面表示用の判定とは
+        # 独立に、ここでも都度最新の状態で再判定する。find_matching_plan_items()
+        # のキャッシュ結果（row["matched"]）は選択・表示時点のものなので使わず、
+        # このブロックでも都度再照合する）。D-6の一意キーは(kitting_list_no,
+        # lot_no)のペアのため、kitting_list_noだけで数えると、1つの
+        # kitting_list_noに複数のlot_noが紐づく計画で誤って「重複」判定して
+        # しまう（2026-10-06確認・修正）。
+        resolved_plan_key_by_iid = {}
+        plan_key_counts = {}
+        for other_iid, other_row in self._row_by_iid.items():
+            other_normalized = normalize_product_name(other_row["product_name"])
+            _, other_matched = find_matching_plan_items(
+                other_row["lot_no"], other_normalized, plan_items_by_lot,
+            )
+            if len(other_matched) == 1:
+                plan_key = (other_matched[0]["kitting_list_no"], other_row["lot_no"])
+                resolved_plan_key_by_iid[other_iid] = plan_key
+                plan_key_counts[plan_key] = plan_key_counts.get(plan_key, 0) + 1
+
         registered_count = 0
         skipped_count = 0
+        skipped_duplicate_count = 0
+        skipped_existing_count = 0
         failed_count = 0
         # 登録に成功した行のlot_noを集める（重複除去、set）。反対面連動
         # （_perform_registration()内部）で影響するlot_noも常に同一lot_noの
@@ -1023,6 +1137,25 @@ class ProductionImportStagingWindow(tk.Toplevel):
                     continue
 
                 candidate = matched[0]
+                kitting_list_no = candidate["kitting_list_no"]
+
+                # b. 既にその計画に実績が登録されている行は、一括登録では
+                # 処理しない（黙って上書きしないため。個別の右クリック即時
+                # 登録・通常の登録フローでは確認ダイアログを経由すれば登録
+                # できる）。
+                if list_daily_production_by_kitting_no(kitting_list_no, row["lot_no"]):
+                    skipped_count += 1
+                    skipped_existing_count += 1
+                    continue
+
+                # a. 同じ計画（kitting_list_no, lot_no）を候補とする保留行が、
+                # 自分以外にも一覧に存在する行は、一括登録では処理しない
+                # （どちらを登録すべきかは人が払出し日を見て判断する）。
+                if plan_key_counts.get((kitting_list_no, row["lot_no"]), 0) > 1:
+                    skipped_count += 1
+                    skipped_duplicate_count += 1
+                    continue
+
                 if not is_auto_confirmable(
                     row.get("lot_no"), row.get("product_name"),
                     candidate.get("planned_qty"), row.get("daily_qty"),
@@ -1062,6 +1195,16 @@ class ProductionImportStagingWindow(tk.Toplevel):
                 )
 
         message = f"{registered_count}件を登録しました。\n{skipped_count}件は要件を満たさないためスキップしました。"
+        skip_reason_lines = []
+        if skipped_existing_count:
+            skip_reason_lines.append(f"　・既に実績が登録済み：{skipped_existing_count}件")
+        if skipped_duplicate_count:
+            skip_reason_lines.append(f"　・同一計画への重複候補：{skipped_duplicate_count}件")
+        other_skipped = skipped_count - skipped_existing_count - skipped_duplicate_count
+        if other_skipped:
+            skip_reason_lines.append(f"　・候補未確定／数量・日付不一致等：{other_skipped}件")
+        if skip_reason_lines:
+            message += "\n" + "\n".join(skip_reason_lines)
         if failed_count:
             message += f"\n{failed_count}件は登録中にエラーが発生しました（詳細は個別のエラーダイアログを参照）。"
         messagebox.showinfo("一括登録完了", message, parent=self)
@@ -1073,6 +1216,14 @@ class ProductionImportStagingWindow(tk.Toplevel):
             self.tree.see(next_after_batch_iid)
         else:
             self.tree.selection_set(())
+
+        # 一括登録の完了後、キーボードフォーカスを登録待ち一覧へ戻す
+        # （2026-10-06追加、Shift+Sが効かなくなる不具合の修正の一環。
+        # _perform_registration()が登録のたびにparent.entry_daily_qty.
+        # focus_set()を呼ぶため、ここで明示的に戻さないと、次にShift+Sを
+        # 押した際にフォーカスが残った親ウインドウの実績数入力欄へ「s」が
+        # 入力されてしまう）。
+        self.tree.focus_set()
 
     # ------------------------------------------------------------------
     # ウインドウを閉じる
@@ -1551,8 +1702,8 @@ class ProductionImportStagingWindow(tk.Toplevel):
             return
 
         window = tk.Toplevel(self)
-        window.title("実績CSV取込：登録済みリスト（重複取込のためスキップ）")
-        window.geometry("900x400")
+        window.title("実績CSV取込：対象外一覧（登録済み／数量0）")
+        window.geometry("980x400")
         center_window(window, self)
         window.transient(self)
         # 親（本ウインドウ）が最小化状態だとtransientウインドウが実際には
@@ -1564,8 +1715,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
         ttk.Label(
             window,
             text=(
-                "既にproduction_dailyへ同じ数量で登録済みと判定され、"
-                "通常のステージング一覧には表示されなかった行です。\n"
+                "通常のステージング一覧には表示されなかった行です（理由は「理由」列を参照）。\n"
                 "右クリックで通常の一覧に戻して訂正できます（複数選択中は選択中の全行が対象）。"
             ),
             foreground="gray", padding=(10, 10, 10, 0),
@@ -1574,26 +1724,31 @@ class ProductionImportStagingWindow(tk.Toplevel):
         action_frame = ttk.Frame(window, padding=(10, 5, 10, 10))
         action_frame.pack(side=tk.BOTTOM, fill=tk.X)
         ttk.Button(
-            action_frame, text="登録済みリストをCSV出力", command=self.on_export_already_registered_csv,
+            action_frame, text="対象外一覧をCSV出力", command=self.on_export_already_registered_csv,
         ).pack(side=tk.LEFT)
 
         tree_frame = ttk.Frame(window, padding=(10, 5, 10, 0))
         tree_frame.pack(expand=True, fill=tk.BOTH)
 
-        cols = ("lot_no", "product_name", "daily_qty", "report_date", "matched_kitting_list_no", "existing_qty")
+        cols = (
+            "lot_no", "product_name", "daily_qty", "report_date",
+            "matched_kitting_list_no", "existing_qty", "reason",
+        )
         tree = ttk.Treeview(tree_frame, columns=cols, show="headings", selectmode="extended")
         tree.heading("lot_no", text="ロットNo")
         tree.heading("product_name", text="製品名")
         tree.heading("daily_qty", text="CSVの実績数")
         tree.heading("report_date", text="払い出し日（参考）")
         tree.heading("matched_kitting_list_no", text="一致した計画（キッティングリストNo）")
-        tree.heading("existing_qty", text="既存の実績累計値")
+        tree.heading("existing_qty", text="登録済みの数量")
+        tree.heading("reason", text="対象外の理由")
         tree.column("lot_no", width=100, anchor=tk.W)
         tree.column("product_name", width=180, anchor=tk.W)
         tree.column("daily_qty", width=90, anchor=tk.E)
         tree.column("report_date", width=120, anchor=tk.CENTER)
         tree.column("matched_kitting_list_no", width=170, anchor=tk.W)
         tree.column("existing_qty", width=100, anchor=tk.E)
+        tree.column("reason", width=140, anchor=tk.W)
 
         vsb = ttk.Scrollbar(tree_frame, orient="vertical")
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
@@ -1626,6 +1781,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
                 entry.get("report_date") or "",
                 entry.get("matched_kitting_list_no") or "",
                 entry.get("existing_qty") if entry.get("existing_qty") is not None else "",
+                EXCLUSION_REASON_LABELS.get(entry.get("reason"), entry.get("reason") or ""),
             ))
             self._already_registered_by_iid[iid] = entry
 
@@ -1727,12 +1883,12 @@ class ProductionImportStagingWindow(tk.Toplevel):
         出力後も一覧から消えず、必要なら引き続き「戻す」操作が行える）。
         """
         if not self._already_registered_rows:
-            messagebox.showinfo("登録済みリスト", "登録済みと判定された行はありません。", parent=self._already_registered_window)
+            messagebox.showinfo("対象外一覧", "対象外と判定された行はありません。", parent=self._already_registered_window)
             return
 
         save_path = filedialog.asksaveasfilename(
             defaultextension=".csv",
-            initialfile="production_import_already_registered.csv",
+            initialfile="production_import_excluded_rows.csv",
             filetypes=[("CSV files", "*.csv")],
             parent=self._already_registered_window,
         )
@@ -1744,7 +1900,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
                 writer = csv.writer(f)
                 writer.writerow([
                     "lot_no", "product_name", "daily_qty", "report_date",
-                    "matched_kitting_list_no", "existing_qty",
+                    "matched_kitting_list_no", "existing_qty", "reason",
                 ])
                 for entry in self._already_registered_rows:
                     writer.writerow([
@@ -1754,6 +1910,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
                         entry.get("report_date") or "",
                         entry.get("matched_kitting_list_no") or "",
                         entry.get("existing_qty") if entry.get("existing_qty") is not None else "",
+                        EXCLUSION_REASON_LABELS.get(entry.get("reason"), entry.get("reason") or ""),
                     ])
         except Exception as e:
             messagebox.showerror("エラー", f"CSV出力に失敗しました：{e}", parent=self._already_registered_window)

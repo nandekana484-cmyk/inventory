@@ -4,10 +4,12 @@
 使う（削除の安全確認ロジック自体はservices.db_delete_serviceに集約し、本モジュールは
 その結果に応じたダイアログの出し分け・実際の削除呼び出しのみを担当する）。
 """
+import os
 from tkinter import messagebox
 
 from services.db_delete_service import check_delete_safety, delete_database_files
 from models.operation_log import log_operation
+from models.db_lifecycle_log import record_db_lifecycle_event, OPERATION_TYPE_DELETE
 
 
 def confirm_and_delete_database(parent, db_path: str, current_worker=None) -> bool:
@@ -64,11 +66,19 @@ def confirm_and_delete_database(parent, db_path: str, current_worker=None) -> bo
     if not confirmed:
         return False
 
+    folder_name = os.path.basename(os.path.dirname(db_path))
     delete_database_files(db_path)
     log_operation(
         (current_worker or {}).get("name", "unknown"),
         "月別DB削除",
         detail=db_path,
+    )
+    # 削除履歴をmaster.dbへ記録する（2026-10-06追加。上のlog_operation()は
+    # 削除対象のDB自体のoperation_logへの記録のため、db_path削除後は失われる。
+    # master.db側の記録は削除後も残る）。
+    record_db_lifecycle_event(
+        OPERATION_TYPE_DELETE, folder_name,
+        worker_name=(current_worker or {}).get("name", "unknown"),
     )
     messagebox.showinfo("削除完了", f"データベースを削除しました：\n{db_path}", parent=parent)
     return True

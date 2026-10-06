@@ -5,6 +5,7 @@ from tkinter import ttk, messagebox
 from models.workers import get_all_workers, upsert_worker, set_worker_active
 from models.operation_log import log_operation
 from ui.window_utils import center_window
+from ui.worker_registration_window import WorkerRegistrationWindow
 
 
 class WorkerManagementWindow(tk.Toplevel):
@@ -45,7 +46,7 @@ class WorkerManagementWindow(tk.Toplevel):
         # _require_admin()が担う（ボタンのstateを直接書き換えてバイパスされた
         # 場合でも、関数側のチェックで拒否されるようにするため）。
         self._is_admin = self.current_worker.get("role") == "admin"
-        self.title("作業者管理")
+        self.title("アカウント管理")
         self.geometry("640x480")
         center_window(self, parent)
 
@@ -91,6 +92,15 @@ class WorkerManagementWindow(tk.Toplevel):
 
         btn_frame = ttk.Frame(self, padding=10)
         btn_frame.pack(fill=tk.X)
+        # 「新規作成」（2026-10-06追加）：本画面には以前、新規作成機能が
+        # 無かった（既存作業者の編集・有効/無効切替のみ）。ui.worker_
+        # registration_window.WorkerRegistrationWindow（ログイン画面・
+        # メインメニュー「3. 新規アカウント登録」からも開ける、同じ登録画面）
+        # をモーダル的に開き、登録完了後にload_workers()で一覧を更新する
+        # （検証ロジックを本画面側に複製しない）。admin限定の画面のため、
+        # ボタン自体は常にNORMAL（admin以外はこの画面を開けない設計、
+        # モジュールdocstring参照）。
+        ttk.Button(btn_frame, text="新規作成", command=self.on_create_new_worker).pack(side=tk.LEFT, padx=5)
         self.btn_toggle_active = ttk.Button(
             btn_frame, text="選択行の有効/無効を切り替え", command=self.toggle_active, state=tk.DISABLED
         )
@@ -115,6 +125,12 @@ class WorkerManagementWindow(tk.Toplevel):
             )
             return False
         return True
+
+    def on_create_new_worker(self):
+        if not self._require_admin():
+            return
+        win = WorkerRegistrationWindow(self, current_worker=self.current_worker, on_registered=self.load_workers)
+        self.wait_window(win)
 
     def load_workers(self):
         for item in self.tree.get_children():

@@ -8,11 +8,12 @@ from models.workers import get_active_workers
 from ui.main_window import MainWindow
 from ui.worker_registration_window import WorkerRegistrationWindow
 from ui.window_utils import center_window
+from version import get_version_label
 
 class LoginWindow(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("部品在庫管理アプリ - ログイン")
+        self.title(f"部品在庫管理アプリ - ログイン {get_version_label()}")
         self.geometry("350x220")
         self.resizable(False, False)
         center_window(self)
