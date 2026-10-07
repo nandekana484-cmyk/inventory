@@ -515,6 +515,9 @@ STAGING_STATUS_LABELS = {
     "auto_resolvable": "自動確定可能（要確認）",
     "needs_confirmation_existing": "要確認（既に実績あり）",
     "needs_confirmation_duplicate": "要確認（同一計画への重複候補）",
+    # 生産面マスターによる分類（2026-10-07新設、D-9x参照）。
+    "needs_confirmation_side2_wait": "要確認（面2待ち）",
+    "needs_confirmation_side_master_unregistered": "要確認（生産面マスター未登録）",
 }
 
 # 対象外の理由（2026-10-06新設）。ui.production_import_staging_window.

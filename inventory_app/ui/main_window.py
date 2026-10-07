@@ -22,6 +22,7 @@ from ui.inventory_diff_window import InventoryDiffWindow
 from ui.ng_input_window import NgInputWindow
 from ui.parts_attributes_import_window import PartsAttributesImportWindow
 from ui.board_structure_import_window import BoardStructureImportWindow
+from ui.production_side_master_window import ProductionSideMasterWindow
 from ui.wip_expansion_window import WipExpansionWindow
 from ui.worker_management_window import WorkerManagementWindow
 from ui.worker_registration_window import WorkerRegistrationWindow
@@ -99,7 +100,19 @@ class MainWindow(tk.Tk):
         # （winfo_reqwidth()実測値920前後に基づく）。
         # 共有フォルダ関連の2ボタンはヘッダー行の右上へ移動したため、
         # 「データベース選択」領域は再び1段のみとなり、高さは元の940x600に戻す。
-        self.geometry("940x600")
+        # 幅は940pxのままだと「データベース選択」行（db_select_frame）が
+        # 要求する幅（実測reqwidth=986px、admin/operator・未選択/選択後/
+        # 在庫値出力済み警告表示のいずれでも一定）を46px下回り、右側が見切れて
+        # いた（§20.9の申し送り、2026-10-07解消）。実測986pxに余白34pxを
+        # 加えた1020pxへ広げた（986pxぎりぎりだと、将来わずかな文言変更・
+        # フォントのレンダリング差で再び見切れる余地が残るため、1行のボタン・
+        # チェックボックスの隙間（padx指定）と同程度の余白を確保した）。
+        # 高さ：生産面マスター追加（2026-10-07、D-9x）でadmin表示時の要求高さが
+        # 599px（600pxまで残り1px）まで迫ったため、わずかな文言・フォントの
+        # レンダリング差でも見切れない余裕を持たせ、620pxへ広げた
+        # （タスク指示「600pxに収まらない場合は高さを調整」に対応。
+        # 600px自体は厳密には超えていなかったが、余裕が無いため安全側に調整）。
+        self.geometry("1020x620")
         center_window(self)
 
         # メインメニューから開く画面の多重表示防止用：key -> 開いているToplevelインスタンス。
@@ -327,17 +340,27 @@ class MainWindow(tk.Tk):
         )
         btn_parts_attributes_import.pack(fill=tk.X, pady=5)
 
+        # 生産面マスター（2026-10-07新設）。表示条件・権限は構成基板数マスター・
+        # 基板丁数マスターと同じ（role不問で常に表示）。これに伴い、既存の
+        # 「3. 新規アカウント登録」「4. アカウント管理」は番号を1つずつ
+        # 後ろへずらした（D-9x参照）。
+        btn_production_side_master = ttk.Button(
+            master_frame, text="3. 生産面マスター", command=self.open_production_side_master
+        )
+        btn_production_side_master.pack(fill=tk.X, pady=5)
+
         # 作業者登録（新規登録のみ、role不問で常に表示）は、ui/login_window.py
         # （ログイン前）と同じ導線をログイン後にも提供する（2026-10-03追加）。
-        # 表記は「3. 新規アカウント登録」（2026-10-06改称、D-8x参照。画面
-        # 自体やこの画面以外の「作業者」表記は変更していない）。
+        # 表記は「4. 新規アカウント登録」（2026-10-07、生産面マスター追加に伴い
+        # 3→4へ番号変更。画面自体やこの画面以外の「作業者」表記は変更していない）。
         btn_worker_registration = ttk.Button(
-            master_frame, text="3. 新規アカウント登録", command=self.open_worker_registration
+            master_frame, text="4. 新規アカウント登録", command=self.open_worker_registration
         )
         btn_worker_registration.pack(fill=tk.X, pady=5)
 
-        # 「4. アカウント管理」（既存作業者の編集・有効/無効切替、旧「3. 作業者
-        # 管理」。2026-10-06改称）は、admin役割の作業者にのみメニューへ表示する
+        # 「5. アカウント管理」（既存作業者の編集・有効/無効切替、旧「3. 作業者
+        # 管理」→「4. アカウント管理」。2026-10-07、生産面マスター追加に伴い
+        # 4→5へ番号変更）は、admin役割の作業者にのみメニューへ表示する
         # （2026-10-03追加、表示条件自体は変更していない）。operatorの場合は
         # ボタン自体を生成・packしない（CANONICAL_DESIGN_DECISIONS.md参照）。
         # ボタンが存在しない場合に備え、self.btn_worker_managementはNoneで
@@ -345,7 +368,7 @@ class MainWindow(tk.Tk):
         self.btn_worker_management = None
         if current_worker.get("role") == "admin":
             self.btn_worker_management = ttk.Button(
-                master_frame, text="4. アカウント管理", command=self.open_worker_management
+                master_frame, text="5. アカウント管理", command=self.open_worker_management
             )
             self.btn_worker_management.pack(fill=tk.X, pady=5)
 
@@ -399,7 +422,7 @@ class MainWindow(tk.Tk):
             btn_kitting_import, btn_kitting_production, btn_inventory_input,
             btn_theoretical_import, btn_inventory_diff, btn_ng_input, btn_wip_expansion,
             btn_operation_log,
-            btn_parts_attributes_import,
+            btn_parts_attributes_import, btn_production_side_master,
             btn_worker_registration, btn_board_structure_import, btn_logout,
         ]
         # btn_pdf_ocr_importは意図的にここへ含めない（常に無効化、上記の
@@ -425,7 +448,8 @@ class MainWindow(tk.Tk):
             btn_kitting_import, btn_kitting_production, btn_inventory_input,
             btn_theoretical_import, btn_inventory_diff, btn_ng_input, btn_wip_expansion,
             btn_operation_log,
-            btn_board_structure_import, btn_parts_attributes_import, btn_worker_registration,
+            btn_board_structure_import, btn_parts_attributes_import, btn_production_side_master,
+            btn_worker_registration,
             self.btn_backup_databases,
         ]
         if self.btn_worker_management is not None:
@@ -809,6 +833,12 @@ class MainWindow(tk.Tk):
         self._open_singleton_window(
             "board_structure_import",
             lambda: BoardStructureImportWindow(self, current_worker=self.current_worker),
+        )
+
+    def open_production_side_master(self):
+        self._open_singleton_window(
+            "production_side_master",
+            lambda: ProductionSideMasterWindow(self, current_worker=self.current_worker),
         )
 
     def open_worker_management(self):

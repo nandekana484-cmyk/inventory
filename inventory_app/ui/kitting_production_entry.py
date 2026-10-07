@@ -23,7 +23,10 @@ from services.csv_format_detection import (
     PLAN_CSV_SIGNATURE_COLUMNS, PLAN_CSV_FORMAT_LABEL,
 )
 from models.production_import_staging import list_pending_csv_import_rows
-from models.kitting_plan import list_active_plan_items, find_opposite_side_plan, find_plan_item_by_kitting_no
+from models.kitting_plan import (
+    list_active_plan_items, find_opposite_side_plan, find_plan_item_by_kitting_no,
+    classify_side1_only_plan, SIDE1_ONLY_CLASS_WAITING_SIDE2, SIDE1_ONLY_CLASS_UNREGISTERED,
+)
 from models.production import list_daily_production_today
 from models.ng_declarations import save_ng_declaration, get_ng_declaration
 from models.board_structure_master import get_board_structure
@@ -208,20 +211,67 @@ class KittingProductionEntryWindow(tk.Toplevel):
         # info_frame・entry_frameは289px/147pxのまま変化せず、hist_frameのみ
         # 265px→234px（約1行分）に縮み、登録ボタン等は引き続きウィンドウ内に
         # 収まることを確認済み。
-        self.geometry("1150x700")
+        # 幅（2026-10-07修正）：以前の1150pxでは、右ペイン（計画一覧・絞り込み
+        # メニュー）の実測必要幅965pxに対し、左右のペイン配分の仕組み上、
+        # 既定サイズ・最大化のどちらでも右ペインが484px程度しか確保できず
+        # 常に481px不足していた（create_widgets()のPanedWindow導入コメント
+        # 参照）。左ペインの初期幅300px＋右ペインの必要幅985px（余裕込み）＋
+        # 分割バー・余白を踏まえ、1350pxへ広げた。高さ（700px）は見切れが
+        # 無いため変更していない。
+        self.geometry("1350x700")
         center_window(self, parent)
+        # 開いた直後から最大化状態にする（2026-10-07追加、ui.ng_input_window.
+        # NgInputWindowと同じ考え方・同じ理由）。本ウインドウは計画一覧の
+        # データを別スレッドで事前取得した後にui.main_window.MainWindow.
+        # open_kitting_production_entry()から生成される（本__init__自体が
+        # 読み込み完了後に初めて呼ばれる）ため、ここでstate("zoomed")を呼べば
+        # 「小さく表示されてから広がる」動きにはならない。
+        self.state("zoomed")
 
         self.create_widgets()
 
+    # 右ペイン（計画一覧、絞り込みメニュー込み）が必要とする最小幅（実測、
+    # plan_filter_frame.winfo_reqwidth()で確認した965pxに、将来の文言追加・
+    # フォントのレンダリング差に対する余裕を加えた値）。_create_paned_
+    # layout()が初期サッシュ位置を計算する際に使う。
+    _RIGHT_PANE_MIN_WIDTH_PX = 985
+    # 左ペイン（計画情報・実績入力欄）の初期幅。info_frame・entry_frameの
+    # 実測reqwidth（214px/198px、パディング込み）が切れない範囲で、かつ
+    # 「右側を広く」という要望に沿って必要最小限に狭くした値。
+    _LEFT_PANE_INITIAL_WIDTH_PX = 300
+
     def create_widgets(self):
-        container = ttk.Frame(self)
+        # 左右のペイン配分を、利用者がドラッグで調整できるPanedWindow（分割
+        # バー）にした（2026-10-07修正。以前は単純なpack(side=LEFT/RIGHT,
+        # expand=True)で、Tkのpack実装上、両ペインの自然要求幅（左側の
+        # 日次実績履歴一覧・右側の絞り込みメニュー）の比率でほぼ固定的に
+        # 幅が決まり、ウインドウを広げても（既定サイズ→最大化）右ペインの
+        # 幅がほとんど変化しなかった（実測：いずれも左1037px・右484px、
+        # 絞り込みメニューの必要幅965pxに対し481px不足）。初期サッシュ位置を
+        # 明示的に設定することで、起動直後から右側に十分な幅を確保する。
+        container = ttk.Panedwindow(self, orient=tk.HORIZONTAL)
         container.pack(expand=True, fill=tk.BOTH)
 
         left_frame = ttk.Frame(container)
-        left_frame.pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
-
         right_frame = ttk.Labelframe(container, text="計画一覧", padding=5)
-        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(0, 15), pady=5)
+        # weight：ウインドウサイズ変更時に余剰・不足分をどちらのペインが
+        # 多く吸収するかの比率（PanedWindowの仕様）。右側（絞り込みメニュー・
+        # 計画一覧）を優先的に広げたいため、右を大きくする。
+        container.add(left_frame, weight=1)
+        container.add(right_frame, weight=4)
+
+        # 初期サッシュ位置を明示的に設定する（ウィジェット生成直後はまだ
+        # ウインドウが実サイズを持たないため、update_idletasks()で現在の
+        # ウインドウ幅を確定させてから計算する）。ウインドウ幅が狭い場合
+        # （将来的な最小サイズ等）でも、右ペインが不自然にゼロ幅になったり
+        # しないよう、下限・上限を設ける。
+        self.update_idletasks()
+        total_width = max(self.winfo_width(), 1)
+        left_width = min(
+            self._LEFT_PANE_INITIAL_WIDTH_PX,
+            max(100, total_width - self._RIGHT_PANE_MIN_WIDTH_PX),
+        )
+        container.sashpos(0, left_width)
 
         # 計画情報表示エリア
         # キッティングリストNo.検索欄は廃止し、右ペインの計画一覧（tree_plan_list、
@@ -421,6 +471,15 @@ class KittingProductionEntryWindow(tk.Toplevel):
         self.tree_plan_list.column("diff", width=80, anchor=tk.E)
         self.tree_plan_list.column("lot_completed", width=100, anchor=tk.E)
         self.tree_plan_list.column("lot_remaining", width=100, anchor=tk.E)
+
+        # 面1のみの計画（同一(lot_no, setup_file_no)に面2の計画が無い計画）の
+        # 生産面マスターによる分類（2026-10-07新設、D-9x参照）。"a"（片面の
+        # 製品）は通常表示のまま、"b"（面2待ち）・"c"（生産面マスター未登録）
+        # のみ背景色で区別する（ui.production_import_staging_window.
+        # ProductionImportStagingWindow._create_staging_widgets()の
+        # tree_candidatesタグと同じ配色）。
+        self.tree_plan_list.tag_configure("needs_side2_wait", background="#cfe2ff")
+        self.tree_plan_list.tag_configure("side_master_unregistered", background="#e2e3e5")
 
         vsb_plan = ttk.Scrollbar(right_frame, orient="vertical", command=self.tree_plan_list.yview)
         self.tree_plan_list.configure(yscrollcommand=vsb_plan.set)
@@ -757,7 +816,14 @@ class KittingProductionEntryWindow(tk.Toplevel):
                 f"{diff:.0f}",
                 f"{lot_completed:.0f}",
                 f"{lot_remaining:.0f}",
-                # 表示列（cols_plan）には含まれない末尾の隠し要素。
+                # 表示列（cols_plan）には含まれない末尾の隠し要素その1：生産面
+                # マスターによる分類（2026-10-07新設、D-9x参照。"a"/"b"/"c"/
+                # None）。_populate_plan_list_tree()がこの行のタグ（背景色）に
+                # 使う。production_sideより前に置く（production_sideは
+                # apply_plan_filters()がrow[-1]で参照する既存の契約のため、
+                # 末尾の位置を変えない）。
+                str(classify_side1_only_plan(plan_item) or ""),
+                # 表示列（cols_plan）には含まれない末尾の隠し要素その2。
                 # 「入力済みを隠す」フィルタ（apply_plan_filters()）が、この行の
                 # (setup_file_no, production_side)を鍵にcalculate_lot_completion()の
                 # file_actualsを引く際に使う。_populate_plan_list_tree()でTreeviewへ
@@ -783,12 +849,20 @@ class KittingProductionEntryWindow(tk.Toplevel):
             self.tree_plan_list.delete(item)
 
         self._plan_row_iid_by_kitting_no = {}
-        # rowsの各要素はcols_plan（表示列）に加え、末尾にフィルタ専用の隠し要素
-        # （production_side、_fetch_plan_list_rows()参照）を持つ場合がある。
+        # rowsの各要素はcols_plan（表示列）に加え、末尾に2つの隠し要素
+        # （分類・production_side、_fetch_plan_list_rows()参照）を持つ場合がある。
         # Treeviewへはcols_plan分だけをスライスして渡す（余分な値を渡さない）。
         col_count = len(self._plan_col_index)
         for values in rows:
-            iid = self.tree_plan_list.insert("", tk.END, values=values[:col_count])
+            classification = values[col_count] if len(values) > col_count else ""
+            tag = (
+                "needs_side2_wait" if classification == "b"
+                else "side_master_unregistered" if classification == "c"
+                else ""
+            )
+            iid = self.tree_plan_list.insert(
+                "", tk.END, values=values[:col_count], tags=(tag,) if tag else (),
+            )
             self._plan_row_iid_by_kitting_no[(values[0], values[1])] = iid
 
     def load_plan_list(self):
@@ -876,7 +950,8 @@ class KittingProductionEntryWindow(tk.Toplevel):
                 f"{diff:.0f}",
                 f"{lot_completed:.0f}",
                 f"{lot_remaining:.0f}",
-                # _fetch_plan_list_rows()と同じ末尾の隠し要素（production_side）。
+                # _fetch_plan_list_rows()と同じ末尾の隠し要素（分類・production_side）。
+                str(classify_side1_only_plan(plan_item) or ""),
                 str(plan_item.get("production_side") or ""),
             )
 
@@ -889,6 +964,13 @@ class KittingProductionEntryWindow(tk.Toplevel):
             if iid is not None and self.tree_plan_list.exists(iid):
                 for col, value in zip(plan_list_cols, new_row):
                     self.tree_plan_list.set(iid, col, value)
+                classification = new_row[len(plan_list_cols)]
+                tag = (
+                    "needs_side2_wait" if classification == "b"
+                    else "side_master_unregistered" if classification == "c"
+                    else ""
+                )
+                self.tree_plan_list.item(iid, tags=(tag,) if tag else ())
 
     def _plan_filter_predicates(self):
         """
@@ -1893,6 +1975,12 @@ class KittingProductionEntryWindow(tk.Toplevel):
                     f"NG{ng_qty:.0f} = {total:.0f}（予定生産数{planned_qty:.0f}と不一致）"
                 )
 
+        # 面1のみの計画（同一(lot_no, setup_file_no)に面2の計画が無い計画）の
+        # 生産面マスターによる分類（2026-10-07新設、D-9x参照）。手入力の登録
+        # フローでも、b（面2待ち）・c（生産面マスター未登録）の場合は確認
+        # ダイアログで理由を示す（登録そのものは禁止しない）。
+        side1_only_classification = classify_side1_only_plan(self.current_plan)
+
         return {
             "daily_qty": daily_qty,
             "existing_daily_qty": existing_daily_qty,
@@ -1900,6 +1988,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
             "new_report_date": new_report_date,
             "save_qty_by_side": save_qty_by_side,
             "mismatch_lines": mismatch_lines,
+            "side1_only_classification": side1_only_classification,
         }
 
     def _show_registration_confirm_dialog(self, preview):
@@ -1937,6 +2026,20 @@ class KittingProductionEntryWindow(tk.Toplevel):
             lines.append("")
             lines.append("以下の面で「実績＋NG数量」が計画数と一致していません：")
             lines.extend(f"　{line}" for line in preview["mismatch_lines"])
+
+        side1_only_classification = preview.get("side1_only_classification")
+        if side1_only_classification == SIDE1_ONLY_CLASS_WAITING_SIDE2:
+            lines.append("")
+            lines.append(
+                "・生産面マスターにより、この計画には後行面（面2）があることが"
+                "分かっています（面2はまだ計画データに取り込まれていません）。"
+            )
+        elif side1_only_classification == SIDE1_ONLY_CLASS_UNREGISTERED:
+            lines.append("")
+            lines.append(
+                "・この計画のセットアップファイルNo・実装ラインの組み合わせは、"
+                "生産面マスターに登録がありません（後行面があるかどうか不明です）。"
+            )
 
         # selfが最小化状態だと、transient(self)したダイアログがstate()="withdrawn"
         # のまま実際には表示されない（ui.plan_candidate_dialog._show_candidate_list_dialog()

@@ -76,6 +76,9 @@ class WipExpansionWindow(tk.Toplevel):
         self.title("仕掛展開")
         self.geometry("1150x600")
         center_window(self, parent)
+        # 開いた直後から最大化状態にする（2026-10-07追加、ui.ng_input_window.
+        # NgInputWindowと同じ考え方・同じ理由）。
+        self.state("zoomed")
 
         self.create_widgets()
 

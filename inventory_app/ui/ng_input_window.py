@@ -108,6 +108,15 @@ class NgInputWindow(tk.Toplevel):
         self.title("NG（仕損）入力")
         self.geometry("1150x600")
         center_window(self, parent)
+        # 開いた直後から最大化状態にする（2026-10-07追加）。center_window()が
+        # 設定した"1150x600"＋中央座標は、Windowsの最大化/復元の仕組みにより
+        # 「復元後（最大化解除後）の既定サイズ・位置」としてそのまま使われる
+        # （state("zoomed")を解除すると、この直前のgeometry()の値に戻る）。
+        # center_window()内部のwithdraw()〜deiconify()は非表示のまま行われる
+        # ため、ここでstate("zoomed")を呼んでも「小さく表示されてから広がる」
+        # ような見え方にはならない。タイトルバーは残る（Windowsの通常の
+        # 最大化と同じ状態）。
+        self.state("zoomed")
 
         self.create_widgets()
 

@@ -13,7 +13,10 @@ import config
 import sqlite3
 import os
 
-from models.kitting_plan import list_plan_batches, mark_batch_deleted
+from models.kitting_plan import (
+    list_plan_batches, mark_batch_deleted,
+    find_newly_hidden_side1_plans, find_all_hidden_side1_plans_with_production,
+)
 from models.operation_log import log_operation
 from ui.loading_window import LoadingWindow
 from ui.window_utils import center_window
@@ -118,7 +121,68 @@ class KittingPlanImportWindow(tk.Toplevel):
         # 変更していない）。
         btn_frame = ttk.Frame(self, padding=10)
         btn_frame.pack(fill=tk.X)
+        # 面1に実績を登録した後で面2が追加され、一覧から隠れている計画を
+        # いつでも確認できる手段（2026-10-07新設、D-9x §5参照。取込時の自動
+        # 通知とは独立に、既存の状態を棒卸し的に確認する用途）。
+        ttk.Button(
+            btn_frame, text="面1実績の隠れ状況を確認", command=self.on_show_hidden_side1_status,
+        ).pack(side=tk.LEFT)
         ttk.Button(btn_frame, text="閉じる", command=self.destroy).pack(side=tk.RIGHT, padx=5)
+
+    def on_show_hidden_side1_status(self):
+        hidden = find_all_hidden_side1_plans_with_production()
+        self._show_hidden_side1_notification(hidden, title_prefix="面1実績の隠れ状況")
+
+    def _show_hidden_side1_notification(self, hidden, title_prefix="取込完了："):
+        """
+        面2の計画が追加されたことで、実績が登録済みの面1の計画が一覧から
+        隠れることになった組を一覧表示する（2026-10-07新設、D-9x §5参照）。
+        実績の付け替えは自動では行わない（表示のみ）。
+        """
+        win = tk.Toplevel(self)
+        win.title(f"{title_prefix}面1実績の隠れ状況")
+        win.geometry("760x420")
+        center_window(win, self)
+
+        if not hidden:
+            ttk.Label(win, text="該当する計画はありません。", padding=15).pack()
+            ttk.Button(win, text="閉じる", command=win.destroy).pack(pady=(0, 15))
+            return
+
+        ttk.Label(
+            win, padding=10,
+            text=(
+                f"面2の計画が追加されたことで、実績が登録済みの面1の計画が一覧から"
+                f"隠れている組：{len(hidden)}件\n"
+                "実績の付け替えは自動では行っていません。必要に応じて生産実績入力"
+                "画面から確認・対応してください。"
+            ),
+            wraplength=720, justify=tk.LEFT,
+        ).pack(fill=tk.X)
+
+        cols = ("lot_no", "side1_kitting_list_no", "production", "side2_kitting_list_no")
+        tree = ttk.Treeview(win, columns=cols, show="headings")
+        tree.heading("lot_no", text="ロットNo")
+        tree.heading("side1_kitting_list_no", text="面1の計画No")
+        tree.heading("production", text="面1に登録済みの実績（日付・数量）")
+        tree.heading("side2_kitting_list_no", text="追加された面2の計画No")
+        tree.column("lot_no", width=100, anchor=tk.W)
+        tree.column("side1_kitting_list_no", width=160, anchor=tk.W)
+        tree.column("production", width=220, anchor=tk.W)
+        tree.column("side2_kitting_list_no", width=160, anchor=tk.W)
+        vsb = ttk.Scrollbar(win, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        tree.pack(expand=True, fill=tk.BOTH, padx=10, pady=(0, 10))
+        for item in hidden:
+            production_text = ", ".join(
+                f"{p['report_date']}:{p['daily_qty']:g}" for p in item["production_rows"]
+            )
+            tree.insert("", tk.END, values=(
+                item["lot_no"], item["side1_kitting_list_no"], production_text, item["side2_kitting_list_no"],
+            ))
+
+        ttk.Button(win, text="閉じる", command=win.destroy).pack(pady=(0, 10))
 
     def browse_file(self):
         path = filedialog.askopenfilename(filetypes=[("CSV files","*.csv"),("All files","*.*")], parent=self.winfo_toplevel())
@@ -225,6 +289,15 @@ class KittingPlanImportWindow(tk.Toplevel):
                 detail=f"バッチID: {batch_id} / {count}件（{filename}）",
             )
             messagebox.showinfo("取込完了", msg, parent=self.winfo_toplevel())
+
+            # 今回の取込で追加された面2の計画によって、実績が登録済みの面1の
+            # 計画が一覧から隠れることになった組を通知する（2026-10-07新設、
+            # D-9x §5参照。実績の付け替えは自動では行わない）。
+            if batch_id is not None:
+                hidden = find_newly_hidden_side1_plans(batch_id)
+                if hidden:
+                    self._show_hidden_side1_notification(hidden)
+
             self._load_batch_list(select_batch_id=batch_id)
 
         self.after(200, self._poll_result_queue)

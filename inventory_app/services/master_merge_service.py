@@ -4,9 +4,10 @@
 から、現在のmaster.db（config.MASTER_DB_PATH）に不足しているレコードだけを
 追加するサービス。
 
-対象5テーブル：board_structure_master・parts_attributes・workers・parts・
+対象6テーブル：board_structure_master・parts_attributes・workers・parts・
 final_products（マスタDB分離の対象として確定した5テーブル、
-CANONICAL_DESIGN_DECISIONS.md D-38参照）。
+CANONICAL_DESIGN_DECISIONS.md D-38参照）・production_side_master
+（生産面マスタ、2026-10-07新設、D-9x参照）。
 
 方針（ユーザー確定）：
 - 主キー（parts_attributesのみ、実体はUNIQUE制約のpart_no。他4テーブルは
@@ -25,6 +26,7 @@ from models.board_structure_master import upsert_board_structure
 from models.parts_attributes import upsert_parts_attributes
 from models.workers import upsert_worker
 from models.master import upsert_part, upsert_product
+from models.production_side_master import upsert_production_side
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +70,19 @@ _TABLE_SPECS = [
         "table": "final_products",
         "key_column": "product_id",
         "upsert": lambda row: upsert_product(row["product_id"], row["product_name"]),
+    },
+    {
+        "table": "production_side_master",
+        # 宣言上のPRIMARY KEYはrow_key（(setup_file_no, mounting_line,
+        # production_side)の正規化済み値から組み立てた合成キー、models.
+        # production_side_master.py参照）。upsert_production_side()は
+        # 内部で正規化・row_key組み立てを再度行うが、バックアップ側から
+        # 読んだ値は既に正規化済みのため冪等（結果は変わらない）。
+        "key_column": "row_key",
+        "upsert": lambda row: upsert_production_side(
+            row["setup_file_no"], row["mounting_line"], row["production_side"],
+            row.get("bond_flag"), row.get("common_parts_group"), row.get("line_priority"), row.get("takt_time"),
+        ),
     },
 ]
 

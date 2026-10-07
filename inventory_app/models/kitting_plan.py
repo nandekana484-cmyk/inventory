@@ -3,7 +3,20 @@ import sqlite3
 from datetime import datetime
 
 from models.db_common import get_connection
-from models.production import get_app_cumulative_qty_bulk
+from models.production import get_app_cumulative_qty_bulk, list_daily_production_by_kitting_no
+from models.production_side_master import get_second_side_status
+
+# 面1のみの計画（同一(lot_no, setup_file_no)に面2の計画が無い計画）の分類
+# （2026-10-07新設、classify_side1_only_plan()参照）。
+SIDE1_ONLY_CLASS_SINGLE_SIDE = "a"       # 片面の製品（生産面マスターで後行面なし）
+SIDE1_ONLY_CLASS_WAITING_SIDE2 = "b"     # 面2待ち（生産面マスターで後行面あり）
+SIDE1_ONLY_CLASS_UNREGISTERED = "c"      # 生産面マスター未登録
+
+SIDE1_ONLY_CLASS_LABELS = {
+    SIDE1_ONLY_CLASS_SINGLE_SIDE: "片面の製品",
+    SIDE1_ONLY_CLASS_WAITING_SIDE2: "面2待ち",
+    SIDE1_ONLY_CLASS_UNREGISTERED: "生産面マスター未登録",
+}
 
 
 def init_kitting_plan_tables():
@@ -641,6 +654,219 @@ def list_active_plan_items(kitting_list_no: str = None, lot_no: str = None,
         result.append(item)
 
     return result
+
+
+def classify_side1_only_plan(plan_item: dict):
+    """
+    面1のみの計画（同一(lot_no, setup_file_no)に面2の計画が無い計画）を、
+    生産面マスター（models.production_side_master）で分類する
+    （2026-10-07新設、D-9x参照）。
+
+    a（SIDE1_ONLY_CLASS_SINGLE_SIDE）：生産面マスターに後行面なしの登録がある
+       → 片面の製品。
+    b（SIDE1_ONLY_CLASS_WAITING_SIDE2）：生産面マスターに後行面ありの登録がある
+       → 面2待ち（まだ計画データに面2が取り込まれていないだけ）。
+    c（SIDE1_ONLY_CLASS_UNREGISTERED）：生産面マスターに登録が無い
+       → 生産面マスター未登録。
+
+    plan_itemはkitting_plan_items 1行分の辞書（list_active_plan_items()・
+    find_matching_plan_items()が返す形式）を想定する。
+
+    plan_item["production_side"]が"1"でない場合（面2の計画、またはそれ以外の
+    値）はNoneを返す（分類対象外）。production_sideが"1"の計画は、
+    list_active_plan_items()の既存の「2回目計画があれば1回目除外」ロジック
+    （D-8）を経由して得られたものである限り、呼び出し時点で同一
+    (lot_no, setup_file_no)に面2の計画が存在しないことが保証されている
+    （面2が存在すれば、その時点でこの面1の行自体がlist_active_plan_items()
+    の結果から既に除外されているため）。そのため、本関数は計画データ側で
+    「面2が無いこと」を改めて確認する必要が無く、生産面マスターの参照のみで
+    分類できる。
+
+    実装ラインはplan_item["mounting_line"]列の値を使う（kitting_list_noの
+    文字列分解ではない。実データ調査で、kitting_list_noの3番目の区切りと
+    mounting_line列が一致しない行が3526件中20件あることを確認済み、
+    CANONICAL_DESIGN_DECISIONS.md D-93参照）。
+    """
+    production_side = str(plan_item.get("production_side") or "").strip()
+    if production_side != "1":
+        return None
+
+    status = get_second_side_status(plan_item.get("setup_file_no"), plan_item.get("mounting_line"))
+    if status is True:
+        return SIDE1_ONLY_CLASS_WAITING_SIDE2
+    elif status is False:
+        return SIDE1_ONLY_CLASS_SINGLE_SIDE
+    else:
+        return SIDE1_ONLY_CLASS_UNREGISTERED
+
+
+def find_master_plan_discrepancies() -> list:
+    """
+    生産面マスターと計画データ（kitting_plan_items）の食い違いを検出する
+    （2026-10-07新設、D-9x §4参照。画面・判定のどちらからも参照されない、
+    利用者が内容を確認するための一覧専用）。
+
+    「マスターでは後行面なしだが、計画データには面2の計画が存在する」組を
+    全件返す（マスターが古い・未更新である可能性が高いケース。計画データを
+    優先する既存方針（D-8）自体は変更しない。あくまで食い違いの事実を
+    利用者が確認できるようにするための一覧）。
+
+    戻り値：[{"setup_file_no", "mounting_line", "lot_nos"（面2の計画がある
+    ロットNoのリスト）}, ...]（setup_file_no, mounting_line の昇順）。
+    """
+    from models.production_side_master import list_production_side_groups
+
+    with get_connection() as con:
+        plan_rows = [dict(r) for r in con.execute(
+            "SELECT lot_no, setup_file_no, mounting_line, production_side FROM kitting_plan_items "
+            "WHERE COALESCE(is_active,1)=1 AND production_side = '2'"
+        )]
+
+    side2_by_file_line = {}
+    for row in plan_rows:
+        key = (row["setup_file_no"], row["mounting_line"])
+        side2_by_file_line.setdefault(key, []).append(row["lot_no"])
+
+    discrepancies = []
+    for group in list_production_side_groups():
+        if group["has_side2"]:
+            continue
+        key = (group["setup_file_no"], group["mounting_line"])
+        if key in side2_by_file_line:
+            discrepancies.append({
+                "setup_file_no": group["setup_file_no"], "mounting_line": group["mounting_line"],
+                "lot_nos": sorted(set(side2_by_file_line[key])),
+            })
+
+    discrepancies.sort(key=lambda d: (d["setup_file_no"], d["mounting_line"]))
+    return discrepancies
+
+
+def find_unregistered_production_side_combinations() -> list:
+    """
+    計画データ（kitting_plan_items）に存在するが、生産面マスターに全く登録が
+    無い(setup_file_no, mounting_line)の組を検出する（2026-10-07新設、
+    D-9x §4参照）。生産面マスターへの登録に使えるよう、CSV出力の元データとしても
+    使う（ui.production_side_master_window参照）。
+
+    戻り値：[{"setup_file_no", "mounting_line"}, ...]（昇順）。
+    """
+    from models.production_side_master import normalize_setup_file_no, normalize_mounting_line, get_second_side_status
+
+    with get_connection() as con:
+        plan_rows = [dict(r) for r in con.execute(
+            "SELECT DISTINCT setup_file_no, mounting_line FROM kitting_plan_items WHERE COALESCE(is_active,1)=1"
+        )]
+
+    seen = set()
+    result = []
+    for row in plan_rows:
+        norm_file = normalize_setup_file_no(row["setup_file_no"])
+        norm_line = normalize_mounting_line(row["mounting_line"])
+        key = (norm_file, norm_line)
+        if key in seen:
+            continue
+        seen.add(key)
+        if get_second_side_status(norm_file, norm_line) is None:
+            result.append({"setup_file_no": norm_file, "mounting_line": norm_line})
+
+    result.sort(key=lambda r: (r["setup_file_no"], r["mounting_line"]))
+    return result
+
+
+def find_all_hidden_side1_plans_with_production() -> list:
+    """
+    面2の計画が存在するために一覧（list_active_plan_items()、D-8のロジック）
+    から隠れている面1の計画のうち、その面1の計画に実績（production_daily）が
+    既に登録されているものを全件検出する（2026-10-07新設、D-9x §5参照）。
+
+    面1に実績を登録した後で面2が追加された場合、実績の付け替えは自動では
+    行わない（利用者の方針）。本関数は、現在そのような状態になっている計画を
+    いつでも確認できる手段として提供する（計画CSV取込時の通知（本ファイルの
+    find_newly_hidden_side1_plans()）とは独立に、既存の状態を棒卸し的に確認
+    する用途）。
+
+    戻り値：[{"lot_no", "setup_file_no", "mounting_line",
+              "side1_kitting_list_no", "side2_kitting_list_no",
+              "production_rows": [{"report_date", "daily_qty"}, ...]}, ...]
+    """
+    with get_connection() as con:
+        all_items = [dict(r) for r in con.execute(
+            "SELECT lot_no, setup_file_no, mounting_line, production_side, kitting_list_no "
+            "FROM kitting_plan_items WHERE COALESCE(is_active,1)=1"
+        )]
+
+    groups = {}
+    for item in all_items:
+        key = (item["lot_no"], item["setup_file_no"])
+        groups.setdefault(key, []).append(item)
+
+    results = []
+    for (lot_no, setup_file_no), items in groups.items():
+        side1_items = [i for i in items if str(i["production_side"]).strip() == "1"]
+        side2_items = [i for i in items if str(i["production_side"]).strip() == "2"]
+        if not side1_items or not side2_items:
+            continue
+        for side1 in side1_items:
+            production = list_daily_production_by_kitting_no(side1["kitting_list_no"], lot_no)
+            if not production:
+                continue
+            for side2 in side2_items:
+                results.append({
+                    "lot_no": lot_no, "setup_file_no": setup_file_no,
+                    "mounting_line": side1.get("mounting_line"),
+                    "side1_kitting_list_no": side1["kitting_list_no"],
+                    "side2_kitting_list_no": side2["kitting_list_no"],
+                    "production_rows": [
+                        {"report_date": p["report_date"], "daily_qty": p["daily_qty"]} for p in production
+                    ],
+                })
+
+    results.sort(key=lambda r: (r["lot_no"], r["setup_file_no"]))
+    return results
+
+
+def find_newly_hidden_side1_plans(plan_batch_id: int) -> list:
+    """
+    plan_batch_id（今回のキッティング計画CSV取込1回分）で新規に追加された
+    面2の計画によって、既存の面1の計画（実績が登録済み）が一覧から隠れる
+    ことになった組を検出する（2026-10-07新設、D-9x §5参照、取込完了時の
+    通知用）。実績の付け替えは自動では行わない。
+
+    戻り値はfind_all_hidden_side1_plans_with_production()と同じ形式だが、
+    「今回の取込で追加された面2の計画」に限定する。
+    """
+    with get_connection() as con:
+        new_side2_items = [dict(r) for r in con.execute(
+            "SELECT lot_no, setup_file_no, mounting_line, kitting_list_no FROM kitting_plan_items "
+            "WHERE plan_batch_id = ? AND production_side = '2' AND COALESCE(is_active,1)=1",
+            (plan_batch_id,),
+        )]
+
+    results = []
+    for side2 in new_side2_items:
+        with get_connection() as con:
+            side1_items = [dict(r) for r in con.execute(
+                "SELECT kitting_list_no FROM kitting_plan_items "
+                "WHERE lot_no = ? AND setup_file_no = ? AND production_side = '1' AND COALESCE(is_active,1)=1",
+                (side2["lot_no"], side2["setup_file_no"]),
+            )]
+        for side1 in side1_items:
+            production = list_daily_production_by_kitting_no(side1["kitting_list_no"], side2["lot_no"])
+            if not production:
+                continue
+            results.append({
+                "lot_no": side2["lot_no"], "setup_file_no": side2["setup_file_no"],
+                "mounting_line": side2.get("mounting_line"),
+                "side1_kitting_list_no": side1["kitting_list_no"],
+                "side2_kitting_list_no": side2["kitting_list_no"],
+                "production_rows": [
+                    {"report_date": p["report_date"], "daily_qty": p["daily_qty"]} for p in production
+                ],
+            })
+
+    results.sort(key=lambda r: (r["lot_no"], r["setup_file_no"]))
+    return results
 
 
 def create_plan_version(
