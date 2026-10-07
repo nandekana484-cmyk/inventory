@@ -79,7 +79,8 @@ from ui.plan_candidate_dialog import (
     _sort_candidates_by_closeness,
     _is_large_qty_diff,
     _is_large_date_diff,
-    _compute_date_diff_days,
+    _parse_flexible_date,
+    _parse_plan_start_datetime,
     _format_qty,
     _format_planned_qty_cell,
     _format_side,
@@ -136,14 +137,94 @@ def _confirm_side1_only_if_applicable(parent, candidate):
     return messagebox.askyesno("面1のみの計画への登録", message, parent=parent.winfo_toplevel())
 
 
-def is_auto_confirmable(lot_no, product_name, planned_qty, daily_qty, plan_start_datetime, report_date):
+# Shift+S・Shift+Qで許容する、payout日（report_date）と生産予定日
+# （plan_start_datetime）の差（日数、日付のみで比較）の上限。
+# 「Shift+Qを追加する。Shift+Sとの違いは日付の条件だけ」という利用者決定に
+# 基づき、両ショートカットの差は、唯一この定数の値の違いだけにする
+# （2026-10-08追加、D-101）。
+AUTO_REGISTER_MAX_DAYS_SHIFT_S = 1
+AUTO_REGISTER_MAX_DAYS_SHIFT_Q = 4
+
+# evaluate_auto_register_eligibility()の戻り値status。
+AUTO_REGISTER_ELIGIBLE = "eligible"
+AUTO_REGISTER_INELIGIBLE = "ineligible"
+
+# 一覧（登録待ち一覧）の状態表示用：候補が単一に解決でき、数量・日付の両方の
+# 条件を満たした行を、日付差でさらに2段階に分ける（2026-10-08追加、D-101）。
+STATUS_ELIGIBLE_SHIFT_S = "eligible_shift_s"
+STATUS_ELIGIBLE_SHIFT_Q = "eligible_shift_q"
+
+# evaluate_auto_register_eligibility()が返す理由コードの一覧（登録できない
+# 場合のreason）。STAGING_STATUS_LABELS（services.production_import_service）
+# のキーとしても使うため、ここで一括管理する。
+REASON_NO_CANDIDATES_CODE = "no_candidates"
+REASON_PRODUCT_NAME_MISMATCH = "product_name_mismatch"
+REASON_MULTIPLE_CANDIDATES = "multiple_candidates"
+REASON_EXISTING = "existing"
+REASON_DUPLICATE = "duplicate"
+REASON_SIDE2_WAIT = "side2_wait"
+REASON_SIDE_MASTER_UNREGISTERED = "side_master_unregistered"
+REASON_QTY_MISMATCH = "qty_mismatch"
+REASON_DATE_UNPARSEABLE = "date_unparseable"
+REASON_DATE_DIFF_TOO_LARGE = "date_diff_too_large"
+
+# _on_bulk_register()・_on_bulk_register_extended()の完了メッセージで、
+# スキップ理由ごとの件数を表示する際のラベル（短い文言、2026-10-08追加）。
+# 一覧の「状態」列（STAGING_STATUS_LABELS）とは文脈が違う（完了メッセージの
+# 1行の中で使うため、より短い名詞句にしている）ため、別辞書にしている。
+AUTO_REGISTER_SKIP_REASON_LABELS = {
+    REASON_NO_CANDIDATES_CODE: "候補なし",
+    REASON_PRODUCT_NAME_MISMATCH: "製品名不一致",
+    REASON_MULTIPLE_CANDIDATES: "候補複数（未選択）",
+    REASON_EXISTING: "既に実績登録済み",
+    REASON_DUPLICATE: "同一計画への重複候補",
+    REASON_SIDE2_WAIT: "面2待ち",
+    REASON_SIDE_MASTER_UNREGISTERED: "生産面マスター未登録",
+    REASON_QTY_MISMATCH: "数量不一致",
+    REASON_DATE_UNPARSEABLE: "日付を解釈できない",
+    REASON_DATE_DIFF_TOO_LARGE: "日付の差が許容日数を超える",
+}
+
+
+def _date_only_diff_days(report_date, plan_start_datetime):
+    """
+    report_date（CSVの払い出し日）とplan_start_datetime（候補の生産予定日）の
+    差の日数（絶対値）を、日付だけで比較する（時刻は無視する、2026-10-08追加、
+    D-101）。パース不能・どちらか欠落なら比較不能としてNone。
+
+    旧ui.plan_candidate_dialog._compute_date_diff_days()は、
+    plan_start_datetimeの時刻成分まで含めた生の経過時間を
+    timedelta.daysでfloorしていたため、時刻成分が存在する場合に暦日の差と
+    ずれることがあった（実データのplan_start_datetimeは全件に0時以外の
+    時刻成分がある。例：report_date="2026-07-23"、
+    plan_start_datetime="2026/07/21 23:50:00"の場合、暦日の差は2日だが、
+    生の経過時間は1日10分のためfloorで1日と計算されてしまっていた）。
+    本関数は両方の値を日付のみ（.date()）に正規化してから差を取ることで、
+    この時刻成分によるずれを無くす。
+
+    パースロジック自体（_parse_flexible_date()・_parse_plan_start_datetime()）は
+    ui.plan_candidate_dialogのものをそのまま再利用する（日付形式の解釈を
+    1箇所に集約し、ずれが生じないようにするため。本関数が変えるのは
+    「パース後の差分計算の単位」のみ）。
+    """
+    reference = _parse_flexible_date(report_date)
+    if reference is None:
+        return None
+    dt = _parse_plan_start_datetime(plan_start_datetime)
+    if dt is None:
+        return None
+    return abs((dt.date() - reference.date()).days)
+
+
+def is_auto_confirmable(lot_no, product_name, planned_qty, daily_qty, plan_start_datetime, report_date,
+                         max_date_diff_days=AUTO_REGISTER_MAX_DAYS_SHIFT_S):
     """
     調査（自動確定可能な実績の要件検証）で仮実装した判定を正式に実装したもの。
 
     要件：
       - 生産予定数（planned_qty）とCSVの実績数（daily_qty）が完全一致
       - 生産予定日（plan_start_datetime）とCSVの払い出し日（report_date）の
-        差が24時間（1日）以内
+        差がmax_date_diff_days日以内（日付のみで比較し、時刻は無視する）
 
     lot_no・product_nameは本関数自体の判定には使わない（呼び出し元
     （_populate_candidates()）が既にfind_matching_plan_items()でlot_no・
@@ -154,23 +235,39 @@ def is_auto_confirmable(lot_no, product_name, planned_qty, daily_qty, plan_start
 
     配置場所について：調査時の指示は「services/production_import_service.py
     （または適切な場所）」だったが、日数差の計算にui.plan_candidate_dialog.
-    _compute_date_diff_days()（_sort_candidates_by_closeness()内のパース
-    ロジックをそのまま流用したもの）を使う必要があり、services層がui層の
-    モジュールに依存する形になってしまう（このコードベースの他の箇所は
-    すべてui→services→modelsの一方向依存）。呼び出し元がui.production_
-    import_staging_window（本ファイル）のみであることも踏まえ、あえて
-    services/production_import_service.pyには置かず、本ファイルに配置した。
+    _parse_flexible_date()・_parse_plan_start_datetime()を使う必要があり、
+    services層がui層のモジュールに依存する形になってしまう（このコードベースの
+    他の箇所はすべてui→services→modelsの一方向依存）。呼び出し元がui.
+    production_import_staging_window（本ファイル）のみであることも踏まえ、
+    あえてservices/production_import_service.pyには置かず、本ファイルに
+    配置した。
+
+    max_date_diff_days（2026-10-08追加、D-101・Shift+Q新設に伴う判定の
+    共通化）：既定値はShift+Sの許容日数（1日）のため、この引数を追加した前後で
+    既存の呼び出し元（_populate_candidates()、常に既定値のまま呼ぶ）の動作は
+    変わらない。evaluate_auto_register_eligibility()がShift+Q
+    （AUTO_REGISTER_MAX_DAYS_SHIFT_Q=4）を判定する際に、本関数へこの値を
+    明示的に渡す。
+
+    日数差の計算方式について（2026-10-08修正、D-101）：以前は
+    ui.plan_candidate_dialog._compute_date_diff_days()
+    （plan_start_datetimeの時刻成分まで含めた生の経過時間をfloor）を使って
+    いたが、_date_only_diff_days()（日付のみで比較、時刻は無視）に差し替えた。
+    実データのplan_start_datetimeは全件に0時以外の時刻成分があり、旧方式では
+    暦日の差が本来より少なく計算される境界ケースが起こりうることが判明した
+    ため（詳細は_date_only_diff_days()のdocstring参照）。この修正により、
+    是正された日数差が許容日数を超えることで対象から外れる行が実データで
+    存在し得る（Shift+Sの判定結果への影響は、検証で実測した件数を参照）。
 
     以前の制約（修正済み）：調査時点の実データ（pending_csv_import_rows
     95件）では、report_dateの実運用値が"YYYY/M/D"形式（例："2026/3/18"、
-    月日がゼロ埋めされていない）だったが、_compute_date_diff_days()が
-    内部で使っていた_parse_report_date()が"%Y-%m-%d"のみにしか対応しておらず、
-    実データでは本関数が常にFalse（日付比較不能）を返していた。
-    ui.plan_candidate_dialog._parse_flexible_date()（旧_parse_report_date()を
-    複数形式対応に拡張・改称したもの）により、"%Y-%m-%d"・"%Y/%m/%d"
-    （ゼロ埋めの有無を問わない）の両方に対応済みのため、現在は実データでも
-    正しく判定できる。日付・数量いずれも比較不能な場合はFalse（安全側）に
-    倒す設計はis_already_registered()と同じ考え方のまま変えていない。
+    月日がゼロ埋めされていない）だったが、_parse_flexible_date()が
+    対応する前の旧_parse_report_date()は"%Y-%m-%d"のみにしか対応しておらず、
+    実データでは本関数が常にFalse（日付比較不能）を返していた。現在は
+    "%Y-%m-%d"・"%Y/%m/%d"（ゼロ埋めの有無を問わない）の両方に対応済みのため、
+    実データでも正しく判定できる。日付・数量いずれも比較不能な場合はFalse
+    （安全側）に倒す設計はis_already_registered()と同じ考え方のまま変えて
+    いない。
     """
     try:
         if float(planned_qty) != float(daily_qty):
@@ -178,19 +275,119 @@ def is_auto_confirmable(lot_no, product_name, planned_qty, daily_qty, plan_start
     except (TypeError, ValueError):
         return False
 
-    date_diff = _compute_date_diff_days(report_date, plan_start_datetime)
-    if date_diff is None or date_diff > 1:
+    date_diff = _date_only_diff_days(report_date, plan_start_datetime)
+    if date_diff is None or date_diff > max_date_diff_days:
         return False
 
     return True
+
+
+def evaluate_auto_register_eligibility(row, candidates, matched, plan_key_counts, max_date_diff_days):
+    """
+    1件の保留行（row）について、自動登録（Shift+S／Shift+Q）できるかどうかを、
+    1か所にまとめて判定する（2026-10-08新設、D-101。Shift+Qの追加に伴い、
+    一覧の状態表示（_load_staged_rows_from_db()）・Shift+S（_on_bulk_register()）・
+    Shift+Q（_on_bulk_register_extended()）の3箇所がそれぞれ独自に持っていた
+    判定ロジックを1つの関数に統合した）。
+
+    判定順序（優先順位、既存のShift+S・一覧の状態表示の優先順位をそのまま
+    踏襲）：
+      1. 候補なし（lot_noが一致する計画が1件も無い）
+      2. 製品名の不一致（lot_noは一致するが、製品名が一致する候補が無い。
+         以前は「候補あり（要選択）」に一括で含まれていたが、原因を区別
+         できるよう分離した）
+      3. 候補が複数（製品名まで一致する候補が2件以上。どの計画かは人が選ぶ）
+      4. 既に実績あり（その計画（kitting_list_no, lot_no）に既に
+         production_daily行が1件以上ある。黙って上書きしないため対象外）
+      5. 同じ計画への重複（同じ計画を候補とする保留行が、他にも一覧に存在する。
+         どちらを登録すべきかは人が判断する）
+      6. 面2待ち／生産面マスター未登録（候補の計画が面1のみで、生産面マスターの
+         分類が「面2待ち」または「生産面マスター未登録」）
+      7. 数量の不一致（計画数とCSVの実績数が完全一致しない）
+      8. 日付を解釈できない（払い出し日・生産予定日のいずれかがパース不能。
+         安全側に倒し、登録できない側とする）
+      9. 日付の差が許容（max_date_diff_days）を超える
+      10.（いずれにも該当しない）登録可能。日付の差が1日以内ならShift+Sで
+         登録可、2日以上max_date_diff_days以下ならShift+Qでのみ登録可。
+
+    日付の差は、日付だけで比較する（時刻は無視する、_date_only_diff_days()
+    参照）。
+
+    引数：
+      row：{"lot_no", "product_name", "daily_qty", "report_date"}を持つ辞書
+           （_load_staged_rows_from_db()が組み立てる保留行、または同じ形の
+           辞書）。
+      candidates・matched：models.kitting_plan.find_matching_plan_items()の
+           戻り値をそのまま渡す（本関数自体はDBへの再照合を行わない。
+           呼び出し側が、最新の状態を使うか・キャッシュ済みの値を使うかを
+           決める。既存のコメント通り、一括登録系は必ず再照合した値を渡す
+           こと）。
+      plan_key_counts：{(kitting_list_no, lot_no): 件数}。現在対象にしている
+           行全体のうち、単一候補に解決できる行だけを数えた辞書。呼び出し側が
+           ループの外で1回だけ計算して渡す（既存のN+1回避パターンを維持）。
+      max_date_diff_days：AUTO_REGISTER_MAX_DAYS_SHIFT_S（1）または
+           AUTO_REGISTER_MAX_DAYS_SHIFT_Q（4）。
+
+    戻り値：(status, reason, candidate, date_diff)
+      status：AUTO_REGISTER_ELIGIBLE または AUTO_REGISTER_INELIGIBLE。
+      reason：ineligibleの場合のみ、上記いずれかの理由コード（文字列）。
+              eligibleの場合はNone。
+      candidate：単一候補に解決できた場合のみ、その候補（dict）。それ以外は
+              None（候補なし・製品名不一致・候補複数のいずれも、特定の1件に
+              絞れていないため）。
+      date_diff：日付の差（日数）を計算できた場合はその値（max_date_diff_days
+              を超えて不合格になった場合も含む）。候補未解決・計算不能なら
+              None。呼び出し側が、1日以内かどうかでShift+S/Shift+Qの表示を
+              分けるために使う。
+    """
+    if not candidates:
+        return AUTO_REGISTER_INELIGIBLE, REASON_NO_CANDIDATES_CODE, None, None
+    if not matched:
+        return AUTO_REGISTER_INELIGIBLE, REASON_PRODUCT_NAME_MISMATCH, None, None
+
+    unique_kitting_nos = {c["kitting_list_no"] for c in matched}
+    if len(unique_kitting_nos) > 1:
+        return AUTO_REGISTER_INELIGIBLE, REASON_MULTIPLE_CANDIDATES, None, None
+
+    candidate = matched[0]
+    kitting_list_no = candidate["kitting_list_no"]
+    lot_no = row["lot_no"]
+
+    if list_daily_production_by_kitting_no(kitting_list_no, lot_no):
+        return AUTO_REGISTER_INELIGIBLE, REASON_EXISTING, candidate, None
+
+    if plan_key_counts.get((kitting_list_no, lot_no), 0) > 1:
+        return AUTO_REGISTER_INELIGIBLE, REASON_DUPLICATE, candidate, None
+
+    classification = classify_side1_only_plan(candidate)
+    if classification == SIDE1_ONLY_CLASS_WAITING_SIDE2:
+        return AUTO_REGISTER_INELIGIBLE, REASON_SIDE2_WAIT, candidate, None
+    if classification == SIDE1_ONLY_CLASS_UNREGISTERED:
+        return AUTO_REGISTER_INELIGIBLE, REASON_SIDE_MASTER_UNREGISTERED, candidate, None
+
+    try:
+        qty_mismatch = float(candidate.get("planned_qty")) != float(row.get("daily_qty"))
+    except (TypeError, ValueError):
+        qty_mismatch = True
+    if qty_mismatch:
+        return AUTO_REGISTER_INELIGIBLE, REASON_QTY_MISMATCH, candidate, None
+
+    date_diff = _date_only_diff_days(row.get("report_date"), candidate.get("plan_start_datetime"))
+    if date_diff is None:
+        return AUTO_REGISTER_INELIGIBLE, REASON_DATE_UNPARSEABLE, candidate, None
+    if date_diff > max_date_diff_days:
+        return AUTO_REGISTER_INELIGIBLE, REASON_DATE_DIFF_TOO_LARGE, candidate, date_diff
+
+    return AUTO_REGISTER_ELIGIBLE, None, candidate, date_diff
 
 
 def _load_staged_rows_from_db():
     """
     models.production_import_staging.list_pending_csv_import_rows()で未処理行を
     DBから取得し、各行についてmodels.kitting_plan.find_matching_plan_items()で
-    候補（candidates/matched）・状態（status）を再計算した上で、従来と同じ形の
-    辞書リスト（{"pending_row_id", "row", "lot_no", "product_name", "daily_qty",
+    候補（candidates/matched）を再照合した上で、evaluate_auto_register_
+    eligibility()で状態（status）を判定し、従来と同じ形の辞書リスト
+    （{"pending_row_id", "row", "lot_no", "product_name", "daily_qty",
     "report_date", "worker_id", "candidates", "matched", "status"}）を組み立てる。
 
     候補をDBに保存せず必ず再照合する理由はmodels.production_import_stagingの
@@ -198,18 +395,18 @@ def _load_staged_rows_from_db():
     group_active_plan_items_by_lot()）は本関数内で1回だけ取得し、未処理行数分の
     find_matching_plan_items()呼び出しで使い回す（CSV取込時と同じN+1回避）。
 
-    status（2026-10-06拡張）：計画の候補が1件に定まる行（従来は常に
-    "auto_resolvable"）でも、以下のいずれかに該当する場合は人の判断が必要な
-    行として区別する（自動確定の対象から外す、ui.production_import_staging_
-    window::is_auto_confirmable()を参照する側（_populate_candidates()の
-    ハイライト・_on_bulk_register()）がこのstatusを尊重する）：
-      - "needs_confirmation_existing"：その計画（kitting_list_no・lot_no）に
-        既にproduction_daily行が1件以上ある（既存実績を黙って上書きしない
-        ため）。両方に該当する場合はこちらを優先する（より直接的な上書き
-        リスクのため）。
-      - "needs_confirmation_duplicate"：同じ計画（kitting_list_no）を候補とする
-        保留行が、他にも存在する（複数の別日の実績が同じ計画に割り当て
-        られようとしている状態。どちらが正しい割り当てかは人が判断する）。
+    status（2026-10-08、D-101で判定ロジックを統合）：evaluate_auto_register_
+    eligibility()を、Shift+Qの許容日数（AUTO_REGISTER_MAX_DAYS_SHIFT_Q=4日）で
+    評価する。4日以内という最も広い範囲で評価することで、合格した行については
+    実際の日付差（date_diff）を使ってShift+S（1日以内）・Shift+Qのみ（2〜4日）の
+    どちらに該当するかをここでさらに判定できる（4日を超えて不合格になった行は
+    "date_diff_too_large"のまま、Shift+S・Shift+Qどちらでも対象外になる）。
+    不合格の場合はevaluate_auto_register_eligibility()が返す理由コードを
+    statusにそのまま使う（STAGING_STATUS_LABELSで表示ラベルに変換する）。
+
+    "no_candidates"のみ、_unregistrable_rows（登録不可リストのCSV出力対象）の
+    判定に使われているため、文字列自体は変更していない（旧実装からの既存の
+    依存）。
     """
     pending_rows = list_pending_csv_import_rows()
     if not pending_rows:
@@ -217,20 +414,13 @@ def _load_staged_rows_from_db():
 
     plan_items_by_lot = group_active_plan_items_by_lot()
 
-    staged_rows = []
+    resolved = []
     for row in pending_rows:
         product_name_normalized = normalize_product_name(row["product_name"])
         candidates, matched = find_matching_plan_items(
             row["lot_no"], product_name_normalized, plan_items_by_lot,
         )
-
-        if not candidates:
-            status = "no_candidates"
-        else:
-            unique_kitting_nos = {c["kitting_list_no"] for c in matched}
-            status = "auto_resolvable" if len(unique_kitting_nos) == 1 else "needs_selection"
-
-        staged_rows.append({
+        resolved.append({
             "pending_row_id": row["pending_row_id"],
             "row": row.get("csv_row_no"),
             "lot_no": row["lot_no"],
@@ -240,65 +430,33 @@ def _load_staged_rows_from_db():
             "worker_id": row["worker_id"],
             "candidates": candidates,
             "matched": matched,
-            "status": status,
         })
 
-    _mark_rows_needing_confirmation(staged_rows)
-    return staged_rows
+    # 重複判定用：単一候補に解決できる行だけを対象に、同じ(kitting_list_no,
+    # lot_no)を候補とする行数を数える（D-6の一意キーはこのペアであり、
+    # kitting_list_noだけではない。2026-10-06確認・修正の経緯を維持）。
+    plan_key_counts = {}
+    for item in resolved:
+        if len(item["matched"]) == 1:
+            key = (item["matched"][0]["kitting_list_no"], item["lot_no"])
+            plan_key_counts[key] = plan_key_counts.get(key, 0) + 1
 
-
-def _mark_rows_needing_confirmation(staged_rows):
-    """
-    staged_rows（_load_staged_rows_from_db()が組み立てた辞書のリスト）のうち、
-    status=="auto_resolvable"の行を対象に、以下の条件を判定し、該当すれば
-    statusを上書きする（候補が1件に定まっていても、自動確定の対象から外す
-    ための印）。
-
-    a. "needs_confirmation_duplicate"：同じ(kitting_list_no, lot_no)を候補とする
-       auto_resolvableの行が、自分以外にも存在する。D-6の一意キーは
-       (kitting_list_no, lot_no)のペアであり、kitting_list_noだけでは
-       ない（1つのkitting_list_noに複数のlot_noが紐づく計画があり得る
-       ため、lot_noが異なれば実際には競合しない。2026-10-06確認・修正）。
-    b. "needs_confirmation_existing"：その計画（kitting_list_no・lot_no）に
-       既にproduction_daily行が1件以上ある。
-    c. "needs_confirmation_side2_wait" / "needs_confirmation_side_master_
-       unregistered"：候補の計画が面1のみ（同一(lot_no, setup_file_no)に
-       面2の計画が無い）で、生産面マスターでの分類（models.kitting_plan.
-       classify_side1_only_plan()）が"b"（面2待ち）または"c"（生産面マスター
-       未登録）の場合（2026-10-07新設、D-9x参照）。"a"（片面の製品）の場合は
-       従来通りauto_resolvableのまま。
-
-    優先順位：b（既存実績） > a（重複候補） > c（面2待ち/マスター未登録）。
-    b・aは「黙って上書き・どちらを登録すべきか不明」という、より直接的な
-    データ破壊リスクのため、cより優先する。
-    判定はauto_resolvableの行数分のみ行う（CSV取込全体の行数より十分少ない
-    想定のため、models.production.list_daily_production_by_kitting_no()を
-    行ごとに呼んでもN+1の実害は小さいと判断した）。
-    """
-    auto_resolvable_rows = [r for r in staged_rows if r["status"] == "auto_resolvable"]
-    if not auto_resolvable_rows:
-        return
-
-    rows_by_plan_key = {}
-    for row in auto_resolvable_rows:
-        kitting_list_no = row["matched"][0]["kitting_list_no"]
-        rows_by_plan_key.setdefault((kitting_list_no, row["lot_no"]), []).append(row)
-
-    for (kitting_list_no, lot_no), rows in rows_by_plan_key.items():
-        existing = list_daily_production_by_kitting_no(kitting_list_no, lot_no)
-        if existing:
-            for row in rows:
-                row["status"] = "needs_confirmation_existing"
-        elif len(rows) > 1:
-            for row in rows:
-                row["status"] = "needs_confirmation_duplicate"
+    staged_rows = []
+    for item in resolved:
+        eligibility, reason, _candidate, date_diff = evaluate_auto_register_eligibility(
+            item, item["candidates"], item["matched"], plan_key_counts,
+            max_date_diff_days=AUTO_REGISTER_MAX_DAYS_SHIFT_Q,
+        )
+        if eligibility == AUTO_REGISTER_ELIGIBLE:
+            item["status"] = (
+                STATUS_ELIGIBLE_SHIFT_S if date_diff <= AUTO_REGISTER_MAX_DAYS_SHIFT_S
+                else STATUS_ELIGIBLE_SHIFT_Q
+            )
         else:
-            row = rows[0]
-            classification = classify_side1_only_plan(row["matched"][0])
-            if classification == SIDE1_ONLY_CLASS_WAITING_SIDE2:
-                row["status"] = "needs_confirmation_side2_wait"
-            elif classification == SIDE1_ONLY_CLASS_UNREGISTERED:
-                row["status"] = "needs_confirmation_side_master_unregistered"
+            item["status"] = reason
+        staged_rows.append(item)
+
+    return staged_rows
 
 
 def open_or_notify(parent, already_registered_rows=None):
@@ -577,7 +735,8 @@ class ProductionImportStagingWindow(tk.Toplevel):
             text=(
                 "行を選択すると左ペインに候補が表示されます（Ctrl+クリック・Shift+クリックで複数選択可）。\n"
                 "右クリックで「不一致として除外」できます（複数選択中は選択中の全行が対象）。\n"
-                "複数選択してShift+Sを押すと、要件を満たす行のみ一括で即時登録します。"
+                "複数選択してShift+Sを押すと、日付の差が1日以内の行のみ一括で即時登録します。\n"
+                "Shift+Qは日付の差が4日以内まで対象を広げます（登録前に件数を確認します）。"
             ),
             foreground="gray",
         ).pack(side=tk.BOTTOM, anchor=tk.W, pady=(5, 0))
@@ -648,10 +807,19 @@ class ProductionImportStagingWindow(tk.Toplevel):
         # イベントが伝播してくる）。self.tree固有のバインドは残さない
         # （同じキー入力で二重に発火するのを避けるため）。
         self.bind("<Shift-S>", self._on_bulk_register)
-        # Shift+Q（選択・絞り込みに関係なく一覧の全行を対象にする一括登録）は
-        # 2026-10-07に追加したが、同日中に取り消した（D-100参照）。利用者の
-        # 意図は対象行の広さではなく照合条件の厳しさの緩和であり、選択範囲を
-        # 無視して登録できる動作は危険と判断されたため。
+        # Shift+Q（2026-10-08新設、D-101）：対象は選択中の行のみ（Shift+Sと
+        # 同じ）で、日付の差の許容日数だけを緩める一括登録。以前
+        # （2026-10-07）に実装した「選択・絞り込みに関係なく一覧の全行を
+        # 対象にする」版のShift+Qは同日中に取り消した経緯がある（D-100参照。
+        # 利用者の意図は対象行の広さではなく照合条件の厳しさの緩和であり、
+        # 選択範囲を無視して登録できる動作は危険と判断されたため）。今回の
+        # Shift+Qはその教訓を踏まえ、対象を選択中の行のみに限定している。
+        # <Shift-Q>（CapsLockオフ時にShiftキーが生成するkeysym）・
+        # <Shift-q>（CapsLockオン時に生成するkeysym、Shiftとの打ち消し合いで
+        # 小文字になる）の両方をbindし、CapsLockの状態に左右されないようにする
+        # （D-97で確認済みの同じ対策）。
+        self.bind("<Shift-Q>", self._on_bulk_register_extended)
+        self.bind("<Shift-q>", self._on_bulk_register_extended)
 
     def _insert_staging_row(self, row):
         """
@@ -1151,14 +1319,56 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
     def _on_bulk_register(self, event=None):
         """
-        右ペイン（登録待ち一覧）で複数選択された行のうち、要件を満たすもの
-        （lot_no・製品名でmatchedが1件に定まり、かつis_auto_confirmable()の
-        要件を満たすもの）のみを一括で即時登録する（Shift+Sショートカット）。
+        Shift+Sショートカット：右ペイン（登録待ち一覧）で選択中の行のうち、
+        evaluate_auto_register_eligibility()をAUTO_REGISTER_MAX_DAYS_SHIFT_S
+        （1日以内）で判定して合格したものだけを一括で即時登録する。
 
-        対象は選択中の行のみ（選択が無い場合は何もしない）。選択・絞り込みに
-        関係なく一覧の全行を対象にするShift+Qは2026-10-07に追加したが、
-        同日中に取り消した（D-100参照。選択範囲を無視して登録できる動作は
-        危険と判断されたため）。
+        条件自体は従来から変更していない（候補が1件、製品名一致、数量が
+        完全一致、日付の差が1日以内、既存実績・重複候補・面2待ち／生産面
+        マスター未登録に当たらない。選択した行のみ対象）。本体の処理は
+        _execute_bulk_register()に共通化した（2026-10-08、D-101。Shift+Qの
+        追加に伴い、Shift+S・Shift+Qの一括登録ロジックの違いを「許容日数・
+        事前確認の有無」だけに絞るため）。
+        """
+        self._execute_bulk_register(
+            max_date_diff_days=AUTO_REGISTER_MAX_DAYS_SHIFT_S,
+            shortcut_label="Shift+S",
+            require_confirm=False,
+            trigger_source="bulk_register",
+        )
+
+    def _on_bulk_register_extended(self, event=None):
+        """
+        Shift+Qショートカット（2026-10-08新設、D-101）：Shift+Sと同じ対象
+        （右ペインで選択中の行のみ）・同じ条件だが、日付の差の許容日数だけを
+        4日以内に緩める。それ以外の条件（候補が1件、製品名一致、数量が完全
+        一致、既存実績・重複候補・面2待ち／生産面マスター未登録に当たらない）
+        はShift+Sと完全に同一（evaluate_auto_register_eligibility()を
+        共通で通るため）。
+
+        利用者の決定により、選択に関係なく一覧の全行を対象にする動作は
+        採用しない（以前Shift+Qの初期実装でこの動作を試みたが、同日中に
+        取り消した経緯がある。D-100参照）。
+
+        Shift+Sと異なり、実行前に対象件数（選択行数・登録される行数・その
+        うち日付の差が2〜4日の行数＝Shift+Sでは登録されない行）を示す確認
+        ダイアログを出す（require_confirm=True、_execute_bulk_register()
+        参照）。
+        """
+        self._execute_bulk_register(
+            max_date_diff_days=AUTO_REGISTER_MAX_DAYS_SHIFT_Q,
+            shortcut_label="Shift+Q",
+            require_confirm=True,
+            trigger_source="bulk_register_shift_q",
+        )
+
+    def _execute_bulk_register(self, max_date_diff_days, shortcut_label, require_confirm, trigger_source):
+        """
+        Shift+S・Shift+Qの共通本体（2026-10-08新設、D-101）。右ペイン
+        （登録待ち一覧）で選択中の行のうち、evaluate_auto_register_
+        eligibility()をmax_date_diff_daysで判定して合格したものだけを
+        一括で即時登録する。対象は選択中の行のみ（選択が無い場合は何もしない。
+        Shift+S・Shift+Qいずれも同じ方針）。
 
         各対象行についてfind_matching_plan_items()で候補を都度再照合する
         （選択・表示時点でキャッシュされたrow["candidates"]/row["matched"]は
@@ -1166,18 +1376,24 @@ class ProductionImportStagingWindow(tk.Toplevel):
         docstring参照）。group_active_plan_items_by_lot()は選択件数分の
         N+1を避けるためループの前に1回だけ取得する（CSV取込時と同じ考え方）。
 
-        要件を満たさない行（候補0件・複数件・自動確定要件不一致）はスキップし、
-        件数のみ記録して次の行へ進む（削除・除外等の副作用は一切与えない。
-        ステージング一覧にそのまま残り続ける）。
+        require_confirm：Trueの場合（Shift+Q）、実際に登録する前に対象件数
+        （選択行数・登録される行数・そのうち日付の差が2日以上の行数＝
+        AUTO_REGISTER_MAX_DAYS_SHIFT_S（1日）を超える、Shift+Sでは登録され
+        ない行）を示す確認ダイアログを出し、「いいえ」の場合は何も変更せず
+        終了する（この時点ではまだ候補の解決・判定のみで、登録・削除は一切
+        行っていない）。Shift+S（require_confirm=False）はこの確認を出さず、
+        従来通り即座に登録する。
 
-        非同期化について（検討結果）：1件あたりの登録処理はDB書き込み数件
-        程度で、選択件数が数十〜百件程度までは体感できる遅延にはならないと
-        判断し、LoadingWindowによる非同期化は行わなかった。加えて、後述の
-        通り登録の都度表示される確認不要の完了通知を抑制してはいるものの、
-        _perform_registration()内のエラー時messagebox.showerror()（rare
-        pathのため抑制しない）が発生した場合はその場でブロッキングダイアログ
-        になるため、そもそも「バックグラウンドで静かに処理が進む」性質の
-        操作ではなく、LoadingWindowの効果が薄いという判断もある。
+        要件を満たさない行は理由ごとに件数を記録してスキップする（削除・
+        除外等の副作用は一切与えない。ステージング一覧にそのまま残り続ける）。
+        完了時にこの理由ごとの件数を表示する（2026-10-08追加、D-101。以前は
+        Shift+Sの完了メッセージに理由の内訳が無く、「要件を満たさない」の
+        合計件数しか分からなかった）。
+
+        非同期化について（検討結果、Shift+S実装時から変更なし）：1件あたりの
+        登録処理はDB書き込み数件程度で、選択件数が数十〜百件程度までは体感
+        できる遅延にはならないと判断し、LoadingWindowによる非同期化は行わ
+        なかった。
 
         完了通知の抑制について：_perform_registration()は登録成功のたびに
         messagebox.showinfo("登録完了", ...)を表示するが、複数件の一括操作で
@@ -1231,17 +1447,13 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
         plan_items_by_lot = group_active_plan_items_by_lot()
 
-        # 一括登録の対象から外す2条件（a・b）の事前判定用：現在一覧に残っている
-        # 全行（選択中かどうかを問わない）について、候補が1件に定まるものだけを
-        # 対象に、同じ(kitting_list_no, lot_no)を候補とする行が複数あるかを数える
-        # （_mark_rows_needing_confirmation()と同じ考え方、画面表示用の判定とは
-        # 独立に、ここでも都度最新の状態で再判定する。find_matching_plan_items()
-        # のキャッシュ結果（row["matched"]）は選択・表示時点のものなので使わず、
-        # このブロックでも都度再照合する）。D-6の一意キーは(kitting_list_no,
-        # lot_no)のペアのため、kitting_list_noだけで数えると、1つの
-        # kitting_list_noに複数のlot_noが紐づく計画で誤って「重複」判定して
-        # しまう（2026-10-06確認・修正）。
-        resolved_plan_key_by_iid = {}
+        # 重複判定の事前集計：現在一覧に残っている全行（選択中かどうかを
+        # 問わない）について、候補が1件に定まるものだけを対象に、同じ
+        # (kitting_list_no, lot_no)を候補とする行が複数あるかを数える
+        # （画面表示用の判定（_load_staged_rows_from_db()）とは独立に、
+        # ここでも都度最新の状態で再判定する。find_matching_plan_items()の
+        # キャッシュ結果（row["matched"]）は選択・表示時点のものなので使わず、
+        # このブロックでも都度再照合する）。
         plan_key_counts = {}
         for other_iid, other_row in self._row_by_iid.items():
             other_normalized = normalize_product_name(other_row["product_name"])
@@ -1250,16 +1462,46 @@ class ProductionImportStagingWindow(tk.Toplevel):
             )
             if len(other_matched) == 1:
                 plan_key = (other_matched[0]["kitting_list_no"], other_row["lot_no"])
-                resolved_plan_key_by_iid[other_iid] = plan_key
                 plan_key_counts[plan_key] = plan_key_counts.get(plan_key, 0) + 1
 
+        # 対象行ごとに判定する（登録はまだ行わない。require_confirm=Trueの
+        # 場合、この時点の結果で確認ダイアログの件数を組み立てる）。
+        evaluated = []
+        for iid in selected_iids:
+            row = self._row_by_iid.get(iid)
+            if row is None:
+                continue
+            product_name_normalized = normalize_product_name(row["product_name"])
+            candidates, matched = find_matching_plan_items(
+                row["lot_no"], product_name_normalized, plan_items_by_lot,
+            )
+            eligibility, reason, candidate, date_diff = evaluate_auto_register_eligibility(
+                row, candidates, matched, plan_key_counts, max_date_diff_days,
+            )
+            evaluated.append((iid, row, eligibility, reason, candidate, date_diff))
+
+        eligible_items = [e for e in evaluated if e[2] == AUTO_REGISTER_ELIGIBLE]
+
+        if require_confirm:
+            # Shift+Sでは登録されない行＝日付の差がAUTO_REGISTER_MAX_DAYS_
+            # SHIFT_S（1日）を超える行（他の条件は全てShift+Sと同一のため、
+            # 合格した行の中でこの差だけがShift+Sとの違いになる）。
+            shift_s_extra_count = sum(
+                1 for e in eligible_items
+                if e[5] is not None and e[5] > AUTO_REGISTER_MAX_DAYS_SHIFT_S
+            )
+            confirm_message = (
+                f"選択した行数：{len(selected_iids)}件\n"
+                f"登録される行数：{len(eligible_items)}件\n"
+                f"　うち日付の差が2〜4日の行数（Shift+Sでは登録されない行）：{shift_s_extra_count}件\n\n"
+                f"{shortcut_label}で一括登録します。よろしいですか？"
+            )
+            if not messagebox.askyesno(f"{shortcut_label}一括登録の確認", confirm_message, parent=self):
+                return
+
         registered_count = 0
-        skipped_count = 0
-        skipped_duplicate_count = 0
-        skipped_existing_count = 0
-        skipped_side2_wait_count = 0
-        skipped_side_master_unregistered_count = 0
         failed_count = 0
+        skip_reason_counts = {}
         # 登録に成功した行のlot_noを集める（重複除去、set）。反対面連動
         # （_perform_registration()内部）で影響するlot_noも常に同一lot_noの
         # ため、この集合に別途追加する必要はない（2026-09-30追加、
@@ -1269,61 +1511,9 @@ class ProductionImportStagingWindow(tk.Toplevel):
         original_showinfo = messagebox.showinfo
         messagebox.showinfo = lambda *a, **kw: None
         try:
-            for iid in selected_iids:
-                row = self._row_by_iid.get(iid)
-                if row is None:
-                    continue
-
-                product_name_normalized = normalize_product_name(row["product_name"])
-                _, matched = find_matching_plan_items(
-                    row["lot_no"], product_name_normalized, plan_items_by_lot,
-                )
-                if len(matched) != 1:
-                    skipped_count += 1
-                    continue
-
-                candidate = matched[0]
-                kitting_list_no = candidate["kitting_list_no"]
-
-                # b. 既にその計画に実績が登録されている行は、一括登録では
-                # 処理しない（黙って上書きしないため。個別の右クリック即時
-                # 登録・通常の登録フローでは確認ダイアログを経由すれば登録
-                # できる）。
-                if list_daily_production_by_kitting_no(kitting_list_no, row["lot_no"]):
-                    skipped_count += 1
-                    skipped_existing_count += 1
-                    continue
-
-                # a. 同じ計画（kitting_list_no, lot_no）を候補とする保留行が、
-                # 自分以外にも一覧に存在する行は、一括登録では処理しない
-                # （どちらを登録すべきかは人が払出し日を見て判断する）。
-                if plan_key_counts.get((kitting_list_no, row["lot_no"]), 0) > 1:
-                    skipped_count += 1
-                    skipped_duplicate_count += 1
-                    continue
-
-                # c. 候補の計画が面1のみ（同一(lot_no, setup_file_no)に面2の
-                # 計画が無い）で、生産面マスターの分類が「面2待ち」または
-                # 「生産面マスター未登録」の場合は、一括登録では処理しない
-                # （2026-10-07新設、D-9x参照。登録漏れによる誤った確定を防ぐ
-                # ため。片面の製品と確定している場合（分類"a"）は従来通り
-                # 自動確定の対象のまま）。
-                classification = classify_side1_only_plan(candidate)
-                if classification == SIDE1_ONLY_CLASS_WAITING_SIDE2:
-                    skipped_count += 1
-                    skipped_side2_wait_count += 1
-                    continue
-                if classification == SIDE1_ONLY_CLASS_UNREGISTERED:
-                    skipped_count += 1
-                    skipped_side_master_unregistered_count += 1
-                    continue
-
-                if not is_auto_confirmable(
-                    row.get("lot_no"), row.get("product_name"),
-                    candidate.get("planned_qty"), row.get("daily_qty"),
-                    candidate.get("plan_start_datetime"), row.get("report_date"),
-                ):
-                    skipped_count += 1
+            for iid, row, eligibility, reason, candidate, _date_diff in evaluated:
+                if eligibility != AUTO_REGISTER_ELIGIBLE:
+                    skip_reason_counts[reason] = skip_reason_counts.get(reason, 0) + 1
                     continue
 
                 # record_history=False：一括登録では行ごとの即時記録を抑制し、
@@ -1348,35 +1538,25 @@ class ProductionImportStagingWindow(tk.Toplevel):
         # 同じ方針だが、呼び出し元がUI層のため同じ形をここで実装する）。
         for lot_no in affected_lot_nos:
             try:
-                record_lot_status_snapshot(lot_no, "bulk_register")
+                record_lot_status_snapshot(lot_no, trigger_source)
             except Exception:
                 logger.exception(
                     "lot_status_historyの記録に失敗しました（lot_no=%s, "
-                    "trigger_source=bulk_register）。一括登録処理自体はそのまま続行します。",
-                    lot_no,
+                    "trigger_source=%s）。一括登録処理自体はそのまま続行します。",
+                    lot_no, trigger_source,
                 )
 
+        skipped_count = sum(skip_reason_counts.values())
         message = f"{registered_count}件を登録しました。\n{skipped_count}件は要件を満たさないためスキップしました。"
-        skip_reason_lines = []
-        if skipped_existing_count:
-            skip_reason_lines.append(f"　・既に実績が登録済み：{skipped_existing_count}件")
-        if skipped_duplicate_count:
-            skip_reason_lines.append(f"　・同一計画への重複候補：{skipped_duplicate_count}件")
-        if skipped_side2_wait_count:
-            skip_reason_lines.append(f"　・面2待ち：{skipped_side2_wait_count}件")
-        if skipped_side_master_unregistered_count:
-            skip_reason_lines.append(f"　・生産面マスター未登録：{skipped_side_master_unregistered_count}件")
-        other_skipped = (
-            skipped_count - skipped_existing_count - skipped_duplicate_count
-            - skipped_side2_wait_count - skipped_side_master_unregistered_count
-        )
-        if other_skipped:
-            skip_reason_lines.append(f"　・候補未確定／数量・日付不一致等：{other_skipped}件")
+        skip_reason_lines = [
+            f"　・{AUTO_REGISTER_SKIP_REASON_LABELS.get(reason, reason)}：{count}件"
+            for reason, count in sorted(skip_reason_counts.items(), key=lambda kv: -kv[1])
+        ]
         if skip_reason_lines:
             message += "\n" + "\n".join(skip_reason_lines)
         if failed_count:
             message += f"\n{failed_count}件は登録中にエラーが発生しました（詳細は個別のエラーダイアログを参照）。"
-        messagebox.showinfo("一括登録完了", message, parent=self)
+        messagebox.showinfo(f"{shortcut_label}一括登録完了", message, parent=self)
 
         # 事前に記録しておいた「一括処理範囲の直後の行」を選択する。存在しない
         # （末尾の行まで含む一括登録だった等）場合は選択状態を空にする。
@@ -1386,12 +1566,12 @@ class ProductionImportStagingWindow(tk.Toplevel):
         else:
             self.tree.selection_set(())
 
-        # 一括登録（Shift+S）の完了後、登録待ち一覧ウインドウを前面に
-        # 戻し、キーボードフォーカスも一覧へ戻す（2026-10-06追加・2026-10-07
+        # 一括登録の完了後、登録待ち一覧ウインドウを前面に戻し、キーボード
+        # フォーカスも一覧へ戻す（2026-10-06追加・2026-10-07
         # _refocus_staging_window()に統合、Shift+Sが効かなくなる不具合の
         # 修正の一環。_perform_registration()が登録のたびにparent.entry_
         # daily_qty.focus_set()を呼ぶため、ここで明示的に戻さないと、次に
-        # Shift+Sを押した際にフォーカスが残った親ウインドウの
+        # ショートカットを押した際にフォーカスが残った親ウインドウの
         # 実績数入力欄へ文字が入力されてしまう）。
         self._refocus_staging_window()
 

@@ -180,6 +180,15 @@ def get_second_side_status(setup_file_no, mounting_line):
     正規化した値で照合するため、呼び出し元（kitting_plan_items.
     setup_file_no・mounting_line）の表記ゆれ（ゼロ埋み有無等）を気にせず
     渡せる。
+
+    2026-10-08改訂：実際の自動判定（classify_side1_only_plan()）は、本関数
+    （実装ライン単位）ではなく get_second_side_status_by_file_no()（ファイルNo
+    単位）を使うよう変更した（同じファイルNoで先行面・後行面が異なる実装
+    ラインを流れることがあるため、本関数の「同じ実装ラインに後行面がある
+    か」という基準では誤って「未登録」「片面」と判定してしまう、D-9x改訂
+    参照）。本関数自体は、実装ラインごとの登録状況を参考情報として個別に
+    確認する用途（find_registered_file_nos_missing_line_combinations()）の
+    ためにそのまま残す。
     """
     init_production_side_master_table()
     norm_file = normalize_setup_file_no(setup_file_no)
@@ -193,6 +202,90 @@ def get_second_side_status(setup_file_no, mounting_line):
         return None
     sides = {row["production_side"] for row in rows}
     return "2" in sides
+
+
+def compute_file_no_status_map(entries) -> dict:
+    """
+    生産面マスタの判定ルール（ファイルNo単位）を1か所にまとめた純粋関数
+    （2026-10-08新設、D-9x改訂）。DBアクセスを行わないため、保存前（画面編集中、
+    未保存の変更を含む）の状態にも、DBから読み込んだ確定済みの状態にも、
+    どちらにも使える（実績の取込・計画一覧・生産面マスター画面のいずれも、
+    本関数を経由した判定結果を使うこと）。
+
+    entries：{"setup_file_no", "has_side1", "has_side2"}を持つ辞書のイテラブル。
+    1件が(setup_file_no, mounting_line)1組の「行」に対応する想定だが、本関数
+    自体はmounting_lineを一切見ない（ファイルNo単位に統合するため）。
+    has_side1・has_side2が両方Falseの行（画面で両方のチェックを外した行・
+    追加直後で未設定の行）は「その実装ラインには登録が無い」行として、
+    ファイルNo単位の判定からも除外する（1件も登録が無いことと同じ扱い）。
+
+    戻り値：{setup_file_no: True（いずれかの実装ラインに後行面の登録がある
+    ＝2回目あり）/ False（登録はあるがどの実装ラインにも後行面の登録が無い
+    ＝1回目のみ）}。該当するentryが1件も無いsetup_file_noはこの辞書に
+    現れない（＝未登録、呼び出し側は.get(file_no)がNoneになることで判別する）。
+    """
+    statuses = {}
+    for entry in entries:
+        if not entry.get("has_side1") and not entry.get("has_side2"):
+            continue
+        fn = entry["setup_file_no"]
+        if entry.get("has_side2"):
+            statuses[fn] = True
+        elif fn not in statuses:
+            statuses[fn] = False
+    return statuses
+
+
+def get_second_side_status_by_file_no(setup_file_no):
+    """
+    setup_file_no単位（実装ラインを問わない）で後行面（面2）の有無を返す
+    （2026-10-08新設、D-9x改訂）。
+
+    戻り値：
+      True  ：いずれかの実装ラインに後行面の登録がある（2回目あり）
+      False ：登録はあるが、どの実装ラインにも後行面の登録が無い（1回目のみ）
+      None  ：マスタにこのファイルNoの登録が1件も無い（未登録）
+
+    利用者の説明：同じファイルNoで、先行面と後行面が異なる実装ラインを流れる
+    ことがある。そのため「(setup_file_no, mounting_line)単位で後行面が
+    あるか」（get_second_side_status()）ではなく、ファイルNo単位（実装ライン
+    を問わず）で判定する必要がある。classify_side1_only_plan()はこちらを使う。
+    """
+    init_production_side_master_table()
+    norm_file = normalize_setup_file_no(setup_file_no)
+    with get_master_connection() as con:
+        rows = [dict(r) for r in con.execute(
+            "SELECT production_side FROM production_side_master WHERE setup_file_no = ?",
+            (norm_file,),
+        )]
+    entries = [
+        {"setup_file_no": norm_file, "has_side1": r["production_side"] == "1", "has_side2": r["production_side"] == "2"}
+        for r in rows
+    ]
+    return compute_file_no_status_map(entries).get(norm_file)
+
+
+def list_production_side_file_statuses() -> dict:
+    """
+    生産面マスタの全登録を、setup_file_no単位（実装ラインを問わない）の
+    判定結果にまとめて返す（2026-10-08新設、D-9x改訂）。
+    find_master_plan_discrepancies()で使う（全件を1回のクエリでまとめて
+    取得し、setup_file_noごとにget_second_side_status_by_file_no()を
+    個別に呼ぶN+1を避ける）。
+
+    戻り値：{setup_file_no: True（2回目あり）/ False（1回目のみ）}
+    （登録が無いファイルNoはこの辞書に現れない）。
+    """
+    init_production_side_master_table()
+    with get_master_connection() as con:
+        rows = [dict(r) for r in con.execute(
+            "SELECT setup_file_no, production_side FROM production_side_master"
+        )]
+    entries = [
+        {"setup_file_no": r["setup_file_no"], "has_side1": r["production_side"] == "1", "has_side2": r["production_side"] == "2"}
+        for r in rows
+    ]
+    return compute_file_no_status_map(entries)
 
 
 def list_production_side_groups() -> list:

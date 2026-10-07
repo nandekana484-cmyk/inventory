@@ -507,17 +507,35 @@ def import_production_csv(file_path, default_worker_id=None):
     return {"imported": imported, "unmatched": unmatched, "warnings": warnings, "errors": errors}
 
 
-# ステージング一覧（services.production_import_service.parse_production_csv_for_staging()の
-# 戻り値の"status"）の表示ラベル。UI側（ui/production_import_staging_window.py）で使う。
+# ステージング一覧（ui.production_import_staging_window._load_staged_rows_
+# from_db()が、同モジュールのevaluate_auto_register_eligibility()を使って
+# 組み立てる"status"）の表示ラベル。UI側（ui/production_import_staging_
+# window.py）で使う。
+#
+# 2026-10-08更新（D-101、Shift+Q新設に伴う判定の共通化）：以前は「候補が1件に
+# 定まるか」だけで「自動確定可能（要確認）」を表示していたが、実際の
+# Shift+Sの判定（数量完全一致・日付の差が1日以内）とは無関係に表示されており
+# 食い違っていた（実データで自動確定可能1173件と報告した際も、この旧い基準で
+# 集計していたことが後日判明した）。今回、一覧の状態表示をShift+S・Shift+Qの
+# 実際の判定（ui.production_import_staging_window.evaluate_auto_register_
+# eligibility()）に基づくものに統一した。キーの文字列は同モジュールの
+# 各種REASON_*定数・STATUS_ELIGIBLE_*定数の値と1対1で対応する（importはせず、
+# 文字列リテラルとして手動で同期する。既存のservices→ui依存を作らない
+# 一方向依存の方針を維持するため）。
 STAGING_STATUS_LABELS = {
     "no_candidates": "候補なし",
-    "needs_selection": "候補あり（要選択）",
-    "auto_resolvable": "自動確定可能（要確認）",
-    "needs_confirmation_existing": "要確認（既に実績あり）",
-    "needs_confirmation_duplicate": "要確認（同一計画への重複候補）",
+    "product_name_mismatch": "候補あり（製品名不一致・要選択）",
+    "multiple_candidates": "候補あり（複数・要選択）",
+    "eligible_shift_s": "Shift+Sで登録可（日付差1日以内）",
+    "eligible_shift_q": "Shift+Qで登録可（日付差2〜4日）",
+    "existing": "要確認（既に実績あり）",
+    "duplicate": "要確認（同一計画への重複候補）",
     # 生産面マスターによる分類（2026-10-07新設、D-9x参照）。
-    "needs_confirmation_side2_wait": "要確認（面2待ち）",
-    "needs_confirmation_side_master_unregistered": "要確認（生産面マスター未登録）",
+    "side2_wait": "要確認（面2待ち）",
+    "side_master_unregistered": "要確認（生産面マスター未登録）",
+    "qty_mismatch": "要確認（数量不一致）",
+    "date_unparseable": "要確認（日付を解釈できない）",
+    "date_diff_too_large": "要確認（日付差5日以上）",
 }
 
 # 対象外の理由（2026-10-06新設）。ui.production_import_staging_window.

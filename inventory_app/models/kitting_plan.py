@@ -4,7 +4,7 @@ from datetime import datetime
 
 from models.db_common import get_connection
 from models.production import get_app_cumulative_qty_bulk, list_daily_production_by_kitting_no
-from models.production_side_master import get_second_side_status
+from models.production_side_master import get_second_side_status_by_file_no
 
 # 面1のみの計画（同一(lot_no, setup_file_no)に面2の計画が無い計画）の分類
 # （2026-10-07新設、classify_side1_only_plan()参照）。
@@ -682,16 +682,21 @@ def classify_side1_only_plan(plan_item: dict):
     「面2が無いこと」を改めて確認する必要が無く、生産面マスターの参照のみで
     分類できる。
 
-    実装ラインはplan_item["mounting_line"]列の値を使う（kitting_list_noの
-    文字列分解ではない。実データ調査で、kitting_list_noの3番目の区切りと
-    mounting_line列が一致しない行が3526件中20件あることを確認済み、
-    CANONICAL_DESIGN_DECISIONS.md D-93参照）。
+    判定の単位（2026-10-08改訂、D-9x改訂）：以前は(setup_file_no, mounting_line)
+    単位（get_second_side_status()）で判定していたが、「同じファイルNoで、
+    先行面と後行面が異なる実装ラインを流れることがある」ことが判明したため、
+    setup_file_no単位（実装ラインを問わない、get_second_side_status_by_file_no()）
+    に変更した。実装ラインはkitting_list_noの文字列分解ではなく
+    plan_item["mounting_line"]列の値を使うという既存の方針（kitting_list_noの
+    3番目の区切りとmounting_line列が一致しない行が3526件中20件あることを
+    確認済み、CANONICAL_DESIGN_DECISIONS.md D-93参照）自体は変わらないが、
+    本関数の判定自体はmounting_lineをもはや使わない。
     """
     production_side = str(plan_item.get("production_side") or "").strip()
     if production_side != "1":
         return None
 
-    status = get_second_side_status(plan_item.get("setup_file_no"), plan_item.get("mounting_line"))
+    status = get_second_side_status_by_file_no(plan_item.get("setup_file_no"))
     if status is True:
         return SIDE1_ONLY_CLASS_WAITING_SIDE2
     elif status is False:
@@ -703,55 +708,104 @@ def classify_side1_only_plan(plan_item: dict):
 def find_master_plan_discrepancies() -> list:
     """
     生産面マスターと計画データ（kitting_plan_items）の食い違いを検出する
-    （2026-10-07新設、D-9x §4参照。画面・判定のどちらからも参照されない、
-    利用者が内容を確認するための一覧専用）。
+    （2026-10-07新設、2026-10-08ファイルNo単位に改訂、D-9x §4・改訂参照。
+    画面・判定のどちらからも参照されない、利用者が内容を確認するための
+    一覧専用）。
 
-    「マスターでは後行面なしだが、計画データには面2の計画が存在する」組を
-    全件返す（マスターが古い・未更新である可能性が高いケース。計画データを
-    優先する既存方針（D-8）自体は変更しない。あくまで食い違いの事実を
-    利用者が確認できるようにするための一覧）。
+    「マスターではこのファイルNoは後行面なし（1回目のみ）と判定されている
+    が、計画データには（いずれかの実装ラインに）このファイルNoの面2の計画が
+    存在する」組を全件返す（マスターが古い・未更新である可能性が高いケース。
+    計画データを優先する既存方針（D-8）自体は変更しない。あくまで食い違いの
+    事実を利用者が確認できるようにするための一覧）。
 
-    戻り値：[{"setup_file_no", "mounting_line", "lot_nos"（面2の計画がある
-    ロットNoのリスト）}, ...]（setup_file_no, mounting_line の昇順）。
+    判定の単位（2026-10-08改訂）：以前は(setup_file_no, mounting_line)単位
+    だったが、classify_side1_only_plan()と同じファイルNo単位（実装ラインを
+    問わない）の判定に揃えた。計画データ側の面2がどの実装ラインにあるかは、
+    "mounting_lines"（複数あり得る）として参考情報に残す。
+
+    戻り値：[{"setup_file_no", "mounting_lines"（面2の計画がある実装ライン
+    のリスト）, "lot_nos"（面2の計画があるロットNoのリスト）}, ...]
+    （setup_file_no の昇順）。
     """
-    from models.production_side_master import list_production_side_groups
+    from models.production_side_master import list_production_side_file_statuses
 
     with get_connection() as con:
         plan_rows = [dict(r) for r in con.execute(
-            "SELECT lot_no, setup_file_no, mounting_line, production_side FROM kitting_plan_items "
+            "SELECT lot_no, setup_file_no, mounting_line FROM kitting_plan_items "
             "WHERE COALESCE(is_active,1)=1 AND production_side = '2'"
         )]
 
-    side2_by_file_line = {}
+    side2_by_file = {}
     for row in plan_rows:
-        key = (row["setup_file_no"], row["mounting_line"])
-        side2_by_file_line.setdefault(key, []).append(row["lot_no"])
+        info = side2_by_file.setdefault(row["setup_file_no"], {"mounting_lines": set(), "lot_nos": set()})
+        info["mounting_lines"].add(row["mounting_line"])
+        info["lot_nos"].add(row["lot_no"])
+
+    file_statuses = list_production_side_file_statuses()
 
     discrepancies = []
-    for group in list_production_side_groups():
-        if group["has_side2"]:
-            continue
-        key = (group["setup_file_no"], group["mounting_line"])
-        if key in side2_by_file_line:
+    for setup_file_no, info in side2_by_file.items():
+        if file_statuses.get(setup_file_no) is False:
             discrepancies.append({
-                "setup_file_no": group["setup_file_no"], "mounting_line": group["mounting_line"],
-                "lot_nos": sorted(set(side2_by_file_line[key])),
+                "setup_file_no": setup_file_no,
+                "mounting_lines": sorted(info["mounting_lines"]),
+                "lot_nos": sorted(info["lot_nos"]),
             })
 
-    discrepancies.sort(key=lambda d: (d["setup_file_no"], d["mounting_line"]))
+    discrepancies.sort(key=lambda d: d["setup_file_no"])
     return discrepancies
 
 
-def find_unregistered_production_side_combinations() -> list:
+def find_unregistered_production_side_file_nos() -> list:
     """
     計画データ（kitting_plan_items）に存在するが、生産面マスターに全く登録が
-    無い(setup_file_no, mounting_line)の組を検出する（2026-10-07新設、
-    D-9x §4参照）。生産面マスターへの登録に使えるよう、CSV出力の元データとしても
-    使う（ui.production_side_master_window参照）。
+    無い（どの実装ラインにも1件も登録が無い）setup_file_noを検出する
+    （2026-10-07新設、2026-10-08ファイルNo単位に改訂、D-9x §4・改訂参照）。
+    classify_side1_only_plan()の「生産面マスター未登録」は、本関数と同じ
+    ファイルNo単位の判定（get_second_side_status_by_file_no()がNone）を使う。
+    生産面マスターへの登録に使えるよう、CSV出力の元データとしても使う
+    （ui.production_side_master_window参照）。
+
+    戻り値：[{"setup_file_no"}, ...]（昇順）。
+    """
+    from models.production_side_master import normalize_setup_file_no, get_second_side_status_by_file_no
+
+    with get_connection() as con:
+        file_nos = {
+            normalize_setup_file_no(r[0])
+            for r in con.execute(
+                "SELECT DISTINCT setup_file_no FROM kitting_plan_items WHERE COALESCE(is_active,1)=1"
+            )
+        }
+
+    result = [
+        {"setup_file_no": fn} for fn in file_nos
+        if get_second_side_status_by_file_no(fn) is None
+    ]
+    result.sort(key=lambda r: r["setup_file_no"])
+    return result
+
+
+def find_registered_file_nos_missing_line_combinations() -> list:
+    """
+    参考情報専用（判定には使わない、2026-10-08新設、D-9x改訂）：計画データ
+    （kitting_plan_items）に存在する(setup_file_no, mounting_line)の組のうち、
+    そのsetup_file_no自体は生産面マスターに登録がある（get_second_side_
+    status_by_file_no()がNoneではない）が、この特定の実装ラインについては
+    生産面マスターに1件も登録が無い組。
+
+    classify_side1_only_plan()・find_unregistered_production_side_file_nos()
+    のファイルNo単位の判定には一切使わない。利用者が「ファイルNoは登録済み
+    だが、計画の実装ラインがマスターに無い」ケースを個別に確認するための
+    一覧（例：ファイルNoの先行面がAライン・Bラインで実施されるが、マスターに
+    はAラインの登録しか無い場合、Bラインがここに現れる）。
 
     戻り値：[{"setup_file_no", "mounting_line"}, ...]（昇順）。
     """
-    from models.production_side_master import normalize_setup_file_no, normalize_mounting_line, get_second_side_status
+    from models.production_side_master import (
+        normalize_setup_file_no, normalize_mounting_line,
+        get_second_side_status, get_second_side_status_by_file_no,
+    )
 
     with get_connection() as con:
         plan_rows = [dict(r) for r in con.execute(
@@ -767,11 +821,46 @@ def find_unregistered_production_side_combinations() -> list:
         if key in seen:
             continue
         seen.add(key)
+        if get_second_side_status_by_file_no(norm_file) is None:
+            continue
         if get_second_side_status(norm_file, norm_line) is None:
             result.append({"setup_file_no": norm_file, "mounting_line": norm_line})
 
     result.sort(key=lambda r: (r["setup_file_no"], r["mounting_line"]))
     return result
+
+
+def list_mounting_lines_by_file_no(file_nos) -> dict:
+    """
+    指定したsetup_file_no（複数）それぞれについて、計画データ
+    （kitting_plan_items）に実在する実装ラインの一覧を返す（2026-10-08新設、
+    D-9x改訂。ui.production_side_master_window.on_show_unregistered()の
+    CSV出力ガイド用：ファイルNo単位で「未登録」と判定された場合、利用者が
+    実際にどの実装ラインへ生産面を登録すればよいかを示すために使う）。
+
+    戻り値：{setup_file_no: [mounting_line, ...]}（各リストは昇順。
+    file_nosに該当する計画データが無いsetup_file_noはキー自体が現れない）。
+    """
+    from models.production_side_master import normalize_setup_file_no, normalize_mounting_line
+
+    norm_targets = {normalize_setup_file_no(fn) for fn in file_nos}
+    if not norm_targets:
+        return {}
+
+    with get_connection() as con:
+        plan_rows = [dict(r) for r in con.execute(
+            "SELECT DISTINCT setup_file_no, mounting_line FROM kitting_plan_items WHERE COALESCE(is_active,1)=1"
+        )]
+
+    result = {}
+    for row in plan_rows:
+        norm_file = normalize_setup_file_no(row["setup_file_no"])
+        if norm_file not in norm_targets:
+            continue
+        norm_line = normalize_mounting_line(row["mounting_line"])
+        result.setdefault(norm_file, set()).add(norm_line)
+
+    return {fn: sorted(lines) for fn, lines in result.items()}
 
 
 def find_all_hidden_side1_plans_with_production() -> list:
