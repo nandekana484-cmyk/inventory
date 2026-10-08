@@ -89,6 +89,7 @@ from ui.plan_candidate_dialog import (
     _RIGHT_ALIGNED as _CANDIDATE_RIGHT_ALIGNED,
 )
 from ui.window_utils import center_window
+from ui.highlight_colors import MISMATCH_RED
 
 # "候補なし"（find_matching_plan_items()の候補が0件）行をCSV出力する際の理由欄。
 # services.production_import_service.import_production_csv()のunmatched理由
@@ -669,12 +670,18 @@ class ProductionImportStagingWindow(tk.Toplevel):
         # を最優先で判定し、単独タグとして割り当てる（3タグ併用はしない）。
         self.tree_candidates.tag_configure("large_diff", background="#fff3cd")
         self.tree_candidates.tag_configure("large_date_diff", background="#ffd9a0")
-        self.tree_candidates.tag_configure("large_diff_both", background="#ffb3b3")
+        self.tree_candidates.tag_configure("large_diff_both", background=MISMATCH_RED)
         self.tree_candidates.tag_configure("auto_confirmable", background="#c8f7c5")
         # 生産面マスターによる分類（2026-10-07新設、D-9x参照）。既存のタグとは
         # 異なる色にし、優先順位は_populate_candidates()側で最優先に判定する。
         self.tree_candidates.tag_configure("needs_side2_wait", background="#cfe2ff")
         self.tree_candidates.tag_configure("side_master_unregistered", background="#e2e3e5")
+        # 製品名不一致（2026-10-08追加）：ロットNoは一致するが製品名が一致する
+        # 候補が無い場合（_populate_candidates()のusing_fallback）に表示する
+        # 候補全件に付ける。既存の赤系ハイライト（"large_diff_both"と同じ値、
+        # ui/highlight_colors.MISMATCH_RED）を再利用し、新しい色は定義しない。
+        # 他の全タグより優先して割り当てる（_populate_candidates()参照）。
+        self.tree_candidates.tag_configure("product_name_mismatch", background=MISMATCH_RED)
 
         # スクロールバーをTreeviewより先にpackする（右ペインと同じ順序）。
         vsb = ttk.Scrollbar(tree_frame, orient="vertical")
@@ -773,6 +780,16 @@ class ProductionImportStagingWindow(tk.Toplevel):
         self.tree.column("daily_qty", width=70, anchor=tk.E, stretch=False)
         self.tree.column("status", width=160, anchor=tk.W, stretch=False)
 
+        # 製品名不一致の行を赤系ハイライトで表示する（2026-10-08追加）。
+        # アプリ内で既に「警告・不一致・要注意」の意味で使われている赤系
+        # ハイライト（ui/plan_candidate_dialog.py・本ファイルの
+        # "large_diff_both"〈数量差・日付差の両方が大きい候補〉、
+        # ui/pdf_ocr_import_window.pyの"low_confidence"、
+        # ui/production_side_master_window.pyの削除予定行と同じ値、
+        # ui/highlight_colors.MISMATCH_RED）をそのまま採用した。新しい色は
+        # 定義しない。タグの割り当ては_insert_staging_row()参照。
+        self.tree.tag_configure("product_name_mismatch", background=MISMATCH_RED)
+
         # 横スクロールバー（2026-10-07追加、画面修正5項目§5）。縦スクロール
         # バー（vsb）と同じ理由で、Treeview（expand=True, fill=BOTH）より先に
         # packする必要がある（下部の領域を先に確保する）。
@@ -826,8 +843,17 @@ class ProductionImportStagingWindow(tk.Toplevel):
         右ペイン（登録待ち一覧）へ1行挿入する共通処理。_create_staging_
         widgets()の初期表示・_revert_already_registered_rows()（登録済み
         リストから戻す訂正操作）の両方から呼ぶ（挿入ロジックの複製を避ける）。
+
+        製品名不一致（status=="product_name_mismatch"）の行に赤系ハイライト
+        （"product_name_mismatch"タグ、_create_staging_widgets()のtag_configure
+        参照）を付ける（2026-10-08追加）。列ソート（sort_staging_list()、
+        tree.move()のみで行自体は作り直さない）・再読込（load_staged_rows()等
+        での全件再構築、本関数を再度呼ぶ）・登録後の一覧更新のいずれでも、
+        本関数を経由して挿入された行は常にこのタグを保持する。
         """
-        iid = self.tree.insert("", tk.END, values=(
+        status = row.get("status")
+        tags = ("product_name_mismatch",) if status == REASON_PRODUCT_NAME_MISMATCH else ()
+        iid = self.tree.insert("", tk.END, tags=tags, values=(
             row.get("lot_no", ""),
             row.get("product_name", ""),
             row.get("report_date") or "",
@@ -982,7 +1008,15 @@ class ProductionImportStagingWindow(tk.Toplevel):
             qty_flag = _is_large_qty_diff(candidate, daily_qty)
             date_flag = _is_large_date_diff(report_date, candidate.get("plan_start_datetime"))
             side1_only_classification = classify_side1_only_plan(candidate)
-            if side1_only_classification == SIDE1_ONLY_CLASS_WAITING_SIDE2:
+            if using_fallback:
+                # 製品名不一致（2026-10-08追加）：この分岐で表示されている
+                # 候補は、ロットNoは一致するが製品名が一致する候補が無い
+                # （row["matched"]が空）ために表示されているフォールバック
+                # 候補であり、全件が製品名不一致である。他の全条件より優先して
+                # 割り当てる（要求「同じ行に複数の表示条件が当てはまる場合は、
+                # 製品名不一致のハイライトを優先する」に対応）。
+                tags = ("product_name_mismatch",)
+            elif side1_only_classification == SIDE1_ONLY_CLASS_WAITING_SIDE2:
                 tags = ("needs_side2_wait",)
             elif side1_only_classification == SIDE1_ONLY_CLASS_UNREGISTERED:
                 tags = ("side_master_unregistered",)

@@ -44,6 +44,7 @@ from ui.loading_window import LoadingWindow
 from ui.warnings_list_window import WarningsListWindow
 from ui.window_utils import center_window
 from ui.checkable_treeview import CHECKED_MARK, UNCHECKED_MARK
+from ui.highlight_colors import MISMATCH_RED
 
 # CSVの列名（固定、列名ゆらぎ吸収は行わない。本タスクの仕様で列名が明示されているため）
 COL_NO = "No"
@@ -87,7 +88,7 @@ _ROW_TAG_CHANGED = "row_changed"
 _ROW_TAG_DELETED = "row_deleted"
 _ROW_BG_ADDED = "#c8f7c5"
 _ROW_BG_CHANGED = "#fff3cd"
-_ROW_BG_DELETED = "#ffb3b3"
+_ROW_BG_DELETED = MISMATCH_RED
 
 # 判定結果（ファイルNo単位）の文字色による区別（上の背景色とは別のプロパティ
 # のため、同じ行に両方のタグを付けても競合しない）。
@@ -120,8 +121,15 @@ def _parse_production_side_csv(file_path):
     が同じ行が複数）：最後に出現した行の値を採用する（既存のON CONFLICT上書き
     の挙動と一致させるため）。重複の件数は警告として全件記録する。
 
-    「後行面だけがあり先行面が無い組」：(setup_file_no, mounting_line)単位で
-    集計し、全件を警告として記録する（登録を妨げない、情報提供のみ）。
+    「後行面だけがあり先行面が無い」：**setup_file_no単位**（実装ラインを
+    問わない）で集計し、全件を警告として記録する（登録を妨げない、情報提供
+    のみ）。同じファイルNoで先行面・後行面を別の実装ラインに分けて登録する
+    運用があるため（例：Dラインに先行面のみ、Kラインに後行面のみ）、
+    (setup_file_no, mounting_line)単位で判定すると、他のラインに先行面が
+    あるにもかかわらず誤って警告してしまう。この判定単位は、
+    `models/production_side_master.py::get_second_side_status_by_file_no()`・
+    `compute_file_no_status_map()`が採用した「ファイルNo単位」の規則
+    （2026-10-08改訂、D-9x改訂）に揃えた（2026-10-08改訂）。
 
     ボンド打ちフラグ・共通部品グループ・ライン優先順位・タクト時間は、
     判定には使わず値をそのまま（文字列として）保存する。
@@ -207,16 +215,16 @@ def _parse_production_side_csv(file_path):
                 f"CSV内に{len(occ)}回登場（{row_nos}行目）、最後の行の値を採用しました。"
             )
 
-    # 後行面だけがあり先行面が無い組の警告
-    groups_sides = {}
+    # 後行面だけがあり先行面が無い、の警告（setup_file_no単位、実装ラインを
+    # 問わない。取込後の状態＝resolved_rows・orderに基づいて判定する）。
+    file_sides = {}
     for key in order:
-        group_key = (key[0], key[1])
-        groups_sides.setdefault(group_key, set()).add(key[2])
-    for group_key, sides in groups_sides.items():
-        if sides == {"2"}:
+        file_sides.setdefault(key[0], set()).add(key[2])
+    for file_no, sides in file_sides.items():
+        if "1" not in sides:
             warnings.append(
-                f"セットアップファイルNo「{group_key[0]}」実装ライン「{group_key[1]}」："
-                "後行面のみの登録で、先行面がありません。"
+                f"セットアップファイルNo「{file_no}」："
+                "いずれの実装ラインにも先行面の登録がなく、後行面のみの登録です。"
             )
 
     plan = compute_production_side_sync_plan(resolved_rows)

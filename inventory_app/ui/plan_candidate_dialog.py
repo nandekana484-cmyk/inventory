@@ -19,6 +19,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 from ui.window_utils import center_window
+from ui.highlight_colors import MISMATCH_RED
 
 _COLS = ("lot_no", "board_name", "setup_file_no", "production_side", "plan_start_datetime",
          "planned_qty", "order_qty")
@@ -188,7 +189,7 @@ def _show_candidate_list_dialog(parent, title, description, candidates, daily_qt
     tree.pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
     tree.tag_configure("large_diff", background="#fff3cd")
     tree.tag_configure("large_date_diff", background="#ffd9a0")
-    tree.tag_configure("large_diff_both", background="#ffb3b3")
+    tree.tag_configure("large_diff_both", background=MISMATCH_RED)
 
     vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
     tree.configure(yscrollcommand=vsb.set)

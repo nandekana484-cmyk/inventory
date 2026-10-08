@@ -73,11 +73,16 @@ def _open_csv_with_fallback(file_path):
     raise ValueError(f"CSVの文字コードを判定できませんでした: {last_error}")
 
 
-def _parse_parts_attributes_csv(file_path):
+def _parse_parts_attributes_csv(file_path, replace_all=False):
     """
     部品属性TSV（96コード・丁取り数・部品種別・部品支給区分・フル数量ほか
     多数列を含む既存フォーマット。タブ区切り、実ファイルは.tsv）を解析する
     （DBへの書き込みは一切行わない。取込前の確認ダイアログ用の差分計算まで行う）。
+
+    replace_all（2026-10-08追加）：既定False＝「追加と上書き」のみ（CSVに無い
+    既存登録は残す）。True＝画面のチェックボックスがオンの場合のみ、従来の
+    「CSVをマスタとした差分同期」（CSVに無い既存登録を削除）を行う。
+    models.parts_attributes.compute_parts_attributes_sync_plan()へそのまま渡す。
 
     必須列：96コード（欠けている・空の行は警告してスキップ）
     任意列：丁取り数・部品種別・部品支給区分・フル数量
@@ -219,13 +224,13 @@ def _parse_parts_attributes_csv(file_path):
                     "final_value": final_value,
                 })
 
-    plan = compute_parts_attributes_sync_plan(resolved_rows)
+    plan = compute_parts_attributes_sync_plan(resolved_rows, replace_all=replace_all)
 
     return {
         "resolved_rows": resolved_rows, "plan": plan, "total_rows": total_rows,
         "skipped_empty_key_count": skipped_count, "value_missing_count": value_missing_count,
         "duplicates": {"same_value": same_value_dups, "diff_value": diff_value_dups},
-        "notices": notices, "warnings": warnings, "abort_reason": None,
+        "notices": notices, "warnings": warnings, "abort_reason": None, "replace_all": replace_all,
     }
 
 
@@ -241,9 +246,18 @@ def _format_value_tuple(value):
 
 
 def _build_confirmation_message(parse_result):
-    """取込前の確認ダイアログの本文を組み立てる。"""
+    """
+    取込前の確認ダイアログの本文を組み立てる。
+
+    replace_all=False（既定）の場合、削除は行われないため「削除：N件」の
+    行自体・削除に関する注意書きのいずれも表示しない（replace_all["to_delete"]
+    は常に空リストのため、以下の`if plan["to_delete"]:`ブロックは自然に発火
+    しないが、「削除：0件」という不要な行も出さないよう、ヘッダー部分の
+    行自体をreplace_all有無で分岐する）。
+    """
     plan = parse_result["plan"]
     dup = parse_result["duplicates"]
+    replace_all = parse_result.get("replace_all", False)
 
     lines = [
         f"読み込んだ行数：{parse_result['total_rows']}行",
@@ -251,8 +265,9 @@ def _build_confirmation_message(parse_result):
         f"新規追加：{len(plan['to_add'])}件",
         f"値が変わる：{len(plan['to_update'])}件",
         f"変更なし：{len(plan['unchanged'])}件",
-        f"削除：{len(plan['to_delete'])}件",
     ]
+    if replace_all:
+        lines.append(f"削除：{len(plan['to_delete'])}件")
 
     if plan["to_delete"]:
         lines.append("")
@@ -352,6 +367,25 @@ class PartsAttributesImportWindow(tk.Toplevel):
 
         self.btn_import = ttk.Button(select_frame, text="インポート実行", command=self.on_import_execute)
         self.btn_import.pack(side=tk.LEFT, padx=15)
+
+        # 既定の動作（追加と上書きのみ、2026-10-08変更）の説明と、従来の
+        # 全件置き換え（CSVに無い登録を削除）へ戻すチェックボックス（既定オフ）。
+        # 丁取り数CSVは数回に分けて取り込む運用があり、既定で全件置き換えを
+        # 行うと先に取り込んだ分がCSVに無いというだけで消えてしまうため、
+        # 既定を「追加と上書きのみ」に変更した（models/parts_attributes.py
+        # ::compute_parts_attributes_sync_plan()のdocstring参照）。
+        replace_frame = ttk.Frame(self, padding=(10, 0, 10, 0))
+        replace_frame.pack(fill=tk.X)
+        ttk.Label(
+            replace_frame,
+            text="既定の動作：追加と上書き（CSVに無い登録はそのまま残ります）。",
+            foreground="gray",
+        ).pack(side=tk.LEFT)
+        self.replace_all_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            replace_frame, text="CSVに無い登録を削除する（従来の全件置き換え）",
+            variable=self.replace_all_var,
+        ).pack(side=tk.LEFT, padx=(15, 0))
 
         filter_frame = ttk.Frame(self, padding=(10, 0, 10, 0))
         filter_frame.pack(fill=tk.X)
@@ -513,10 +547,11 @@ class PartsAttributesImportWindow(tk.Toplevel):
         loading = LoadingWindow(self, message="CSVを読み込んでいます…")
         result_queue = queue.Queue()
         file_path = self.selected_csv_path
+        replace_all = self.replace_all_var.get()
 
         def _work():
             try:
-                result_queue.put((True, _parse_parts_attributes_csv(file_path)))
+                result_queue.put((True, _parse_parts_attributes_csv(file_path, replace_all=replace_all)))
             except Exception as e:
                 result_queue.put((False, e))
 
@@ -571,9 +606,11 @@ class PartsAttributesImportWindow(tk.Toplevel):
         result_queue = queue.Queue()
         resolved_rows = parse_result["resolved_rows"]
 
+        replace_all = parse_result.get("replace_all", False)
+
         def _work():
             try:
-                applied_plan = apply_parts_attributes_sync(resolved_rows)
+                applied_plan = apply_parts_attributes_sync(resolved_rows, replace_all=replace_all)
                 result_queue.put((True, applied_plan))
             except Exception as e:
                 result_queue.put((False, e))

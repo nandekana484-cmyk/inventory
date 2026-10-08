@@ -15,7 +15,7 @@ version_info.txt経由）は、いずれも本ファイルの値から導出す�
 （バージョン番号を複数箇所で二重管理しない）。
 """
 APP_VERSION = "1.2.0"
-BUILD_DATE = "2026-10-07"
+BUILD_DATE = "2026-10-08"
 
 
 def get_version_label() -> str:

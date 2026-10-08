@@ -1073,7 +1073,7 @@ D-65で新設した`ui/warnings_list_window.py::WarningsListWindow`も`center_wi
 
 ### 25.6 未対応・申し送り事項
 
-- 検索・ソートの導入により一覧上の見た目は変わるが、CSVインポート自体の仕様（差分同期・CSVに無いデータの削除）はD-53・D-63から変更していない。
+- 検索・ソートの導入により一覧上の見た目は変わるが、CSVインポート自体の仕様（差分同期・CSVに無いデータの削除）はD-53・D-63から変更していない（**2026-10-08改訂（D-108、本ファイル§38.2参照）**：基板丁数マスター（`parts_attributes`）のみ、数回に分けて取り込む運用に合わせ既定を「追加と上書き」〈CSVに無い既存登録は削除しない〉へ変更した。チェックボックスをオンにすれば、本項の記述どおりの全件差分同期〈削除を含む〉に戻せる。構成基板数マスター（`board_structure_master`）は本項の記述のまま変更していない）。
 - `board_structure_master`の実データ（3119件）の`master.db`への再構築は、本タスクでも対象外のまま未実施（再構築方法は2026-10-05にD-77で決定済み、CSV取り込み直し。D-42他参照）。
 
 ## 26. .exe版のデータ保存先の変更と.exeの再ビルド（2026-10-06、D-69〜D-71）
@@ -1368,6 +1368,10 @@ D-81の修正（候補が複数ある場合も、いずれか1件の実績合計
 | D-104 | 生産面マスターの「後行面の有無」判定の単位を、(セットアップファイルNo, 実装ライン)から、セットアップファイルNo単位（実装ラインを問わない）に変更した。利用者の説明：同じファイルNoで、先行面と後行面が異なる実装ラインを流れることがある（例：先行面がDライン、後行面がKライン）。旧基準では、このような組み合わせの面1のみの計画を誤って「未登録」または「片面の製品」と判定してしまっていた。新設した`models/production_side_master.py::compute_file_no_status_map()`（純粋関数、DBアクセスなし）に判定ルールを1か所に集約し、DB版`get_second_side_status_by_file_no()`・画面編集中の未保存反映用の両方がこれを経由する。`classify_side1_only_plan()`はこの新しい判定を使うよう変更した（唯一の変更点。a/b/cの分類ルール自体・優先順位は変更していない）。`list_active_plan_items()`の既存の「2回目計画があれば1回目除外」ロジック（D-8、(lot_no, setup_file_no)単位・実装ラインを問わない設計で、元々ファイルNo単位だった）への変更は不要と判断した（着手前の確認、本ファイル§37.0参照） | 本ファイル §37 |
 | D-105 | 「計画との食い違い」（`find_master_plan_discrepancies()`）・「マスター未登録の組み合わせ」（旧`find_unregistered_production_side_combinations()`）をファイルNo単位の判定に合わせて改訂した。未登録一覧は`find_unregistered_production_side_file_nos()`（ファイルNo単位、分類に使う）に改めた。実装ライン単位の登録漏れ（ファイルNo自体は登録済みだが、計画データ上のこの実装ラインには登録が無い組み合わせ）は、判定には使わない参考情報専用の一覧として`find_registered_file_nos_missing_line_combinations()`を新設し、画面に別ボタン（「実装ライン単位の未登録組み合わせ（参考情報）」）で分離した。未登録ファイルNoのCSV出力は、利用者がどの実装ラインに登録すればよいか分かるよう、計画データに実在する実装ラインを`list_mounting_lines_by_file_no()`で展開して出力するよう改善した | 本ファイル §37 |
 | D-106 | 生産面マスター画面に閲覧専用／編集モードを導入した。既定は閲覧専用（一覧クリックで内容が変わらない）。「編集」ボタンで編集モードに入り、先行面・後行面セルのクリック・行の追加・削除が可能になる（セル以外をクリックしても切り替わらない仕様は維持）。削除は即座に行を消さず`pending_delete`フラグで保存まで一覧に残す方式に変更した（以前は即座に`self._rows`から削除していた）。未保存の変更（追加・削除予定・変更）を行の背景色で区別し（既存の配色（緑＝追加、黄＝変更、赤＝削除予定）を他画面から再利用）、ファイルNo単位の判定結果（`eligible_shift_s`等と同様、文字色で2回目あり／1回目のみを区別。背景色とは別のプロパティのため同じ行に両方のタグを付けても競合しない）を新しい列に追加した。保存前に、変更内容（ファイルNo・実装ライン・変更前→変更後）と、判定結果が変わるファイルNoがあればその旨を示す確認ダイアログを出す。チェックボックスの見た目は`ui/checkable_treeview.py`のCHECKED_MARK/UNCHECKED_MARK（☑/☐）を再利用した | 本ファイル §37 |
+| D-107 | 生産面マスターCSV取込時の「後行面だけがあり先行面が無い」警告（`ui/production_side_master_window.py::_parse_production_side_csv()`）の判定単位を、(セットアップファイルNo, 実装ライン)単位からセットアップファイルNo単位（実装ラインを問わない）に変更した。同じファイルNoで先行面・後行面を別の実装ラインに登録する運用（例：Dラインに先行面のみ、Kラインに後行面のみ）があり、以前の判定単位では、他のラインに先行面があるにもかかわらず誤って警告してしまっていた。この判定単位は、D-104で`classify_side1_only_plan()`・画面の判定結果表示がすでに採用していた「ファイルNo単位」の規則（`get_second_side_status_by_file_no()`・`compute_file_no_status_map()`）に揃えたもの。他の警告（CSV内の重複キー、生産面の値が不正、必須値の空欄）・画面の一覧表示（ファイルNo単位の判定結果列、D-104で対応済み）・保存前の確認ダイアログ（判定結果の変化を示すのみで、本警告自体は元々表示していなかった）はいずれも変更していない。本警告が実装されている箇所はCSV取込時のみであることをコード全体で確認した | 本ファイル §38.1 |
+| D-108 | 基板丁数マスター（`models/parts_attributes.py`、`ui/parts_attributes_import_window.py`）のCSV取込の既定動作を、「CSVをマスタとした差分同期（CSVに無い既存登録を削除）」から「追加と上書きのみ（CSVに無い既存登録は削除せず残す）」に変更した。丁取り数のCSVを数回に分けて取り込む運用があり、既定で全件置き換えを行うと、先に取り込んだ分がCSVに無いというだけで消えてしまう問題があったため。従来の全件置き換え（削除を含む）は、画面に新設したチェックボックス（既定オフ）をオンにした場合のみ働く。`compute_parts_attributes_sync_plan()`・`apply_parts_attributes_sync()`に`replace_all`引数（既定False）を追加し、Falseの場合は削除対象の計算（`to_delete`）自体を行わない。取込前の確認ダイアログは、`replace_all`がFalseの場合「削除」の件数行・注意書きを表示しない（削除が発生し得ないため）。CSV内の重複の扱い・値の食い違いの警告・1トランザクションでの確定・失敗時のロールバック・完了メッセージの内訳・登録件数の表示・検索・ソートはいずれも変更していない。構成基板数マスター（`board_structure_master`）・生産面マスターのCSV取込方式（差分同期）は対象外で変更していない | 本ファイル §38.2 |
+| D-109 | 実績CSV取込の候補一覧（`ui/production_import_staging_window.py::_populate_candidates()`）・登録待ち一覧（`_insert_staging_row()`）で、「製品名不一致」（lot_noは一致するが製品名が一致する候補が無い、`evaluate_auto_register_eligibility()`のreason="product_name_mismatch"）の行を、アプリ内で既に「警告・不一致・要注意」の意味で使われている赤系ハイライト（`#ffb3b3`、新設した`ui/highlight_colors.MISMATCH_RED`に集約）で表示するようにした。採用理由：`#ffb3b3`は`ui/plan_candidate_dialog.py`・本ファイルの"large_diff_both"（数量差・日付差の両方が大きい候補）、`ui/pdf_ocr_import_window.py`の"low_confidence"（OCR信頼度が低い行）、`ui/production_side_master_window.py`の削除予定行、の4箇所で既に使われており、「警告・不一致・要注意」の意味で一貫して使われている唯一の赤系ハイライトだったため（黄系`#fff3cd`・オレンジ系`#ffd9a0`は注意喚起レベルが異なり、緑系`#c8f7c5`・青系`#cfe2ff`・灰系`#e2e3e5`は不一致以外の別の意味のため不採用）。色の値は`ui/highlight_colors.py`（新設）の`MISMATCH_RED`定数に集約し、上記4箇所＋今回追加した2箇所（合計6箇所）がこれを参照する形にそろえた（各画面の見た目は変更していない、値の参照元を1箇所に集約したのみ）。表示箇所の確認結果：候補一覧（左ペイン、`using_fallback`時に表示される全候補が対象、他の全タグより優先）・登録待ち一覧（右ペイン、status=="product_name_mismatch"の行）の2箇所にこの状態が表示されており、両方に同じハイライトを適用した。「対象外一覧（登録済み／数量0）」にはこの状態は表示されない（reason列は"already_registered"/"zero_qty"のみ）ため対象外。旧`ui/plan_candidate_dialog.py::select_plan_candidate_by_lot()`（同じfallback概念を持つが、現在どこからも呼ばれていない死んだコード）は対象外。判定の条件・登録の可否・並び順は変更していない（表示のみの変更）。選択状態での見分けやすさについては、Tkinterのttk.Treeviewの既知の制約（選択状態の行は、ウィジェット全体の`style.map()`による背景色（Windowsでは`SystemHighlight`）がタグ背景色を上書きし、タグごとに選択時の色を変える手段が無い）を実測で確認した上で、背景色の上書きには対応せず、既存の「状態」列のテキスト表示（右ペイン）・候補一覧上部のヒントラベル（左ペイン、行選択に関係なく常時表示）という、選択状態に影響されない既存の手段で判別可能であることを確認した（判断に迷った点、本ファイル§39.4参照） | 本ファイル §39 |
+| D-110 | .exe v1.2.0を再ビルドした（PyInstaller、`--onefile`、`inventory_app.spec`）。`version.py`のBUILD_DATEを2026-10-08へ更新。ファイルサイズ130,873,429バイト（直前のv1.1.0ビルド130,829,832バイトから+43,597バイト、D-92以降の差分コード分）。ビルドログ（`warn-inventory_app.txt`、473件）に`models.*`・`ui.*`・`services.*`自身のモジュールに関する警告は0件（grepで確認）、すべて本アプリが使わないオプション依存の不在に関する警告。`.exe`のFileVersion/ProductVersionは`"1.2.0 (2026-10-08)"`でversion.pyの値と一致することを確認した。v1.1.0以降に追加したモジュール（`models/production_side_master.py`・`ui/production_side_master_window.py`・`ui/highlight_colors.py`）は、いずれも`main.py`から`ui.main_window`経由で静的にimportされる通常のPythonモジュールであり、PyInstallerの`Analysis()`によるimport解析で自動的に同梱されることをコードの到達性確認（`import main`が例外なく成功すること）で確認した。新たな非.pyの実行時データファイルは増えておらず、`.spec`への追加は不要と判断した（`db/schema.sql`は既存のdatas登録のまま変更なし）。検証は実行ファイル本体の起動確認（初回起動でのdbフォルダ・master.db作成、inventory.dbが作られないこと、schema.sqlの展開先への存在、タイトル表示）と、v1.1.0相当のデータでの引き継ぎ確認（旧コミット`ea8505e`のコードで作成したデータ、本ファイル§40.2参照）を、画面の自動クリックなしで行った。既存の検証スイート・pytestはビルド前後いずれも合格（1 passed、回帰なし）。ビルド前後で、リポジトリの`inventory_app/db`・`%LOCALAPPDATA%\InventoryApp`のハッシュ値が完全一致することを確認した（変化なし） | 本ファイル §40 |
 
 ### 30.1 Shift+Sの検証結果（D-84）
 
@@ -1891,3 +1895,208 @@ CapsLockの状態に左右されないよう、`<Shift-Q>`・`<Shift-q>`の両�
 - 削除予定行（`pending_delete`）に対する「個別の取り消し」操作は実装しなかった（指示にあった「元に戻す」はすべての未保存の変更を一括で取り消す仕様のみ要求されており、行単位の取り消しは明記されていなかったため）。削除予定にした行を個別に戻したい場合は、保存前の確認ダイアログで変更内容を確認した上で「いいえ」を選び、必要な分だけ操作をやり直す、または「元に戻す」で全体を取り消す、のいずれかになる。
 - 「マスター未登録のファイルNoを確認」のCSV出力について、ファイルNoによっては計画データ上の実装ラインが複数（または0件）になる場合があるため、1ファイルNoにつき実装ライン数分の行を出力する形にした（0件の場合はファイルNo自体を1行、実装ライン欄を空のまま出力する）。これは指示文には明記されていなかったが、「生産面マスターへの登録に使えるよう」という既存の設計意図（旧実装のdocstring）を踏まえた判断。
 - `find_master_plan_discrepancies()`の戻り値の形を、1ファイルNoにつき実装ラインが複数あり得るため`"mounting_line"`（単一値）から`"mounting_lines"`（リスト）に変更した。呼び出し元は`ui/production_side_master_window.py`のみであることを確認済み。
+
+## 38. 生産面マスターの警告修正と、基板丁数マスターの取込方式の修正（2026-10-08、D-107〜D-108）
+
+### 38.1 生産面マスター：「後行面だけがあり先行面が無い」警告の判定単位（D-107）
+
+**現状確認**：`ui/production_side_master_window.py::_parse_production_side_csv()`（旧210-220行目）は、`groups_sides`を`(setup_file_no, mounting_line)`単位でキー化し、そのキー内のproduction_side集合が`{"2"}`（後行面のみ）の場合に警告していた。そのため、同じファイルNoでも実装ラインが異なれば別のグループとして扱われ、「Dラインに先行面のみ、Kラインに後行面のみ」という運用（D-104で判明した、同一ファイルNoが複数の実装ラインを流れる実態）で、Kライン側が誤って警告されていた。
+
+一方、`models/production_side_master.py::compute_file_no_status_map()`・`get_second_side_status_by_file_no()`（D-104で新設）は既にファイルNo単位（実装ラインを問わない）で後行面の有無を判定しており、画面の一覧表示（「判定結果（ファイルNo単位）」列）・`classify_side1_only_plan()`の自動確定判定はすでにこの規則に揃っていた。CSV取込時の警告だけが古い判定単位のまま残っていたことが、今回の不具合の原因。
+
+**修正**：`_parse_production_side_csv()`内の警告判定を、ファイルNo単位（`file_sides`、`setup_file_no`のみをキーにして全実装ラインのproduction_sideを集計）に変更。「"1"（先行面）がいずれの実装ラインにも存在しない」場合のみ警告する。判定は取込後の状態（CSVの内容、`order`リスト）に基づく。他の3種類の警告（必須値空欄、生産面の値が不正、CSV内の重複キー）は変更していない。
+
+**他画面への同種の警告・表示の有無を確認した結果**：
+- 画面の一覧表示（「判定結果（ファイルNo単位）」列）：D-104で既にファイルNo単位（`compute_file_no_status_map()`）。本修正との整合性あり、変更不要。
+- 保存前の確認ダイアログ（`_build_save_confirmation_message()`）：判定結果（2回目あり/1回目のみ/未登録）の変化を示すのみで、「後行面のみで先行面が無い」という形の警告文自体はそもそも表示していない。該当なし。
+- 構成基板数マスター（`board_structure_import_window.py`）：同種の警告は存在しない（検索して確認、該当箇所なし）。
+- 以上より、CSV取込時の警告（本項で修正した箇所）以外に、同じ判定を行っている箇所は存在しないことを確認した。
+
+### 38.2 基板丁数マスター：取込を「追加と上書き」にする（D-108）
+
+**背景**：丁取り数のCSVは数回に分けて取り込む運用がある（利用者からの説明）。既定の取込（`compute_parts_attributes_sync_plan()`/`apply_parts_attributes_sync()`、D-62〜D-68で確立）は、CSVに無い既存登録を削除する「CSVをマスタとした差分同期」のため、分けて取り込むと先に取り込んだ分が消えてしまう問題があった。
+
+**修正**：
+- `models/parts_attributes.py::compute_parts_attributes_sync_plan()`・`apply_parts_attributes_sync()`に`replace_all`引数（既定`False`）を追加。`False`の場合、`to_delete`を計算・適用しない（DELETE文自体を実行しない）。`True`の場合は従来どおりの全件差分同期。
+- `ui/parts_attributes_import_window.py`に「CSVに無い登録を削除する（従来の全件置き換え）」チェックボックス（既定オフ）を新設し、`on_import_execute()`で読み取った値を`_parse_parts_attributes_csv()`・`_apply_import()`経由で`replace_all`として渡す。
+- 取込前の確認ダイアログ（`_build_confirmation_message()`）：`replace_all=False`の場合、「削除：N件」の行自体と「※ このCSVに無いデータは削除されます」の注意書きを表示しない（`to_delete`が常に空のため、既存の`if plan["to_delete"]:`ブロックは自然に発火しないが、ヘッダー部分の「削除：0件」という行自体も出さないよう分岐を追加した）。`replace_all=True`の場合は従来どおり削除件数・対象を表示する。
+- 完了メッセージ（`_build_completion_message()`）・CSV内重複の扱い・値の食い違いの警告・1トランザクションでの確定・失敗時のロールバック・登録件数の表示・検索・ソートはいずれも変更していない（完了メッセージは常に「削除：N件」を含む形式のまま、`replace_all=False`時は常に0件として表示される）。
+- 構成基板数マスター（`board_structure_master`）・生産面マスターのCSV取込方式（差分同期）は対象外。`compute_parts_attributes_sync_plan()`/`apply_parts_attributes_sync()`の呼び出し元は`ui/parts_attributes_import_window.py`のみであることを確認済み（他に影響なし）。
+- 画面内に既定の動作を示す1行の説明（「既定の動作：追加と上書き（CSVに無い登録はそのまま残ります）。」）を追加した。
+
+**以前の記録の改訂**：D-63・§25.6（「CSVインポート自体の仕様（差分同期・CSVに無いデータの削除）はD-53・D-63から変更していない」）に、基板丁数マスターのみ本項（D-108）で既定を変更した旨を追記した（構成基板数マスターは対象外、§25.6参照）。
+
+### 38.3 検証結果（隔離した一時ディレクトリ、実データのコピーを使用、原本は未変更、画面の自動クリックは行わず）
+
+| 項目 | 結果 |
+|---|---|
+| ファイルNo0004でDラインに先行面のみ・Kラインに後行面のみ→警告なし | **合格** |
+| どのラインにも先行面が無く後行面だけがあるファイルNo→警告あり | **合格** |
+| 同じファイルNo・同じラインに先行面と後行面→警告なし（従来どおり） | **合格** |
+| CSVを2つに分けて順に取り込むと両方の内容が登録されている | **合格**（1回目：P001・P002、2回目：P002（値違い）・P003 → 取込後にP001・P002・P003がすべて存在） |
+| 2回目のCSVに1回目と同じ96コードで値の違う行があると新しい値で上書きされる | **合格**（P002のteitoriが99に更新） |
+| 同じCSVを再度取り込むとすべて「変更なし」になる | **合格**（to_add=0・to_update=0・unchanged=2） |
+| チェックを入れた場合、CSVに無い登録が削除され確認ダイアログの件数と一致する | **合格**（`replace_all=True`でto_deleteがP001の1件になることを確認し、適用後にP001が削除・P002・P003が残ることを確認） |
+| 確認で「いいえ」を選ぶと何も変わらない／途中で例外を起こすと取込前の状態に戻る | **合格**（「いいえ」はUI層の`_confirm_and_apply()`がDB処理そのものを呼ばないため、設計上何も変更されない。ロールバックは、コミット前に例外を発生させた場合にDBへ反映されないことをコードレベルで確認） |
+| 丁取り数の変更後、BOMのキャッシュの無効化が従来どおり行われる | **合格**（`invalidate_bom_master_by_part_no()`の呼び出しをモックして、追加・更新した96コード分だけ呼ばれることを確認） |
+| 既存の検証・pytest | **合格**（1 passed、回帰なし） |
+
+### 38.4 判断に迷った点・停止条件の判定
+
+- 停止条件に該当する項目は無かったため、両項目とも実装した。
+- 確認ダイアログの「削除：0件」行を`replace_all=False`時に完全に非表示にするか、「削除：0件」とだけ表示するかで迷ったが、指示文「削除に関する表示と注意書きは出さない」を文字通り解釈し、行自体を出さない実装にした。
+- 完了メッセージ（取込後）の「削除：N件」表示は、指示文に明記された「変更しない」対象のため、`replace_all=False`時も0件のまま表示を残した（確認ダイアログとは異なる判断だが、指示文の区別に従った）。
+
+## 39. 実績CSV取込の「製品名不一致」の赤色表示、および後日検討事項の記録（2026-10-08、D-109）
+
+### 39.1 既存の赤系ハイライトの調査結果
+
+アプリ内の`ui/*.py`で`tag_configure(..., background="#...")`の形で設定されている背景色ハイライトを全件調査した結果：
+
+| 色 | タグ名／変数名 | 画面 | 意味 |
+|---|---|---|---|
+| `#fff3cd`（黄） | `large_diff`／`_ROW_BG_CHANGED` | `plan_candidate_dialog.py`・`production_import_staging_window.py`（候補一覧）・`production_side_master_window.py`（未保存の変更行） | 数量差が大きい候補の注意喚起／未保存の変更 |
+| `#ffd9a0`（オレンジ） | `large_date_diff` | `plan_candidate_dialog.py`・`production_import_staging_window.py`（候補一覧） | 日付差が大きい候補の注意喚起 |
+| `#ffb3b3`（赤） | `large_diff_both`／`low_confidence`／`_ROW_BG_DELETED` | `plan_candidate_dialog.py`・`production_import_staging_window.py`（候補一覧）・`pdf_ocr_import_window.py`（OCR読取一覧）・`production_side_master_window.py`（削除予定行） | 数量差・日付差の両方が大きい候補／OCR信頼度が低い行／削除予定の行（いずれも「警告・不一致・要注意」の意味） |
+| `#c8f7c5`（緑） | `auto_confirmable`／`_ROW_BG_ADDED` | `production_import_staging_window.py`（候補一覧）・`production_side_master_window.py`（追加予定行） | 自動確定可能（好意的な意味）／追加予定の行 |
+| `#cfe2ff`（青） | `needs_side2_wait` | `kitting_production_entry.py`（計画一覧）・`production_import_staging_window.py`（候補一覧） | 面2待ち（情報提供、警告ではない） |
+| `#e2e3e5`（灰） | `side_master_unregistered` | `kitting_production_entry.py`（計画一覧）・`production_import_staging_window.py`（候補一覧） | 生産面マスター未登録（情報提供、警告ではない） |
+| `#cfe8ff`（薄青） | チェックボックスのアクティブ表示 | `kitting_production_entry.py`・`ng_input_window.py`・`unified_report_window.py`・`wip_expansion_window.py` | チェック済みの視覚強調（ハイライトとは別目的） |
+
+**採用した色**：`#ffb3b3`（赤）。複数の赤系類似候補は無く、「警告・不一致・要注意」の意味で一貫して使われている唯一の赤系ハイライトだったため、迷わず採用できた。黄・オレンジは「大きいが致命的ではない差異」を表し、緑・青・灰は不一致以外の意味（好意的／情報提供）のため不採用。
+
+**色の定義の集約**：`ui/highlight_colors.py`（新設）に`MISMATCH_RED = "#ffb3b3"`を定義し、上記4箇所の既存リテラル（`plan_candidate_dialog.py`・`production_import_staging_window.py`の"large_diff_both"、`pdf_ocr_import_window.py`の"low_confidence"、`production_side_master_window.py`の`_ROW_BG_DELETED`）と、今回追加した2箇所（候補一覧の"product_name_mismatch"、登録待ち一覧の"product_name_mismatch"）、合計6箇所がこの定数を参照する形にそろえた。各画面の見た目（実際の色の値）はいずれも変更していない。
+
+### 39.2 「製品名不一致」が表示される箇所の確認
+
+- **候補一覧（左ペイン、`tree_candidates`）**：`_populate_candidates()`の`using_fallback`（`row["matched"]`が空、lot_noは一致する候補はあるが製品名まで一致する候補が無い）の場合に表示される全候補が対象。候補一覧の上部ヒントラベル（`lbl_candidate_hint`）には既にこの状態の説明文（「※ 製品名が完全一致する候補が無いため、ロットNo.が一致する全ての候補を表示しています。」）が表示されていたが、候補一覧の行自体には色による強調が無かった。
+- **登録待ち一覧（右ペイン、`self.tree`）**：`evaluate_auto_register_eligibility()`が`reason="product_name_mismatch"`を返す行（`_load_staged_rows_from_db()`で`status="product_name_mismatch"`になる）。状態列のテキスト（`STAGING_STATUS_LABELS["product_name_mismatch"]`＝「候補あり（製品名不一致・要選択）」）は既に表示されていたが、行自体に色による強調が無かった。
+- **対象外一覧（登録済み／数量0、`_already_registered_tree`）**：`parse_production_csv_for_staging()`時点で判定される`EXCLUSION_REASON_ALREADY_REGISTERED`／`EXCLUSION_REASON_ZERO_QTY`のいずれかのみが表示され、「製品名不一致」はそもそも表示されない（この状態の行は必ず`pending_csv_import_rows`へ保存され、登録待ち一覧側に表示されるため）。対象外。
+- その他、`ui/plan_candidate_dialog.py::select_plan_candidate_by_lot()`が同じ"using_fallback"の概念を持つが、現在どこからも呼び出されていない（コード中の参照はdocstring上の言及のみで、実際の呼び出し箇所は無いことをコード全体で確認済み）。対象外。
+
+### 39.3 実装内容
+
+- `ui/highlight_colors.py`を新設し、`MISMATCH_RED = "#ffb3b3"`を定義。
+- `ui/production_import_staging_window.py`：
+  - `self.tree_candidates.tag_configure("product_name_mismatch", background=MISMATCH_RED)`を追加。`_populate_candidates()`のタグ判定で、`using_fallback`の場合は他の全条件（面2待ち・マスター未登録・自動確定可能・数量差・日付差）より優先してこのタグを割り当てる。
+  - `self.tree.tag_configure("product_name_mismatch", background=MISMATCH_RED)`を追加。`_insert_staging_row()`で、`row["status"] == "product_name_mismatch"`の場合にこのタグを付けて挿入する。
+  - 既存の`"large_diff_both"`の背景色リテラルを`MISMATCH_RED`参照に置き換えた（見た目は変更なし）。
+- `ui/plan_candidate_dialog.py`・`ui/pdf_ocr_import_window.py`・`ui/production_side_master_window.py`：既存の赤系ハイライトのリテラルを`MISMATCH_RED`参照に置き換えた（見た目は変更なし）。
+- 判定の条件（`evaluate_auto_register_eligibility()`等）・登録の可否・並び順（`_sort_candidates_by_closeness()`・`sort_staging_list()`）はいずれも変更していない。
+
+### 39.4 選択状態での見分けやすさ（判断に迷った点）
+
+要求「行を選択している状態でも、製品名不一致であることが見分けられること」について、Tkinterの`ttk.Treeview`では、選択状態の行の背景色・文字色は、ウィジェット全体に対する`ttk.Style.map("Treeview", background=[...], foreground=[...])`（既定では`('selected', 'SystemHighlight')`／`('selected', 'SystemHighlightText')`、実機で確認）が、個々の行の`tag_configure()`による背景色より優先して適用される。これはTkinter/ttkの既知の制約で、タグごとに選択時の色を変える手段は無い（スタイルは行単位ではなくウィジェット単位で、タグを区別できないため）。
+
+対応を検討した選択肢：
+1. 対象のTreeview専用の`style`名を新設し、選択状態の背景色マップを空にする→タグの色は選択中も保たれるが、**製品名不一致以外の行も含め、選択状態の視覚的な手がかり（青いハイライト）がこの一覧全体から失われる**（複数選択してShift+S等を行う操作性に影響するため、既存の見た目を変えないという方針に反すると判断し見送った）。
+2. 選択時に文字色・フォントを変える→これも同じ仕組み（ウィジェット単位のスタイルマップ）のため、タグごとの区別ができない。
+
+**採用した対応**：背景色の上書き自体への対応は行わず、選択状態に影響されない既存の手段（候補一覧：常時表示のヒントラベル、登録待ち一覧：状態列のテキスト）で製品名不一致を判別可能であることを確認し、これをもって要求を満たすと判断した。背景色のハイライトは「一覧を一目で見渡した時に気づきやすくする」という主たる目的（未選択の行が大多数であるため）を十分に果たしている。
+
+### 39.5 検証結果（隔離した一時ディレクトリ、実データのコピーを使用、原本は未変更、画面の自動クリックは行わず）
+
+| 項目 | 結果 |
+|---|---|
+| 製品名が一致する行と不一致の行を並べ、不一致の行だけにハイライトが設定される | **合格**（同一lot_noで製品名を変えた保留行（不一致）・実際の計画の製品名と同じ保留行（一致）を用意し、不一致の行のみ候補一覧・登録待ち一覧の両方で`"product_name_mismatch"`タグが付くことを確認） |
+| 色の値が、採用した既存のハイライトと同じ | **合格**（`tree.tag_configure("product_name_mismatch", "background")`の戻り値が`"#ffb3b3"`であることを候補一覧・登録待ち一覧の両方で確認） |
+| 再読込後も表示が保たれる | **合格**（`_load_staged_rows_from_db()`を再実行し`_insert_staging_row()`で全件再構築した後も、不一致の行にタグが保たれることを確認） |
+| ソート後も表示が保たれる | **合格**（`sort_staging_list("lot_no")`を2回（昇順・降順）実行後もタグが保たれることを確認。`tree.move()`はタグに影響しない仕様通り） |
+| 登録後の一覧の更新後も表示が保たれる | **合格**（上記「再読込後」の確認と同じ経路（`_insert_staging_row()`経由）で、登録後の一覧更新（`_revert_already_registered_rows()`等）でも同様に保たれることをコードで確認） |
+| 選択状態でも製品名不一致であることが見分けられる | **合格**（§39.4参照。タグ自体・状態列のテキスト・候補一覧のヒントラベルがいずれも選択後も保持されることを確認） |
+| 既存の検証・pytest | **合格**（1 passed、回帰なし） |
+
+### 39.6 後日検討事項の記録（コードは変更していない）
+
+D-108（基板丁数マスターの取込を「追加と上書き」に変更）に伴い、登録済みデータを削除する手段は「チェックを入れての全件置き換え」のみになった。数回に分けて取り込む運用では全件を含むCSVを用意しにくいため、以下を後日検討する事項として記録する：
+
+- 基板丁数マスター画面に、一覧から行を選んで個別に削除する機能（生産面マスター画面の編集モードと同じ方式）の追加を検討する。
+- 構成基板数マスターも、画面上での個別の削除手段が無い（同じ検討の対象）。
+- 状態：**未着手**。利用者が必要と判断した時点で着手する。
+
+（CHANGELOG.mdの「既知の制約・未対応事項」にも同内容を追記した。）
+
+## 40. .exe v1.2.0の再ビルドと検証（2026-10-08、D-110）
+
+### 40.1 §0（着手前の確認）の結果
+
+- `dist/`に利用者のデータ（dbフォルダ・app_settings.json等）は置かれていなかった（ビルド直前は`dist/InventoryApp.exe`（v1.1.0ビルド）のみ）。
+- `version.py`：`APP_VERSION="1.2.0"`（既存のまま）、`BUILD_DATE`を2026-10-08へ更新した。
+- `CHANGELOG.md`の1.2.0セクションに、D-92〜D-109（生産面マスターの新設、画面の修正5項目、Shift+Qの追加・取り消し・再追加、生産面マスターの判定単位修正・編集モード、基板丁数マスターの取込方式修正、製品名不一致の赤色表示）までの変更が記載済みであることを確認した。
+- v1.1.0以降に追加したモジュール（`models/production_side_master.py`・`ui/production_side_master_window.py`・`ui/highlight_colors.py`）はいずれも`main.py`→`ui.login_window`→`ui.main_window`→`ui.production_side_master_window`（`from ui.production_side_master_window import ProductionSideMasterWindow`）という通常の静的importの連鎖で到達可能であることをコードで確認し（`python -c "import main"`が例外なく成功）、PyInstallerの`Analysis()`によるimport解析で自動的に同梱されると判断した。`.spec`への`hiddenimports`追加は不要。
+- 実行時に読む`.py`以外のファイル（非Pythonのデータファイル）が新たに増えていないことを、`__file__`・`os.path.dirname(__file__)`基準のファイル読み込みをリポジトリ全体でgrepして再確認した。`db/schema.sql`（既存の`datas`登録済み）以外に該当は無かった。新設した`models/production_side_master.py`・`models/parts_attributes.py`の新しいテーブルは、いずれも`init_*_table()`内の`CREATE TABLE IF NOT EXISTS`（Pythonコード自身によるスキーマ作成）であり、外部のSQLファイル等には依存していない。
+- ビルド前に`pytest`（1 passed）の合格を確認した。
+
+### 40.2 ビルド結果（D-110）
+
+PyInstaller（`--onefile`、`inventory_app.spec`）で再ビルドした。
+
+| 項目 | 結果 |
+|---|---|
+| ファイルサイズ | 130,873,429バイト（約124.8MB、v1.1.0ビルド130,829,832バイトから+43,597バイト） |
+| ビルドログの警告 | `warn-inventory_app.txt`473件。`models.*`・`ui.*`・`services.*`に関する警告は0件（grepで確認）。すべて本アプリが使わないオプション依存（`xlsxwriter`・`uvloop`・`tables`等）の不在に関する警告 |
+| `.exe`のFileVersion/ProductVersion | `"1.2.0 (2026-10-08)"`（`version.py`と一致、PE情報をバイナリから直接読み取って確認） |
+
+ビルド前後で、リポジトリの`inventory_app/db/master.db`・`inventory_app/db/inventory.db`のSHA-256ハッシュ、`%LOCALAPPDATA%\InventoryApp\db\master.db`・`inventory.db`のSHA-256ハッシュが完全一致することを確認した（いずれも変化なし）。ビルド後に`pytest`（1 passed）の合格を再確認した。
+
+### 40.3 .exeの検証結果（D-110）
+
+隔離した一時フォルダへ`dist/InventoryApp.exe`をコピーして起動し（`subprocess.Popen`で起動、`win32gui.EnumWindows()`でタイトル確認、`psutil`でプロセス終了。画面の自動クリックは行わない）、検証の前後でリポジトリの`inventory_app/db`・`%LOCALAPPDATA%\InventoryApp`のファイルのハッシュに変化が無いことを確認した。
+
+| 項目 | 結果 |
+|---|---|
+| タイトルにv1.2.0とビルド日が表示されること | **合格**（`部品在庫管理アプリ - ログイン v1.2.0（2026-10-08）`、`win32gui.EnumWindows()`で確認） |
+| 初回起動でdbフォルダとmaster.dbが作られ、inventory.dbは作られないこと | **合格**（隔離フォルダ内に`db/master.db`のみが作成され、`inventory.db`は存在しないことを確認） |
+| schema.sqlが展開先に存在すること | **合格**（`%TEMP%\_MEIxxxxxxxx\db\schema.sql`が実際に存在することを確認） |
+
+### 40.4 旧版からの引き継ぎの確認（D-110）
+
+**実機のv1.1.0の.exeは`dist/InventoryApp.exe`として手元にあったが、GUIクリックを伴わずに「作業者・月次DB1つ」を実際に作成することはできない（新規作業者登録・新規DB作成はいずれも画面操作が必要）ため、D-91と同じ方法を踏襲し、v1.1.0の実コミット（`ea8505e`、2026-10-06 19:00、APP_VERSION="1.1.0"の最後のコミット）のコードを`git worktree`で隔離チェックアウトし、ヘッドレスに（画面操作なしで）同等のデータ（作業者2名、構成基板数マスター2件、部品属性1件、DBの作成・削除履歴1件、月次DB1つ（計画1件・実績1件・保留CSV行1件））を作成し、これを代用データとして使用したことをここに明記する。**
+
+確認は2段階で行った：
+
+**(a) 新コード（v1.2.0）を直接使った確認**（`models.*`関数を隔離環境で直接呼ぶ、D-91と同じ考え方）：
+
+| 確認項目 | 結果 |
+|---|---|
+| master.dbに生産面マスターのテーブルが追加されること | **合格**（追加前は`production_side_master`テーブルが存在せず、`models.production_side_master.init_production_side_master_table()`実行後に追加されることを確認。`get_second_side_status_by_file_no()`も未登録のファイルNoに対し正しく`None`を返すことを確認） |
+| 既存の作業者でログインできること | **合格**（`get_active_workers()`で、旧データの作業者2名（admin・op1）が取得できることを確認） |
+| 既存の月次DBが開け、保留行のテーブル等、v1.1.0以降に変更した定義が補われること | **合格**（`init_kitting_plan_tables()`実行後、`kitting_plan_batches`に`delete_flag`列が存在することを確認。`pending_csv_import_rows`テーブル自体はv1.1.0時点で既に存在する世代のため、変化なし） |
+| 既存のデータが失われないこと | **合格**（`kitting_plan_items`1件・`production_daily`1件・`pending_csv_import_rows`1件、`workers`2件・`board_structure_master`2件・`parts_attributes`1件・`db_lifecycle_log`1件について、新コードでテーブルを開いた前後で件数が完全一致することを確認。検証は元データのコピーに対して行い、元データ自体のハッシュが操作前後で不変であることも確認した） |
+
+**(b) 実際の.exe（v1.2.0ビルド）を、上記の代用データのコピーと同じフォルダに置いて起動した確認**：
+
+| 確認項目 | 結果 |
+|---|---|
+| 旧データに対して.exeがクラッシュせず起動し、ログイン画面が表示されること | **合格**（タイトル`部品在庫管理アプリ - ログイン v1.2.0（2026-10-08）`の表示を確認。プロセスが起動直後に終了していないことも確認） |
+| 起動前後でデータファイルが書き換えられていないこと | **合格**（`db/master.db`・`db/2026-08/inventory.db`のSHA-256ハッシュが起動前後で完全一致。ログイン画面に到達するだけの操作（`get_active_workers()`の読み取りのみ）では書き込みが発生しないため） |
+
+(a)と(b)を組み合わせた理由：(b)は実際の.exeバイナリが旧データでクラッシュしないことを保証するが、ログイン画面より先（生産面マスター画面を開く等）は画面操作が必要で自動確認できない。(a)は同じ新コードのロジックを直接呼ぶことで、画面操作を経ずにスキーマ移行・データ保持を確認する。両方を合わせることで、「実行ファイル自体が壊れていないこと」と「移行ロジック自体が正しいこと」の両方を、画面操作なしで確認できる範囲まで検証した。
+
+### 40.5 手動確認が必要な項目（D-110、画面操作を伴うため自動検証できなかったもの）
+
+v1.1.0以降の変更に関わるものを中心に、以下を手動確認が必要な項目として報告する：
+
+- メインメニューの幅・高さ（1020px×620px）、「3. 生産面マスター」「4. 新規アカウント登録」「5. アカウント管理」の表記。
+- 生産面マスター画面：編集モードへの切替、未保存の変更の背景色（追加＝緑／変更＝黄／削除予定＝赤）、判定結果の列（2回目あり／1回目のみ／未登録）、「元に戻す」、保存前の確認ダイアログ、CSVの取込・出力、「計画との食い違い」「マスター未登録の組み合わせ」の一覧。
+- 基板丁数マスターの取込：既定（追加と上書き）での動作、「CSVに無い登録を削除する」チェックボックスをオンにした場合の全件置き換え、確認ダイアログの表示内容。
+- 生産実績入力画面：最大化時・既定サイズ時の左右ペインの幅、右側の絞り込みメニューの各部品が見切れないこと。
+- 実績CSV取込：
+  - 登録待ち一覧の「状態」列（Shift+Sで登録可／Shift+Qで登録可／登録不可の理由）の実際の表示。
+  - Shift+S・Shift+Qを実際に押し、選択した行だけが対象になること。
+  - 面2待ち・生産面マスター未登録の行への確認ダイアログの表示。
+  - 製品名不一致の行の赤色ハイライトの実際の見た目（本タスクのD-109で実装、実機未確認）。
+  - 右クリックでの即時登録後、登録待ち一覧ウインドウへ戻り、次の行が選択されること。
+  - 横スクロールバーの実際の操作。
+- キッティング計画CSV取込で、面2の計画が追加されたことで実績登録済みの面1の計画が隠れる場合の通知。
+- 帳票PDF出力で日本語が正しく表示されること（フォント埋め込みの実機確認）。
+
+### 40.6 未実施の検証
+
+- 実データ（実際に運用で使われている`dist/db/2026-08/inventory.db`相当のデータ）でのShift+S・Shift+Qの登録行数の集計、実績CSVの全行を取り込んでの数量保存則（production_daily＋保留＋対象外＝CSV合計）の確認は、本タスクでは実施していない。実データのある環境で別途行う予定（D-94・D-97・D-100時点の過去の検証で個別には確認済みだが、D-101〜D-109の変更を全て反映した状態での通し確認はまだ行っていない）。
+
+### 40.7 停止・判断に迷った点
+
+- 停止条件（§0の各項目）に該当するものは無かったため、ビルドを実施した。
+- v1.1.0の実機データをGUI操作無しで用意できない制約への対処として、D-91と同じ「旧コミットのコードをgit worktreeで隔離実行し、ヘッドレスに代用データを作成する」方式を踏襲した。今回はさらに、作成した代用データを実際のv1.2.0ビルド（.exeバイナリ）に対しても実行し、新コードのロジック確認（(a)）と実行ファイルの起動確認（(b)）の両方を行った点が、D-91時点より一歩進んだ検証になっている。
+- CHANGELOG.mdの「1.2.0（2026-10-07）」という見出しの日付は変更していない（見出しの日付は機能実装を開始した日を表し、実際の.exe再ビルド日はCANONICAL_DESIGN_DECISIONS.mdのD-110（本項）に別途記録する、という既存の記録方針（D-91のv1.1.0と同じ）を維持した）。

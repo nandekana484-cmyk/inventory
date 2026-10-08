@@ -118,7 +118,7 @@ def get_parts_attributes_count() -> int:
         return con.execute("SELECT COUNT(*) AS c FROM parts_attributes").fetchone()["c"]
 
 
-def compute_parts_attributes_sync_plan(resolved_rows: list) -> dict:
+def compute_parts_attributes_sync_plan(resolved_rows: list, replace_all: bool = False) -> dict:
     """
     resolved_rows（[(part_no, teitori, part_type, supply_type, full_qty), ...]、
     CSV内の重複キーは呼び出し元で既に「最後の行の値」に解決済み・part_no単位で
@@ -128,6 +128,15 @@ def compute_parts_attributes_sync_plan(resolved_rows: list) -> dict:
 
     「変更なし」の判定は5列（teitori・part_type・supply_type・full_qty、
     およびpart_no自体）すべてが一致する場合のみとする。
+
+    replace_all（2026-10-08追加）：既定False＝「追加と上書き」のみ（CSVに
+    無い既存登録は残す、to_deleteは常に空リスト）。True＝従来の「CSVをマスタ
+    とした差分同期」（CSVに無い既存登録をto_deleteとして計算、全件置き換え）。
+    丁取り数CSVは数回に分けて取り込む運用があり（1回のCSVに全件を含めない
+    ことが前提の運用）、既定で全件置き換えを行うと、先に取り込んだ分がCSVに
+    無いというだけで消えてしまう問題があったため、既定を「追加と上書きのみ」
+    に変更した。構成基板数マスター・生産面マスターは対象外（CSVが毎回全件を
+    含む運用のため、差分同期を維持する）。
     """
     init_parts_attributes_table()
     with get_master_connection() as con:
@@ -150,18 +159,24 @@ def compute_parts_attributes_sync_plan(resolved_rows: list) -> dict:
         else:
             unchanged.append({"part_no": part_no, "value": new_value})
 
-    to_delete = [
-        {"part_no": part_no, "value": value}
-        for part_no, value in existing.items() if part_no not in keep_part_nos
-    ]
+    if replace_all:
+        to_delete = [
+            {"part_no": part_no, "value": value}
+            for part_no, value in existing.items() if part_no not in keep_part_nos
+        ]
+    else:
+        to_delete = []
 
     return {"to_add": to_add, "to_update": to_update, "unchanged": unchanged, "to_delete": to_delete}
 
 
-def apply_parts_attributes_sync(resolved_rows: list) -> dict:
+def apply_parts_attributes_sync(resolved_rows: list, replace_all: bool = False) -> dict:
     """
     resolved_rows（compute_parts_attributes_sync_plan()と同じ形式）の内容で、
     登録・更新・削除を**1つのトランザクション**にまとめて確定する。
+
+    replace_all：compute_parts_attributes_sync_plan()と同じ意味。Falseの
+    既定では削除を一切行わない（DELETE文自体を実行しない）。
 
     BOMキャッシュの無効化（invalidate_bom_master_by_part_no()）は、本トランザクションの
     コミットが成功した**後**に、影響を受けたpart_no（追加・更新・削除された分）
@@ -179,7 +194,7 @@ def apply_parts_attributes_sync(resolved_rows: list) -> dict:
 
     戻り値：compute_parts_attributes_sync_plan()と同じ形式の差分（実際に適用した内容）。
     """
-    plan = compute_parts_attributes_sync_plan(resolved_rows)
+    plan = compute_parts_attributes_sync_plan(resolved_rows, replace_all=replace_all)
 
     with get_master_connection() as con:
         for part_no, teitori, part_type, supply_type, full_qty in resolved_rows:

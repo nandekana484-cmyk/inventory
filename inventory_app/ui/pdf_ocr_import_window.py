@@ -14,6 +14,7 @@ from services.pdf_ocr_service import (
 )
 from ui.loading_window import LoadingWindow
 from ui.window_utils import center_window
+from ui.highlight_colors import MISMATCH_RED
 
 # 信頼度（0〜100）がこの値未満の行は、左ペインで警告色に強調表示する。
 # テキスト抽出経路の行は常に100扱いのため、この強調はOCR経路でのみ発生する。
@@ -335,7 +336,7 @@ class PdfOcrImportWindow(tk.Toplevel):
         if confidences is not None:
             tree.heading("confidence", text="信頼度")
             tree.column("confidence", width=80, anchor=tk.E)
-            tree.tag_configure("low_confidence", background="#ffb3b3")
+            tree.tag_configure("low_confidence", background=MISMATCH_RED)
 
         for i, row in enumerate(rows):
             padded = row + [""] * (max_cols - len(row))
