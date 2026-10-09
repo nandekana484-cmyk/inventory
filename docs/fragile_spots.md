@@ -32,20 +32,20 @@ CLAUDE.md「壊しやすい箇所」の根拠。2026-10-09 時点（HEAD c08a88a
 - 場所
   - `inventory_app/config.py`: `set_db_path()`
   - `inventory_app/services/db_migration_carryover.py`: `carry_over_incomplete_lots()`
-  - `inventory_app/ui/main_window.py`: `_try_switch_db_path()`, `on_create_database()`, `_refresh_inventory_diff_export_warning()`（L915 付近のコメント）
+  - `inventory_app/ui/main_window.py`: `_try_switch_db_path()`, `on_create_database()`, `_update_current_db_label()` のコメント
 - 根拠
   - CANONICAL §10（D-19）: 開いている画面は DB パスを保持せず、操作のたびに `config.DB_PATH` を参照する。画面を開いたまま DB を切り替えると、操作対象が別の DB に変わる。**未解消**
-  - `carry_over_incomplete_lots()` は処理中に `config.DB_PATH` を旧DB→新DBへ一時的に切り替える。戻るときは必ず new_db_path にしておく、という契約がある（main_window.py L409, L1299 のコメント）
-  - 既定DB（未選択）は読み書きしない方針。ただし `init_*_table()`（CREATE TABLE IF NOT EXISTS）を呼ぶと、`sqlite3.connect()` で DB ファイルが作られてしまう（main_window.py L915 のコメント）。既定DBへの意図しない書き込みは、CHANGELOG 1.0.0（D-71/D-73）でも修正している
+  - `carry_over_incomplete_lots()` は処理中に `config.DB_PATH` を旧DB→新DBへ一時的に切り替える。戻るときは必ず new_db_path にしておく、という契約がある（main_window.py `__init__()` の `_menu_widgets` と `_poll_create_db_queue()` のコメント）
+  - 既定DB（未選択）は読み書きしない方針。ただし `init_*_table()`（CREATE TABLE IF NOT EXISTS）を呼ぶと、`sqlite3.connect()` で DB ファイルが作られてしまう（main_window.py `_update_current_db_label()` のコメント）。既定DBへの意図しない書き込みは、CHANGELOG 1.0.0（D-71/D-73）でも修正している
   - CANONICAL §22.6（D-75）: 既知の制約。前月引き継ぎで新規作成するとき、引き継ぎが終わる前に旧DBのロックが解放される
 
 ## 4. Tkinter の pack 順序（Treeview とスクロールバー、下部ボタン）
 
 - 場所
-  - `inventory_app/ui/kitting_production_entry.py`: L494 付近のコメント
+  - `inventory_app/ui/kitting_production_entry.py`: `create_widgets()` の計画一覧のコメント
   - `inventory_app/ui/production_import_staging_window.py`: `_create_staging_widgets()`, `_create_candidate_widgets()`
-  - `inventory_app/ui/ng_input_window.py`: L285 付近のコメント
-  - `inventory_app/ui/wip_expansion_window.py`: L857 付近のコメント
+  - `inventory_app/ui/ng_input_window.py`: `_create_ng_list_widgets()`
+  - `inventory_app/ui/wip_expansion_window.py`: `_create_wip_list_widgets()`
 - 根拠
   - 上の4ファイルのコメントに、同じ不具合パターンが繰り返し記録されている。`expand=True` の Treeview を先に pack すると、スクロールバーやボタン行の領域が残らない。Tk の pack は呼んだ順に領域を確保するため、下部のウィジェットを先に `side=BOTTOM` で pack しておく必要がある
   - `_create_candidate_widgets()` の docstring に「右ペインで発見した既知のバグパターンと同じ構造がここにも存在していた」とある

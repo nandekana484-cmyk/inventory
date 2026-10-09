@@ -80,12 +80,12 @@ CLAUDE.md「層のルール」との食い違い。どれも既存コードで�
 | 種類 | 箇所 | 内容 |
 |---|---|---|
 | services → ui | `services/unprocessed_check_service.py` | トップレベルで `ui.ng_input_window.NgInputWindow`・`ui.wip_expansion_window.WipExpansionWindow` を import し、`_fetch_ng_list_rows()`・`_fetch_wip_list_rows()` を呼んでいる。理由はモジュールの docstring に書かれている（集計ロジックを二重に持たないため） |
-| models → services | `models/kitting_plan.py` L1133 | `services.production_import_service.normalize_product_name` を関数内で import |
-| models → services | `models/production_import_staging.py` L149 | 同上 |
-| models → services | `models/lot_status_history.py` L131 | `services.production_service.evaluate_lot_status` を関数内で import |
-| SQL が models/ の外にある | `services/backup_service.py`, `services/db_migration_carryover.py`, `services/master_merge_service.py`, `services/kitting_import_service.py`, `services/lot_status_history.py`, `ui/kitting_plan_import.py` L352 | `execute()` を直接呼んでいる（それぞれ 2・5・3・1・1・1 か所） |
+| models → services | `models/kitting_plan.py` `find_matching_plan_items()` | `services.production_import_service.normalize_product_name` を関数内で import |
+| models → services | `models/production_import_staging.py` `upsert_pending_csv_import_row()` | 同上 |
+| models → services | `models/lot_status_history.py` `record_lot_status_snapshot()` | `services.production_service.evaluate_lot_status` を関数内で import |
+| SQL が models/ の外にある | `services/backup_service.py`, `services/db_migration_carryover.py`, `services/master_merge_service.py`, `services/kitting_import_service.py`, `services/lot_status_history.py`, `ui/kitting_plan_import.py` `_load_items_for_batch()` | `execute()` を直接呼んでいる（それぞれ 2・5・3・1・1・1 か所） |
 | 他画面の `_` 属性・メソッド | `ui/production_import_staging_window.py` | 親の `KittingProductionEntryWindow` にある `_perform_registration()`、`_pending_csv_row_removal`、`_pending_csv_report_date`、`_build_registration_preview()`、`_show_registration_confirm_dialog()` などを直接使っている。docstring に「意図的」とある |
-| 他モジュールの `_` 関数 | `ui/production_import_staging_window.py` L78, `ui/kitting_production_entry.py` L41 | `ui.plan_candidate_dialog` の `_sort_candidates_by_closeness`・`_is_large_qty_diff`・`_is_large_date_diff`・`_parse_flexible_date` を import |
+| 他モジュールの `_` 関数 | `ui/production_import_staging_window.py`・`ui/kitting_production_entry.py` の import 文 | `ui.plan_candidate_dialog` の `_sort_candidates_by_closeness`・`_is_large_qty_diff`・`_is_large_date_diff`・`_parse_flexible_date` を import |
 | 業務ロジックが ui/ にある | `ui/production_import_staging_window.py` | 自動登録の判定（`is_auto_confirmable()`、`evaluate_auto_register_eligibility()`）がモジュールレベルの関数として ui/ にある |
 | ui → models の直接呼び出し | ui/ のほぼ全画面 | 上の表のとおり。「既存コードは触るときだけ直す」の対象 |
 
