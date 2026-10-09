@@ -14,6 +14,7 @@
 4. テストは `inventory_app` で `..\.venv\Scripts\python.exe -m pytest tests/`
 
 - `inventory_app\requirements.txt` は `>=` 指定なので、入れた日の最新版が入る
+- 同じ版を再現したいときは、lock のほう（`.venv\Scripts\python.exe -m pip install -r inventory_app\requirements.lock.txt`）を使う。2026-10-09 に作り直した `.venv` の pip freeze
 - `inventory_app\requirements.txt` のコメントは英数字だけにしている。`.venv` に入る pip 23 は requirements.txt を Windows の既定の文字コード（cp932）で読むため、日本語（BOM なしの UTF-8）があると `UnicodeDecodeError` で止まった（2026-10-09）
 
 ## OS に別途インストールが必要なもの（PDF 読み取り・OCR）
