@@ -63,6 +63,7 @@
 - `docs/architecture.md` — 画面 → service → model の対応表
 - `docs/refactoring_plan.md` — リファクタリングの段階表と進捗
 - `docs/db.md` — DB切替・バックアップ・マイグレーションの手順
+- `docs/setup.md` — 開発環境の構築（.venv・依存パッケージ・Tesseract/Poppler）
 - `docs/domain/rule_index.md` — 業務ルール（コメントから抽出した一覧と出典。本文はまだ移していない）
 - `docs/fragile_spots.md` — 壊しやすい箇所の根拠
 - `docs/reports/bloat_survey_20261009.md` — 肥大化ファイル調査（行番号は古い。関数名で参照する）

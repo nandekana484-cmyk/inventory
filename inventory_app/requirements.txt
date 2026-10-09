@@ -1,33 +1,29 @@
 
-# データ処理
+# Data processing
 pandas>=2.0.0
 openpyxl>=3.1.0
 
-# 帳票出力
+# Report output (PDF)
 reportlab>=4.0.0
 
-# 日付入力UI
+# Date picker widget
 tkcalendar>=1.6.1
 
-# テスト
+# Tests
 pytest>=7.4.0
 
-# 将来の拡張・WebAPI化用
+# Reserved for a future web API
 fastapi>=0.100.0
 uvicorn[standard]>=0.22.0
 python-dotenv>=1.0.0
 
-# ビルド・配布
+# Build and distribution (.exe)
 pyinstaller>=5.13.0
 
-# PDF読み取り・OCR（PDF→CSV変換機能）
-# 実行にはOS側にTesseract OCR本体（日本語データjpn.traineddata含む）と
-# Poppler（pdftoppm等）が別途インストールされている必要がある。
-# config.py の TESSERACT_CMD・TESSDATA_DIR・POPPLER_PATH参照。
+# PDF reading and OCR. Tesseract and Poppler must be installed on the OS (see docs/setup.md).
 pdfplumber>=0.11.0
 pytesseract>=0.3.10
 pdf2image>=1.17.0
 
-# OCR前処理（画像の傾き補正・コントラスト強調・ノイズ除去）
-# GUI機能（imshow等）は使わないため、依存の軽いheadless版を採用。
+# OCR image preprocessing. Headless build because no GUI functions are used.
 opencv-python-headless>=4.9.0
