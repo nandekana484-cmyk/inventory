@@ -34,10 +34,10 @@ CANONICAL_DESIGN_DECISIONS.md §7（実行環境・依存パッケージのド�
 
 ### opencv-python-headless が 5 系になった
 
-2026-10-09 に `.venv` を作り直したとき、`inventory_app\requirements.txt`（`>=4.9.0`）から opencv-python-headless 5.0.0.93 が入った（`requirements.lock.txt` に記録）。それまでは 4 系で動かしていたと思われる。
+2026-10-09 に `.venv` を作り直したとき、`inventory_app\requirements.txt`（`>=4.9.0`）から opencv-python-headless 5.0.0.93 が入った（`requirements.lock.txt` に記録）。それまでの `.venv` に入っていた版は記録が無く、未確認。
 
 - 使っているのは PDF 読み取りの OCR の前処理（`services/pdf_ocr_service.py` の `preprocess_image_for_ocr()`・`_deskew()`。bilateralFilter・CLAHE・adaptiveThreshold・minAreaRect など）
-- メニューの「PDF読み取り」は常に無効（D-85）なので、画面から動作を確かめられない。有効にするときに、OCR の前処理が以前と同じ結果になるかを確認する（`docs/domain/pdf_ocr.md` の調整値は 4 系で決めたもの）
+- メニューの「PDF読み取り」は常に無効（D-85）なので、画面から動作を確かめられない。有効にするときに、OCR の前処理が以前と同じ結果になるかを確認する（`docs/domain/pdf_ocr.md` の調整値は 2026-09-25 前後に決めたもので、そのときの版は未確認）
 
 ### リポジトリ直下の requirements.txt
 
