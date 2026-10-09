@@ -53,7 +53,7 @@
 1. `validate_monthly_db_backup()`: 読み取り専用で開き、`integrity_check` と月次DB専用のテーブルがあるかを確認する
 2. `restore_backup_as_new_local_db()`: 新しいフォルダ `<APP_DATA_DIR>/db/<フォルダ名>/inventory.db` にコピーする。元のファイルは変えない
 3. 失敗したら、呼び出し側が作りかけのフォルダを消す。今のDBとロックは変えない
-4. 切り替えた後に `init_kitting_plan_tables()` を呼び、古いバックアップでもテーブルがそろうようにする（main_window.py L1091 付近）
+4. 切り替えた後に `init_kitting_plan_tables()` を呼び、古いバックアップでもテーブルがそろうようにする（main_window.py `on_restore_from_backup()`）
 5. master.db は復元しない。マスタは `on_merge_master_from_backup()` → `services/master_merge_service.merge_master_from_backup()` で、足りない行だけを追加する（既存の行は上書きしない）
 
 ## 既知の制約（2026-10-09 確認）
