@@ -141,6 +141,7 @@
 
 - **1回目**：`services/production_service.py::calculate_lot_completion()`の`file_actuals`キーが、3要素タプル`(setup_file_no, production_side, kitting_list_no)`から単一キー`setup_file_no`のみに巻き戻った状態が発見された（BOM_MIGRATION_NOTES.md §4・§5 #4に記録）。同時に`services/bom_service.py`・`services/bom_file_service.py`のBOM列名修正・`build_index()`再帰化・`resolve_file_no()`も同様に巻き戻っていた（同じマージ操作が原因と推測される）。
 - **2回目**：1回目の修正・確認から時間を置いた別のタイミングで、`calculate_lot_completion()`が**再び**単一キー（`setup_file_no`のみ）に戻っている状態が発見され、再度3要素タプルキーに修正した。
+- **その後の変更（2026-09-04、コミット7d2a870）**：キーを3要素タプルから**2要素タプル`(setup_file_no, production_side)`＋加算**に変更した（現在の正しい形。集計は`_compute_lot_completion()`に移動）。3要素では、同一file_no・同一面を複数バッチ（kitting_list_no違い）で生産したロットの完成数が、バッチごとの最小値になって少なく出るため。理由は`_compute_lot_completion()`のdocstring参照。この変更は当時ノートに記録されておらず、本節は2026-10-09に追随修正した。
 
 **この巻き戻りは偶発的な一度きりの事故ではなく、同種のマージ作業のたびに再発するリスクがあるパターンとして扱うべきである。** 特に`calculate_lot_completion()`は「単一キーでも構文的には正しく動作してしまう」（例外を出さない、ただし計算結果が静かに誤る）ため、テストや起動確認だけでは検知できない点が危険性を高めている。
 
@@ -148,12 +149,12 @@
 
 両拠点をマージ、または別環境（別PC・別ブランチ）からコードを持ち込んだ直後は、**必ず**以下を確認すること。
 
-1. **`services/production_service.py::calculate_lot_completion()`のキーが3要素タプルか確認する**：
+1. **`services/production_service.py::_compute_lot_completion()`（`calculate_lot_completion()`の共通ロジック）のキーが2要素タプルで、加算になっているか確認する**（2026-10-09改訂。2026-09-04以前は3要素タプルを正としていた。上記「その後の変更」参照）：
    ```python
-   key = (item["setup_file_no"], item["production_side"], kitting_list_no)
-   file_actuals[key] = ...
+   key = (item["setup_file_no"], item["production_side"])
+   file_actuals[key] = file_actuals.get(key, 0) + ...
    ```
-   のようになっているか（`file_actuals[file_no] = ...`のような単一キーに戻っていないか）を`grep`等で直接確認する。あわせて`ui/kitting_production_entry.py`の`lot_file_actuals`表示部分が、対応するタプル要素数（3要素）を正しく分解して表示しているかも確認する（`lot_surplus`表示はグループJ（UI_WORKFLOW_FIXES_NOTES.md）で廃止済みのため、2026-09-01時点で本項目の文言から削除した）。
+   のようになっているかを`grep`等で直接確認する。誤りのパターンは3つ：単一キー（`file_actuals[file_no] = ...`）、2要素だが代入（`.get(key, 0) +`が無く、別バッチの実績で上書きされる）、3要素（`kitting_list_no`を含み、完成数が少なく出る）。あわせて`ui/kitting_production_entry.py`の`lot_file_actuals`表示部分が、2要素`(file_no, side)`で分解して表示しているかも確認する（`lot_surplus`表示はグループJ（UI_WORKFLOW_FIXES_NOTES.md）で廃止済みのため、2026-09-01時点で本項目の文言から削除した）。
 2. **`services/bom_service.py`・`services/bom_file_service.py`のBOM列名定数**（`COL_SIDE="生産面"`・`COL_PART_NO="96コード"`・`COL_R_FLAG="減数種別"`）が、仮置きの値（`"先行面・後行面"`・`"部品番号"`・`"Rフラグ"`）に戻っていないか確認する。
 3. **`BOMFileIndex.build_index()`がサブフォルダを再帰的に走査しているか**（`resolve_file_no()`・`problems`機構が存在するか）を確認する（BOM_MIGRATION_NOTES.md §2・§3参照）。
 4. **`models/kitting_plan.py::list_plan_items_by_lot()`に`is_active=1`フィルタが含まれているか**を確認する。

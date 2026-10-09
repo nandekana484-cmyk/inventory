@@ -151,7 +151,7 @@ else:
 
 ## 4. 同一lot_no内での複数バッチ同時アクティブ問題（重要）
 
-### キー拡張の経緯（3段階）
+### キー変更の経緯（4段階。現在の正しい形は段階4）
 
 **段階1（修正前・バグ）**：
 ```python
@@ -161,7 +161,9 @@ file_actuals[file_no] = get_app_cumulative_qty(kitting_list_no)
 
 **段階2（1回目修正）**：キーを`(setup_file_no, production_side)`のタプルに変更。面ごとの上書きは解消。ただしこの段階で「同一lot_no・同一file_no・同一面で複数の別バッチ（異なるkitting_list_no）が同時にアクティブ」なケースが**222件**存在することが判明し、このキーでもまだ上書きが起きることが確認された。
 
-**段階3（2回目修正・最終）**：キーを`(setup_file_no, production_side, kitting_list_no)`の3要素タプルに拡張。バッチ単位で完全分離。
+**段階3（2回目修正）**：キーを`(setup_file_no, production_side, kitting_list_no)`の3要素タプルに拡張。バッチ単位で完全分離。
+
+**段階4（2026-09-04、コミット7d2a870。現在の正しい形）**：キーを`(setup_file_no, production_side)`の2要素タプルに戻し、代入ではなく**加算**にした（`file_actuals[key] = file_actuals.get(key, 0) + ...`、集計は`services/production_service.py::_compute_lot_completion()`）。段階3では、同一file_no・同一面を複数バッチで生産したロットの完成数が、バッチごとの実績の最小値になって少なく出ていた（例：面1をバッチA 60枚＋バッチB 40枚、面2を100枚生産したロットの完成数が、100ではなく40になる）。加算にすることで、段階2の上書き（222件）も起きない。理由は`_compute_lot_completion()`のdocstring参照。本段階は当時ノートに記録されておらず、2026-10-09に追記した。
 
 各段階でUI側（`ui/kitting_production_entry.py`）の表示ロジックも、タプル要素数の変化に合わせて都度追随修正されている。
 
@@ -170,6 +172,8 @@ file_actuals[file_no] = get_app_cumulative_qty(kitting_list_no)
 実DB全体で`(lot_no, setup_file_no, production_side)`の組み合わせのうち、複数のkitting_list_noが同時にis_active=1になっている件数を確認した結果、**222件**。
 
 原因の実例（lot_no='100075'）：`0568-1-P-260724-01`と`0568-1-P-260731-01`が両方side=1かつ両方is_active=1（バージョンの新旧ではなく、日付違いの別バッチが同時にアクティブになっている状態）。
+
+（以下は段階3の時点の検証記録。段階4では`file_actuals`の件数はfile_no×面の数になり、is_active行数とは一致しない）
 
 段階3修正後の検証として、222件から5件をランダムサンプリング（163326, 113035, 232778, 221669, 221608）し、いずれも「is_active行数 == file_actuals件数」（上書きなし）を確認した：
 
@@ -213,7 +217,7 @@ lot_no=221608: is_active行数=10, file_actuals件数=10, 一致=True
 | 1 | `services/bom_service.py`, `services/bom_file_service.py` | BOM列名修正（COL_SIDE/COL_PART_NO/COL_R_FLAG） | **未反映**（現在も`"先行面・後行面"`/`"部品番号"`/`"Rフラグ"`のまま）。別拠点での実装状況は本ドキュメントでは未確認。マージ時に要突き合わせ | §2 |
 | 2 | `services/bom_file_service.py` | `BOMFileIndex.build_index()`の再帰化 | **未反映**（`glob.glob(pattern)`で非再帰のまま）。別拠点での実装状況は本ドキュメントでは未確認。マージ時に要突き合わせ | §2 |
 | 3 | `services/bom_file_service.py`, `services/bom_service.py` | `resolve_file_no()`によるfile_no正規化・problems記録機構 | **未反映**（該当関数が見当たらない）。別拠点での実装状況は本ドキュメントでは未確認。マージ時に要突き合わせ | §3 |
-| 4 | `services/production_service.py` | `calculate_lot_completion()`のキー拡張（段階1→2→3） | **未反映**（`file_actuals[file_no] = ...`と単一キーのまま）。別拠点での実装状況は本ドキュメントでは未確認。マージ時に要突き合わせ | §4 |
+| 4 | `services/production_service.py` | `calculate_lot_completion()`のキー拡張（段階1→2→3。その後2026-09-04に段階4＝2要素・加算へ変更し、これが現在の正しい形。§4参照） | **未反映**（`file_actuals[file_no] = ...`と単一キーのまま）。別拠点での実装状況は本ドキュメントでは未確認。マージ時に要突き合わせ | §4 |
 | 5 | `services/production_import_service.py` | `register_daily_result()`の呼び出しを行ごとにtry/exceptで囲み、失敗行を`errors`に記録して処理継続 | **反映済み**（未コミット） | - |
 | 6 | `models/kitting_plan.py` | `list_plan_items_by_lot()`のis_activeフィルタ追加 | **未反映**（`delete_flag = 0`のみでフィルタ）。別拠点での実装状況は本ドキュメントでは未確認。マージ時に要突き合わせ | §4 |
 | 7 | `ui/unmatched_production_window.py` | 表示列追加（report_date/worker_id）、エラー行一覧（`errors`）への流用（title/reason_key/reason_label引数） | **反映済み**（未コミット） | - |
