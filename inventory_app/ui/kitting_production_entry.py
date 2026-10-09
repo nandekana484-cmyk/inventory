@@ -41,15 +41,13 @@ from ui.plan_candidate_dialog import _parse_flexible_date
 from ui.window_utils import center_window
 
 
-def _resolve_csv_report_date(raw_value):
-    """
-    CSV の払い出し日を "YYYY-MM-DD" に正規化する。解釈できなければ None（登録側で実行日を使う）。
-    表記ゆれを残すと report_date の文字列範囲検索が壊れるため、必ず正規化する（docs/domain/production_entry.md）。
-    """
-    parsed = _parse_flexible_date(raw_value)
-    if parsed is None:
-        return None
-    return parsed.strftime("%Y-%m-%d")
+# 段階1で services/production_entry_service.py へ移した。_resolve_csv_report_date はここから re-export する。
+from services.production_entry_service import (  # noqa: E402,F401
+    _resolve_csv_report_date,
+    compute_ng_save_qty,
+    is_plan_row_completed,
+    plan_row_tag,
+)
 
 
 class KittingProductionEntryWindow(tk.Toplevel):
@@ -629,11 +627,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         col_count = len(self._plan_col_index)
         for values in rows:
             classification = values[col_count] if len(values) > col_count else ""
-            tag = (
-                "needs_side2_wait" if classification == "b"
-                else "side_master_unregistered" if classification == "c"
-                else ""
-            )
+            tag = plan_row_tag(classification)
             iid = self.tree_plan_list.insert(
                 "", tk.END, values=values[:col_count], tags=(tag,) if tag else (),
             )
@@ -712,11 +706,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
                 for col, value in zip(plan_list_cols, new_row):
                     self.tree_plan_list.set(iid, col, value)
                 classification = new_row[len(plan_list_cols)]
-                tag = (
-                    "needs_side2_wait" if classification == "b"
-                    else "side_master_unregistered" if classification == "c"
-                    else ""
-                )
+                tag = plan_row_tag(classification)
                 self.tree_plan_list.item(iid, tags=(tag,) if tag else ())
 
     def _plan_filter_predicates(self):
@@ -772,12 +762,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
                 if lot_no not in lot_completion_cache:
                     lot_completion_cache[lot_no] = calculate_lot_completion(lot_no)
                 lot_info = lot_completion_cache[lot_no]
-                # 末尾の隠し要素（production_side、_fetch_plan_list_rows()参照）。
-                file_no = row[file_no_index]
-                production_side = row[-1]
-                file_actual = lot_info["file_actuals"].get((file_no, production_side), 0)
-                order_qty = float(row[order_qty_index])
-                return file_actual >= order_qty
+                return is_plan_row_completed(row, lot_info, file_no_index, order_qty_index)
 
             filtered = [row for row in filtered if not is_row_completed(row)]
 
@@ -1371,16 +1356,9 @@ class KittingProductionEntryWindow(tk.Toplevel):
           - 面1の保存値 ＝ 面1欄の入力値 ＋ 面2欄の入力値
           - 面2の保存値 ＝ 面2欄の入力値のみ
         合計が0の面は保存しない（既存の NG 申告に触れない）。docs/domain/production_entry.md 参照。
+        段階1で services/production_entry_service.compute_ng_save_qty() へ移した。
         """
-        own_2 = own_qty_by_side.get("2", 0.0)
-        save_qty_by_side = {}
-        if self._ng_side_plans.get("1") is not None:
-            total_1 = own_qty_by_side.get("1", 0.0) + own_2
-            if total_1 > 0:
-                save_qty_by_side["1"] = total_1
-        if self._ng_side_plans.get("2") is not None and own_2 > 0:
-            save_qty_by_side["2"] = own_2
-        return save_qty_by_side
+        return compute_ng_save_qty(own_qty_by_side, self._ng_side_plans)
 
     def _build_registration_preview(self, daily_qty, save_qty_by_side):
         """
