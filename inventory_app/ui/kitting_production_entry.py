@@ -1,4 +1,3 @@
-# ui/kitting_production_entry.py
 import threading
 import queue
 from datetime import datetime
@@ -44,26 +43,8 @@ from ui.window_utils import center_window
 
 def _resolve_csv_report_date(raw_value):
     """
-    実績CSVステージング一覧経由の払い出し日（raw_value、COLUMN_MAP_PRODUCTIONの
-    report_date列からそのまま渡された未検証の文字列）を、register_daily_result()/
-    overwrite_daily_result()のreport_date引数（"YYYY-MM-DD"形式を期待）として
-    使える形に検証・正規化する。
-
-    値が無い（None・空欄）、またはui.plan_candidate_dialog._parse_flexible_date()
-    がどの形式でもパースできない場合はNoneを返す（呼び出し元はreport_date=None
-    のまま渡すことになり、register_daily_result()/overwrite_daily_result()側の
-    デフォルト動作（実行日を使う）にフォールバックする）。
-
-    以前は"%Y-%m-%d"としてパースできるかのチェックのみ行い、成功時は入力文字列
-    をそのまま返していたが、実運用のCSVでは"%Y/%m/%d"形式（かつ月日が
-    ゼロ埋めされていない、例："2026/3/18"）が使われていることが判明し、
-    このチェックが常に失敗していた（実質的に本関数が機能していなかった）。
-    _parse_flexible_date()で複数形式に対応させた上で、戻り値は必ず
-    strftime("%Y-%m-%d")でゼロ埋め済みのハイフン区切りに正規化して返す
-    （入力の表記ゆれをそのまま通すと、DBのreport_date列に異なる表記が混在し、
-    models.production.list_daily_production_range()等の文字列比較による
-    日付範囲検索（WHERE report_date >= ? AND report_date <= ?）が正しく
-    機能しなくなるため）。
+    CSV の払い出し日を "YYYY-MM-DD" に正規化する。解釈できなければ None（登録側で実行日を使う）。
+    表記ゆれを残すと report_date の文字列範囲検索が壊れるため、必ず正規化する（docs/domain/production_entry.md）。
     """
     parsed = _parse_flexible_date(raw_value)
     if parsed is None:
@@ -72,18 +53,13 @@ def _resolve_csv_report_date(raw_value):
 
 
 class KittingProductionEntryWindow(tk.Toplevel):
-    # <<TreeviewSelect>>（矢印キーでも発火）のたびに毎回search_plan()（DBアクセス）を
-    # 行うと、キー連打時に無駄な処理が積み重なるため、選択が止まってから
-    # このミリ秒だけ待って実行するデバウンスを行う。
+    # 選択のたびに DB 検索すると矢印キー連打で処理が積み重なるため、選択が止まってから実行する。
     PLAN_SELECT_DEBOUNCE_MS = 200
 
     def __init__(self, parent, current_worker, preloaded_plan_rows=None):
         """
-        preloaded_plan_rows：呼び出し元（ui.main_window.open_kitting_production_entry()）が
-        別スレッドで事前に _fetch_plan_list_rows() を実行し取得しておいた計画一覧データ。
-        渡された場合はDBへ再アクセスせずそのままTreeviewに反映する（初回表示を
-        UIスレッドでブロックしないため）。省略時はこれまで通り__init__内で
-        同期的に取得する（後方互換）。
+        preloaded_plan_rows: 呼び出し元が別スレッドで取得済みの計画一覧（初回表示で UI を止めないため）。
+        None なら __init__ 内で同期的に取得する。
         """
         super().__init__(parent)
         self.current_worker = current_worker
@@ -94,70 +70,28 @@ class KittingProductionEntryWindow(tk.Toplevel):
         self._pending_plan_select_lot_no = None
         self._cell_edit_entry = None
         self._preloaded_plan_rows = preloaded_plan_rows
-        # 実績CSVステージング一覧（ui.production_import_staging_window）で
-        # 候補選択→転記した行を、実際の登録成功時に一覧から消すためのコール
-        # バック。一度に1件分のみ保持する（確認ダイアログはモーダルのため、
-        # 転記から登録完了までの間に別の登録が割り込むことは通常無い想定）。
+        # 実績CSVステージング一覧から転記した行を、登録成功時に一覧から消すコールバック（1件分だけ保持）。
         self._pending_csv_row_removal = None
-        # 上記と同時にセットする、CSV行が持つ払い出し日（"YYYY-MM-DD"形式を期待）。
-        # _perform_registration()でregister_daily_result()/overwrite_daily_result()の
-        # report_dateとして使う（CSV経由でない通常の手動登録ではNoneのまま＝
-        # 従来通り実行日が使われる）。
+        # 転記した CSV 行の払い出し日。手動登録では None（実行日を使う）。
         self._pending_csv_report_date = None
-        # 実績CSVステージング一覧（ui.production_import_staging_window.
-        # ProductionImportStagingWindow）のインスタンス参照。転記・登録の過程で
-        # 本ウインドウ（KittingProductionEntryWindow）にフォーカスが移ると
-        # ステージング一覧が背後に隠れてしまうため、_perform_registration()の
-        # 登録成功時にこの参照を使ってlift()で手前に戻す（on_production_csv_
-        # import()経由で開いた場合のみセットされる。開いていなければNoneのまま）。
+        # 開いている実績CSVステージング一覧。登録成功時に lift() で手前に戻すために使う。
         self._csv_staging_window = None
 
-        # 実績CSV取込（on_production_csv_import()）の非同期パース用。
-        # ui.kitting_plan_import.KittingPlanImportWindow.on_start_import()と同じ
-        # LoadingWindow + threading.Thread(daemon=True) + queue.Queue +
-        # self.after(200, ...)ポーリングのパターンを踏襲する
-        # （ui.main_window.MainWindow.open_kitting_production_entry()も同じ
-        # パターンで本ウィンドウ自体の計画一覧取得を非同期化している）。
+        # 実績CSV取込の非同期パース用（LoadingWindow＋スレッド＋queue をポーリングする）。
         self._csv_import_queue = queue.Queue()
         self._csv_import_loading_window = None
 
-        # ロット進捗チェック画面（ui.lot_progress_window.LotProgressWindow）の
-        # インスタンス参照。多重表示防止は_csv_staging_windowと同じパターン
-        # （open_lot_progress()でwinfo_exists()を確認し、開いていればlift()の
-        # みで新規生成しない）。
+        # ロット進捗チェック画面。開いていれば lift() するだけで、多重に開かない。
         self._lot_progress_window = None
 
-        # 日々の引落一覧画面（ui.daily_drawdown_window.DailyDrawdownWindow）の
-        # インスタンス参照。多重表示防止は_lot_progress_windowと同じパターン。
+        # 日々の引落一覧画面。多重表示の防止は _lot_progress_window と同じ。
         self._daily_drawdown_window = None
 
-        # 計画一覧の絞り込み基盤：
-        # - _all_plan_rows：_fetch_plan_list_rows() の全件結果（フィルタ前）。
-        #   Treeviewに現在表示されている行はこの部分集合に過ぎない。
-        # - _plan_filter_vars：列key -> テキスト部分一致フィルタ入力欄のStringVar。
-        # - _plan_checkbox_filters：列key -> 選択済み値の集合（チェックボックス式。
-        #   キーが存在しない列＝絞り込み無し。全選択状態はOK確定時にキーごと除去する）。
-        # - _plan_checkbox_buttons：列key -> ▼ボタンウィジェット（絞り込み中の見た目切替用）。
-        # - _plan_col_index：列key -> rowタプル内でのインデックス（cols_plan準拠）。
-        # - _hide_completed_var：「入力済みを隠す」チェックボックスの状態。
-        #   calculate_lot_completion()（ファイルNo・面単位で複数kitting_list_noの
-        #   実績を合算する正しいロジック）による判定のため、他の列単位フィルタ
-        #   （_plan_filter_predicates()）とは別立てでapply_plan_filters()内で適用する。
-        #   デフォルトはFalse（完了済みも含めて表示）。
-        # - _plan_date_from_entry/_plan_date_to_entry：「実装開始予定日」の期間指定用
-        #   DateEntry（tkcalendar）。空欄＝その側の境界なし。create_widgets()で生成する
-        #   （ウィジェット生成前はNone）。
-        # - _plan_row_iid_by_kitting_no：(kitting_list_no, lot_no) -> 現在Treeviewに
-        #   挿入されている行のiid。_populate_plan_list_tree()実行のたびに、その時点で
-        #   実際にTreeviewへ挿入した行だけで作り直す（全件表示時はフルセット、
-        #   絞り込み表示時はその部分集合のみが入る＝フィルタで非表示中の行は
-        #   このマップに存在しない）。_refresh_plan_list_for_lot()が、登録直後に
-        #   DBを再取得せず該当行だけを直接書き換えるために使う。
-        #   キーをkitting_list_no単体ではなく(kitting_list_no, lot_no)のタプルに
-        #   しているのは、実DBで同一kitting_list_noが複数の異なるlot_noに
-        #   またがって存在するケースが478件確認されているため（他のkitting_list_no
-        #   単体キーで同種の事故が起きた既知のバグパターンと同じ理由。
-        #   models.kitting_plan.get_app_cumulative_qty_bulk()等を参照）。
+        # 計画一覧の絞り込み:
+        # - _all_plan_rows: 絞り込み前の全件。_plan_checkbox_filters にキーが無い列＝絞り込み無し
+        # - _hide_completed_var: ファイルNo・面単位の合算で判定するため、列フィルタとは別に apply_plan_filters() で適用する
+        # - _plan_row_iid_by_kitting_no: (kitting_list_no, lot_no) -> 表示中の行の iid。登録直後に該当行だけ書き換えるのに使う。
+        #   kitting_list_no は lot_no をまたいで重複する（実データで478件）ため、タプルをキーにする
         self._all_plan_rows = []
         self._plan_filter_vars = {}
         self._plan_checkbox_filters = {}
@@ -169,104 +103,47 @@ class KittingProductionEntryWindow(tk.Toplevel):
         self._plan_date_to_entry = None
         self._plan_row_iid_by_kitting_no = {}
 
-        # NG（仕損）数量入力：面1・面2固定の2スロット。
-        # - _ng_side_plans：production_side("1"/"2") -> その面の計画dict（無ければNone）。
-        #   選択中の計画はcurrent_plan、反対側はfind_opposite_side_plan()の結果を
-        #   production_sideをキーに振り分けて保持する。
-        # - _ng_side_entries/_ng_side_labels：production_side -> ウィジェット（create_widgets()で生成）。
+        # NG 入力は面1・面2固定の2スロット。_ng_side_plans は面 -> その面の計画（無ければ None）。
         self._ng_side_plans = {"1": None, "2": None}
         self._ng_side_entries = {}
         self._ng_side_labels = {}
 
-        # 日次実績履歴（self.tree）は「選択中計画に閉じた表示」から「本日の全計画分の
-        # ログ」に変更した。load_today_log()で取得した全件（models.production.
-        # list_daily_production_today()の生レコード）をそのまま保持する
-        # （表示側で面1除外フィルタをかけても、元データは全件保持し続ける）。
+        # 本日の全計画分の実績ログ。表示側で絞り込んでも全件を保持する。
         self._today_all_rows = []
-        # Treeviewのiid→元レコードの対応（表示行のフィルタ有無に関わらず、
-        # on_history_row_double_click()が正しい行を逆引きできるようにするため、
-        # tree.index()による位置対応ではなくiidで直接引く）。
+        # iid -> 元レコード。表示を絞り込んでもダブルクリックで正しい行を引けるよう、位置ではなく iid で引く。
         self._today_row_by_iid = {}
 
-        # 実績・NG入力のEnterキーによる一直線フロー：
-        # 実績記入欄Enter→NG面1欄Enter→NG面2欄Enter→登録確認ダイアログ、の順に
-        # フォーカスが進み、最後に登録確認ダイアログで実際の登録を行う
-        # （_on_daily_qty_enter()・_on_ng_side1_enter()・_on_ng_side2_enter()・
-        # _start_registration()参照）。途中の各EnterではDBへ一切書き込まない。
+        # Enter で 実績→NG面1→NG面2→登録確認 と進む。途中の Enter では DB に書き込まない。
 
-        # 左右矢印キーでの主要ウィジェット間フォーカス移動の対象一覧。
-        # create_widgets()内でウィジェット生成後に実体を格納する。
         self._arrow_nav_widgets = []
 
         self.title("生産実績入力（キッティングリストNo.）")
-        # left_frame内の各フレーム（info_frame/entry_frame/hist_frame）の自然要求
-        # 高さの合計に対し十分な余裕を持たせた高さ（1080p等の一般的なディスプレイ
-        # でも十分収まる）。拡張可能（expand=True）な唯一の要素であるhist_frameが
-        # 不足分を吸収してしまい極端に潰れることのないよう、850px以上を保つこと。
-        # 縦850pxだと画面からはみ出す環境があるため700pxに縮小した。
-        # 実測（1150x850時点）：info_frame reqheight=289px・entry_frame
-        # （実績+NG入力統合）reqheight=147px・hist_frame reqheight=265px
-        # （それぞれpack pady=5の上下10pxずつを含む）。info_frame・entry_frameは
-        # fill=tk.X（expand無し）のため常に自然サイズが確保され、expand=True・
-        # fill=tk.BOTHのhist_frameのみが縮小分を吸収する設計（左側3フレームの
-        # pack順序による優先度）。実際に1150x700で検証したところ、
-        # info_frame・entry_frameは289px/147pxのまま変化せず、hist_frameのみ
-        # 265px→234px（約1行分）に縮み、登録ボタン等は引き続きウィンドウ内に
-        # 収まることを確認済み。
-        # 幅（2026-10-07修正）：以前の1150pxでは、右ペイン（計画一覧・絞り込み
-        # メニュー）の実測必要幅965pxに対し、左右のペイン配分の仕組み上、
-        # 既定サイズ・最大化のどちらでも右ペインが484px程度しか確保できず
-        # 常に481px不足していた（create_widgets()のPanedWindow導入コメント
-        # 参照）。左ペインの初期幅300px＋右ペインの必要幅985px（余裕込み）＋
-        # 分割バー・余白を踏まえ、1350pxへ広げた。高さ（700px）は見切れが
-        # 無いため変更していない。
+        # 高さ: 850px では画面からはみ出す環境があるため 700px。幅: 右ペインの必要幅（985px）を確保するため 1350px。
+        # 実測値と経緯は docs/domain/production_entry.md「画面の設計メモ」。
         self.geometry("1350x700")
         center_window(self, parent)
-        # 開いた直後から最大化状態にする（2026-10-07追加、ui.ng_input_window.
-        # NgInputWindowと同じ考え方・同じ理由）。本ウインドウは計画一覧の
-        # データを別スレッドで事前取得した後にui.main_window.MainWindow.
-        # open_kitting_production_entry()から生成される（本__init__自体が
-        # 読み込み完了後に初めて呼ばれる）ため、ここでstate("zoomed")を呼べば
-        # 「小さく表示されてから広がる」動きにはならない。
+        # 計画一覧の読み込み後に生成されるので、ここで最大化しても「小さく出てから広がる」動きにならない。
         self.state("zoomed")
 
         self.create_widgets()
 
-    # 右ペイン（計画一覧、絞り込みメニュー込み）が必要とする最小幅（実測、
-    # plan_filter_frame.winfo_reqwidth()で確認した965pxに、将来の文言追加・
-    # フォントのレンダリング差に対する余裕を加えた値）。_create_paned_
-    # layout()が初期サッシュ位置を計算する際に使う。
+    # 右ペイン（計画一覧・絞り込み）の必要幅。実測 965px に余裕を加えた値。
     _RIGHT_PANE_MIN_WIDTH_PX = 985
-    # 左ペイン（計画情報・実績入力欄）の初期幅。info_frame・entry_frameの
-    # 実測reqwidth（214px/198px、パディング込み）が切れない範囲で、かつ
-    # 「右側を広く」という要望に沿って必要最小限に狭くした値。
+    # 左ペインの初期幅。入力欄が切れない範囲で最小にした値。
     _LEFT_PANE_INITIAL_WIDTH_PX = 300
 
     def create_widgets(self):
-        # 左右のペイン配分を、利用者がドラッグで調整できるPanedWindow（分割
-        # バー）にした（2026-10-07修正。以前は単純なpack(side=LEFT/RIGHT,
-        # expand=True)で、Tkのpack実装上、両ペインの自然要求幅（左側の
-        # 日次実績履歴一覧・右側の絞り込みメニュー）の比率でほぼ固定的に
-        # 幅が決まり、ウインドウを広げても（既定サイズ→最大化）右ペインの
-        # 幅がほとんど変化しなかった（実測：いずれも左1037px・右484px、
-        # 絞り込みメニューの必要幅965pxに対し481px不足）。初期サッシュ位置を
-        # 明示的に設定することで、起動直後から右側に十分な幅を確保する。
+        # pack(side=LEFT/RIGHT) では最大化しても右ペインが広がらないため、PanedWindow で初期サッシュ位置を明示する。
         container = ttk.Panedwindow(self, orient=tk.HORIZONTAL)
         container.pack(expand=True, fill=tk.BOTH)
 
         left_frame = ttk.Frame(container)
         right_frame = ttk.Labelframe(container, text="計画一覧", padding=5)
-        # weight：ウインドウサイズ変更時に余剰・不足分をどちらのペインが
-        # 多く吸収するかの比率（PanedWindowの仕様）。右側（絞り込みメニュー・
-        # 計画一覧）を優先的に広げたいため、右を大きくする。
+        # 余った幅は右ペイン（計画一覧）を優先して広げる。
         container.add(left_frame, weight=1)
         container.add(right_frame, weight=4)
 
-        # 初期サッシュ位置を明示的に設定する（ウィジェット生成直後はまだ
-        # ウインドウが実サイズを持たないため、update_idletasks()で現在の
-        # ウインドウ幅を確定させてから計算する）。ウインドウ幅が狭い場合
-        # （将来的な最小サイズ等）でも、右ペインが不自然にゼロ幅になったり
-        # しないよう、下限・上限を設ける。
+        # 生成直後はウインドウ幅が未確定なので update_idletasks() で確定させてから計算する。右ペインが潰れないよう下限を設ける。
         self.update_idletasks()
         total_width = max(self.winfo_width(), 1)
         left_width = min(
@@ -275,10 +152,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         )
         container.sashpos(0, left_width)
 
-        # 計画情報表示エリア
-        # キッティングリストNo.検索欄は廃止し、右ペインの計画一覧（tree_plan_list、
-        # キッティングNo.列のテキスト絞り込み込み）からの行選択に一本化した
-        # （on_select_plan_list()参照）。
+        # 計画情報表示エリア（計画は右の計画一覧から選ぶ）
         info_frame = ttk.LabelFrame(left_frame, text="計画情報", padding=10)
         info_frame.pack(fill=tk.X, padx=15, pady=5)
 
@@ -293,9 +167,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         self.lbl_board_structure_count = self._add_info_row(info_frame, "構成基板数：", 8)
         self.lbl_lot_file_actuals = self._add_info_row(info_frame, "基板別実績（file_no）：", 9)
 
-        # 実績・NG入力エリア（1つの枠に統合）。Enterキーで実績記入欄→NG面1欄→
-        # NG面2欄→登録確認ダイアログ、と一直線に進める操作フローに対応する
-        # （_on_daily_qty_enter()・_on_ng_side1_enter()・_on_ng_side2_enter()参照）。
+        # 実績・NG入力エリア
         entry_frame = ttk.LabelFrame(left_frame, text="本日の生産実績・NG（仕損）入力", padding=10)
         entry_frame.pack(fill=tk.X, padx=15, pady=5)
 
@@ -305,14 +177,11 @@ class KittingProductionEntryWindow(tk.Toplevel):
         self.entry_daily_qty = ttk.Entry(daily_row, width=10)
         self.entry_daily_qty.pack(side=tk.LEFT, padx=5)
         self.entry_daily_qty.bind("<Return>", self._on_daily_qty_enter)
-        # 記入欄にフォーカスがあっても上下矢印キーで計画一覧の選択行を移動できるように
-        # する（フォーカス自体はentry_daily_qtyに留まる。_move_plan_selection()参照）。
+        # 記入欄にフォーカスがあっても、上下矢印で計画一覧の選択を移動する（フォーカスは記入欄に留まる）。
         self.entry_daily_qty.bind("<Up>", lambda e: self._move_plan_selection(-1))
         self.entry_daily_qty.bind("<Down>", lambda e: self._move_plan_selection(1))
 
-        # NG（仕損）数量入力：面1・面2固定の2行。
-        # 計画選択時（search_plan()）に_setup_ng_side_ui()で有効/無効・ラベルを更新する。
-        # 生成直後は両面とも計画未選択のため無効化しておく。
+        # NG 入力（面1・面2の2行）。計画を選ぶまでは無効にしておく。
         for side in ("1", "2"):
             row = ttk.Frame(entry_frame)
             row.pack(fill=tk.X, pady=2)
@@ -320,8 +189,6 @@ class KittingProductionEntryWindow(tk.Toplevel):
             label.pack(side=tk.LEFT, padx=5)
             entry = ttk.Entry(row, width=10, state=tk.DISABLED)
             entry.pack(side=tk.LEFT, padx=5)
-            # 実績記入欄と同様、NG記入欄にフォーカスがあっても上下矢印キーで
-            # 計画一覧の選択行を移動できるようにする。
             entry.bind("<Up>", lambda e: self._move_plan_selection(-1))
             entry.bind("<Down>", lambda e: self._move_plan_selection(1))
             self._ng_side_labels[side] = label
@@ -333,8 +200,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         btn_row = ttk.Frame(entry_frame)
         btn_row.pack(fill=tk.X, pady=(8, 0))
 
-        # 実績登録・NG登録は1つの「登録」ボタン・1つの登録確認ダイアログに統合した
-        # （_start_registration()参照）。
+        # 実績と NG は、1つの登録ボタン・1つの確認ダイアログで登録する（_start_registration()）。
         self.btn_register = ttk.Button(btn_row, text="登録", command=self._start_registration,
                                         state=tk.DISABLED)
         self.btn_register.pack(side=tk.LEFT, padx=5)
@@ -343,20 +209,13 @@ class KittingProductionEntryWindow(tk.Toplevel):
                                           state=tk.DISABLED)
         self.btn_correction.pack(side=tk.LEFT, padx=5)
 
-        # 左右矢印キーでの主要ウィジェット間フォーカス移動（Tabキー順序の左右矢印版）。
-        # 対象ウィジェットが全て生成された直後に設定する。
+        # 対象のウィジェットがすべて生成された後に呼ぶこと。
         self._setup_arrow_focus_navigation()
 
-        # 履歴表示エリア（left_frame内で残りの縦スペースを使う唯一のexpand=True要素。
-        # report_btn_frame（日報/月報/実績CSV取込ボタン）はright_frame側の「更新」ボタンと
-        # 横並びに移設したため、left_frame側にはside=tk.BOTTOMで固定高さを先取りする
-        # フレームが無くなり、以前必要だった「BOTTOM要素を先にpackして高さを確保する」
-        # ワークアラウンドはそもそも不要になっている。）
+        # 日次実績履歴。left_frame の中で残りの高さを使う唯一の expand=True 要素。
         hist_frame = ttk.LabelFrame(left_frame, text="日次実績履歴（本日の全計画分）", padding=10)
         hist_frame.pack(expand=True, fill=tk.BOTH, padx=15, pady=5)
 
-        # 「選択中計画に閉じた表示」から「本日の全計画分のログ」に変更したため、
-        # どの計画の実績かを識別するkitting_list_no（必須）・lot_no・基板名を追加した。
         cols = ("kitting_list_no", "lot_no", "board_name", "report_date", "daily_qty", "worker_id")
         self.tree = ttk.Treeview(hist_frame, columns=cols, show="headings")
         self.tree.heading("kitting_list_no", text="キッティングNo.")
@@ -371,12 +230,9 @@ class KittingProductionEntryWindow(tk.Toplevel):
         self.tree.column("report_date", width=100)
         self.tree.column("daily_qty", width=90, anchor=tk.E)
         self.tree.column("worker_id", width=100)
-        # 履歴行のダブルクリックで対応する計画を呼び出す（項目11）。
         self.tree.bind("<Double-1>", self.on_history_row_double_click)
 
-        # tree_plan_list（計画一覧）のvsb_planと同じパターンで垂直スクロールバーを追加。
-        # hist_frameが縮んで全件表示できない場合の唯一の閲覧手段になるため、
-        # 【1】のpack順修正とセットで必須。
+        # hist_frame が縮んだときの唯一の閲覧手段。Treeview より先に pack する。
         vsb_hist = ttk.Scrollbar(hist_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb_hist.set)
         vsb_hist.pack(side=tk.RIGHT, fill=tk.Y)
@@ -387,15 +243,8 @@ class KittingProductionEntryWindow(tk.Toplevel):
                      "planned_qty", "order_qty", "actual_qty", "diff", "lot_completed", "lot_remaining")
         self._plan_col_index = {key: i for i, key in enumerate(cols_plan)}
 
-        # 絞り込みエリア（Treeviewの上）。既存の「キッティングリストNo.検索」search_frameと
-        # 同じスタイル（ラベル＋Entryの横並び）。
-        # - list_no/plan_start_datetime/planned_qty/order_qty/actual_qty/diff/lot_completed/
-        #   lot_remaining：テキスト部分一致（_plan_filter_vars）。
-        # - lot_no/file_no/board_name：エクセルのオートフィルタ風チェックボックス式ポップアップ
-        #   （_plan_checkbox_filters）。distinct値が数百件規模のため、テキスト部分一致より
-        #   候補を見ながら選べるこちらの方式にしている。
-        # いずれも最終的には _plan_filter_predicates() で同じ「col_key -> callable(value)->bool」
-        # という述語形式に正規化されるため、apply_plan_filters() 側は列の実装方式を意識しない。
+        # 絞り込み: lot_no/file_no/board_name は候補が数百件あるためチェックボックス式、他はテキスト部分一致。
+        # どちらも _plan_filter_predicates() で同じ述語の形にそろえる。
         self._plan_filter_labels = {
             "list_no": "キッティングNo.",
             "lot_no": "ロットNo.",
@@ -427,9 +276,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         for col_key in row2_cols:
             self._add_plan_filter_entry(filter_row2, col_key, self._plan_filter_labels[col_key], width=8)
 
-        # calculate_lot_completion()によるファイルNo・面単位の合算判定のため、
-        # 他の列単位フィルタ（_plan_filter_predicates()）とは別に、
-        # apply_plan_filters()内で追加適用する。
+        # ファイルNo・面単位の合算で判定するため、列フィルタとは別に apply_plan_filters() で適用する。
         ttk.Checkbutton(
             filter_row2, text="入力済みを隠す", variable=self._hide_completed_var,
             command=self.apply_plan_filters,
@@ -474,35 +321,20 @@ class KittingProductionEntryWindow(tk.Toplevel):
         self.tree_plan_list.column("lot_completed", width=100, anchor=tk.E)
         self.tree_plan_list.column("lot_remaining", width=100, anchor=tk.E)
 
-        # 面1のみの計画（同一(lot_no, setup_file_no)に面2の計画が無い計画）の
-        # 生産面マスターによる分類（2026-10-07新設、D-9x参照）。"a"（片面の
-        # 製品）は通常表示のまま、"b"（面2待ち）・"c"（生産面マスター未登録）
-        # のみ背景色で区別する（ui.production_import_staging_window.
-        # ProductionImportStagingWindow._create_staging_widgets()の
-        # tree_candidatesタグと同じ配色）。
+        # 面1だけの計画の分類（D-9x）。b（面2待ち）・c（生産面マスター未登録）にだけ背景色を付ける。
+        # 配色は実績CSVステージング一覧の候補と同じ。
         self.tree_plan_list.tag_configure("needs_side2_wait", background="#cfe2ff")
         self.tree_plan_list.tag_configure("side_master_unregistered", background="#e2e3e5")
 
         vsb_plan = ttk.Scrollbar(right_frame, orient="vertical", command=self.tree_plan_list.yview)
         self.tree_plan_list.configure(yscrollcommand=vsb_plan.set)
 
-        # 列幅合計（980px）が実際の表示幅を超過しているため、水平スクロールバーを追加
-        # （発注数以降の列が横スクロールなしでは確認できないため）。
+        # 列幅の合計が表示幅を超えるため、水平スクロールバーを付ける。
         hsb_plan = ttk.Scrollbar(right_frame, orient="horizontal", command=self.tree_plan_list.xview)
         self.tree_plan_list.configure(xscrollcommand=hsb_plan.set)
 
-        # pack順序の注意：Tkのpackはside=BOTTOM/TOPを問わずpackを呼んだ順にcavityを
-        # 消費するため、下部ボタン行（bottom_btn_frame）をhsb_planより先にside=tk.BOTTOMで
-        # packし、ウィンドウ最下端の帯を先に確保する。その後hsb_planを同じくside=tk.BOTTOMで
-        # packすると、その時点の（ボタン確保後の）最下端＝Treeviewの直下にhsb_planが
-        # 配置される。逆順（従来の実装）だと、hsb_planが先にウィンドウ最下端を
-        # 確保してしまい、後からpackされるボタン行がhsb_planとTreeviewの間に
-        # 割り込んでしまい、hsb_planがTreeviewから視覚的に切り離された位置
-        # （ボタンのさらに下）に表示されていた。
-        #
-        # 「更新」ボタンと日報出力・月報出力・実績CSV取込ボタンは、元々left_frame側の
-        # 独立したフレーム（report_btn_frame）にあったが、右側の計画一覧の操作と
-        # まとめて横並びにする方が導線として自然なため、この1つのフレームへ統合した。
+        # pack 順の罠: pack は呼んだ順に領域を取るため、ボタン行→hsb_plan→vsb_plan→Treeview の順に pack する。
+        # 逆にすると hsb_plan がボタン行の下に離れて表示される。
         bottom_btn_frame = ttk.Frame(right_frame)
         bottom_btn_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(5, 0))
 
@@ -529,13 +361,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         )
         self.btn_production_csv_import.pack(side=tk.LEFT, expand=True, fill=tk.X)
 
-        # 以前はメインメニュー側にあった「実績CSV取込状況」ボタン（新規CSV取込を
-        # 経由せず、既存の未処理データのみでステージング一覧を開く機能）を、
-        # 本画面側（実績CSV取込ボタンの隣）へ移設した。ステージング画面は
-        # 本画面のsearch_plan()等へ直接アクセスする設計のため、そもそも
-        # 本画面が開いている状態でしか意味を持たない機能であり、本画面に
-        # 配置する方が自然と判断した。処理自体はopen_pending_csv_staging_window()
-        # （既存、新規CSV取込直後にも使われる共通の入口）をそのまま呼ぶ。
+        # ステージング一覧は本画面のメソッドを直接呼ぶので、本画面が開いているときだけ使えるようここに置く。
         self.btn_csv_staging_status = ttk.Button(
             bottom_btn_frame, text="実績CSV取込状況", command=self.open_pending_csv_staging_window
         )
@@ -548,15 +374,13 @@ class KittingProductionEntryWindow(tk.Toplevel):
         self.tree_plan_list.bind("<Double-1>", self.on_plan_cell_double_click)
 
         if self._preloaded_plan_rows is not None:
-            # 呼び出し元が別スレッドで事前取得済み（main_window.open_kitting_production_entry()）。
-            # ここでは再度DBへアクセスせず、そのままTreeviewへ反映する。
+            # 呼び出し元が別スレッドで取得済み。DB に再アクセスしない。
             self._all_plan_rows = self._preloaded_plan_rows
             self._populate_plan_list_tree(self._preloaded_plan_rows)
         else:
             self.load_plan_list()
 
-        # 日次実績履歴は「本日の全計画分のログ」のため、計画選択前（画面を開いた直後）
-        # から表示しておく。
+        # 本日の全計画分のログなので、計画を選ぶ前から表示しておく。
         self.load_today_log()
 
     def _add_plan_filter_entry(self, parent, col_key, label_text, width):
@@ -565,26 +389,14 @@ class KittingProductionEntryWindow(tk.Toplevel):
         var = tk.StringVar()
         entry = ttk.Entry(parent, textvariable=var, width=width)
         entry.pack(side=tk.LEFT, padx=(0, 5))
-        # 絞り込みは self._all_plan_rows に対するメモリ内の文字列部分一致でしかなく
-        # DBアクセスを伴わないため、キー入力のたびに即時反映してもコストは無視できる
-        # （生産実績入力画面の計画一覧側で行ったDBアクセスを伴う操作のデバウンスとは
-        # 性質が異なる）。
+        # メモリ内の部分一致なので、キー入力ごとに即時反映してよい（DB 検索のデバウンスとは別）。
         entry.bind("<KeyRelease>", self.apply_plan_filters)
         self._plan_filter_vars[col_key] = var
 
     def _add_plan_date_range_filter(self, parent):
         """
-        絞り込みエリアに「実装開始予定日」の期間指定用UIを追加する（開始日・終了日の
-        DateEntryを2つ）。日報・月報画面（ui/daily_report_window.py等）と同じ形式
-        （date_pattern="yyyy-mm-dd", locale="ja_JP"）で統一する。
-
-        plan_start_datetime の実データ形式（"YYYY/MM/DD HH:MM:SS"、スラッシュ区切り＋
-        時刻付き）とDateEntryの出力（"YYYY-MM-DD"、ハイフン区切り・日付のみ）には差異が
-        あるため、比較は _plan_date_range_predicate() 側で吸収する。ここでは生成と
-        イベントバインドのみ行う。
-
-        空欄＝その側は絞り込み無し（未入力状態から開始する。DateEntryは通常
-        当日日付が初期選択されているため、生成直後に明示的にクリアする）。
+        「実装開始予定日」の期間指定（開始日・終了日の DateEntry）を追加する。
+        DateEntry は当日が初期選択されるため、生成直後にクリアして「絞り込み無し」から始める。
         """
         ttk.Label(parent, text=f"{self._plan_filter_labels['plan_start_datetime']}:").pack(
             side=tk.LEFT, padx=(5, 2)
@@ -605,14 +417,8 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
     def _plan_date_range_predicate(self):
         """
-        「実装開始予定日」の期間フィルタ（開始日・終了日DateEntry）から、
-        plan_start_datetime列用の述語（value: str -> bool）を組み立てる。
-        両方空欄なら None を返す（絞り込み無し）。
-
-        DateEntryの出力"YYYY-MM-DD"と、plan_start_datetimeの実データ形式
-        "YYYY/MM/DD HH:MM:SS"との差異（区切り文字・時刻の有無）を、日付部分の
-        先頭10文字を取り出しスラッシュ区切りに統一した上での文字列比較で吸収する
-        （ゼロ埋め済みのため辞書順比較がそのまま時系列順になる）。
+        期間フィルタから plan_start_datetime 用の述語を作る。両方空欄なら None。
+        実データは "YYYY/MM/DD HH:MM:SS" なので、先頭10文字をスラッシュ区切りにそろえて文字列比較する。
         """
         from_text = self._plan_date_from_entry.get().strip() if self._plan_date_from_entry else ""
         to_text = self._plan_date_to_entry.get().strip() if self._plan_date_to_entry else ""
@@ -634,9 +440,8 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
     def _add_plan_checkbox_filter_button(self, parent, col_key):
         """
-        絞り込みエリアに、エクセルのオートフィルタ風チェックボックス式ポップアップを開く
-        ▼ボタンを1列分追加する。ttk.Buttonではテーマによって背景色を変更できないことが
-        あるため、「絞り込み中」の見た目切替（色変更）のため素のtk.Buttonを使う。
+        チェックボックス式ポップアップを開く▼ボタンを追加する。
+        ttk.Button はテーマによって背景色を変えられないため、絞り込み中の色を付けられる tk.Button を使う。
         """
         label_text = self._plan_filter_labels[col_key]
         button = tk.Button(
@@ -661,13 +466,8 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
     def open_plan_checkbox_filter_popup(self, col_key):
         """
-        lot_no/file_no/board_name用の、エクセルのオートフィルタ風チェックボックス式
-        絞り込みポップアップを開く。
-
-        distinct値の算出方針：この列自身のフィルタを除いた、現在の他の全フィルタ
-        （テキスト・チェックボックス問わず）を適用した結果の中でのdistinct値とする
-        （エクセルのオートフィルタの一般的な挙動に合わせた）。これにより、他の条件で
-        既に絞り込まれている状況でも「今その条件下で実際に選べる値」だけが候補に出る。
+        lot_no/file_no/board_name のチェックボックス式絞り込みポップアップを開く。
+        候補は、この列以外の絞り込みを適用した結果の distinct 値（エクセルのオートフィルタと同じ）。
         """
         label_text = self._plan_filter_labels[col_key]
         col_index = self._plan_col_index[col_key]
@@ -684,10 +484,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         current_selection = self._plan_checkbox_filters.get(col_key)
         checked_values = set(full_values) if current_selection is None else set(current_selection)
 
-        # selfが最小化状態だと、transient(self)したポップアップがstate()="withdrawn"
-        # のまま実際には表示されない（grab_set()は効くため、見えないポップアップが
-        # 入力を握ったままになる）。ui.plan_candidate_dialog._show_candidate_list_dialog()
-        # と同じ理由・同じ対策（UI_WORKFLOW_FIXES_NOTES.md参照）。
+        # 最小化中だと transient のポップアップが見えないまま入力を握るため、先に元に戻す（UI_WORKFLOW_FIXES_NOTES.md）。
         if self.state() == "iconic":
             self.deiconify()
 
@@ -775,28 +572,19 @@ class KittingProductionEntryWindow(tk.Toplevel):
     @staticmethod
     def _fetch_plan_list_rows():
         """
-        計画一覧のDBアクセス部分のみを行う（Tkinterウィジェットには一切触れない）。
-        インスタンス状態に依存しないため、インスタンス生成前・別スレッドからでも
-        呼び出せる（main_window.open_kitting_production_entry()の非同期化で利用）。
-        sqlite3接続は呼び出し先の各関数がそれぞれ都度 get_connection() で新規に
-        張るため、スレッドをまたいで接続オブジェクトを共有することはない。
-
-        戻り値：Treeviewへそのまま渡せる values タプルのリスト。
+        計画一覧の DB アクセスだけを行う（ウィジェットに触れない）。別スレッドから呼んでよい。
+        接続は呼び出し先が都度張るので、スレッド間で共有しない。
         """
         rows = []
         lot_completion_cache = {}
 
-        # include_completed=True：完了済み計画も常に取得しておき、表示/非表示は
-        # 「入力済みを隠す」チェックボックス（apply_plan_filters()）側で切り替える。
-        # find_matching_plan_items()（実績CSV自動取込）は list_active_plan_items() を
-        # デフォルト（include_completed=False）のまま呼んでおり、こちらの変更の影響は受けない。
+        # 完了済みも取得し、表示/非表示は「入力済みを隠す」で切り替える。
         for plan_item in list_active_plan_items(include_completed=True):
             kitting_list_no = plan_item["kitting_list_no"]
             lot_no = plan_item["lot_no"]
             planned_qty = plan_item["planned_qty"] or 0
             order_qty = plan_item["order_qty"] or 0
-            # list_active_plan_items() が完了判定用に計算済みの値をそのまま再利用し、
-            # 同じkitting_list_noに対する重複呼び出しを避ける。
+            # list_active_plan_items() の計算済みの値を使い、重複呼び出しを避ける。
             actual_qty = plan_item["app_cumulative_qty"]
             diff = order_qty - actual_qty
 
@@ -818,18 +606,9 @@ class KittingProductionEntryWindow(tk.Toplevel):
                 f"{diff:.0f}",
                 f"{lot_completed:.0f}",
                 f"{lot_remaining:.0f}",
-                # 表示列（cols_plan）には含まれない末尾の隠し要素その1：生産面
-                # マスターによる分類（2026-10-07新設、D-9x参照。"a"/"b"/"c"/
-                # None）。_populate_plan_list_tree()がこの行のタグ（背景色）に
-                # 使う。production_sideより前に置く（production_sideは
-                # apply_plan_filters()がrow[-1]で参照する既存の契約のため、
-                # 末尾の位置を変えない）。
+                # 隠し要素1: 生産面マスターの分類（D-9x）。row[-1] は production_side という契約なので、その前に置く。
                 str(classify_side1_only_plan(plan_item) or ""),
-                # 表示列（cols_plan）には含まれない末尾の隠し要素その2。
-                # 「入力済みを隠す」フィルタ（apply_plan_filters()）が、この行の
-                # (setup_file_no, production_side)を鍵にcalculate_lot_completion()の
-                # file_actualsを引く際に使う。_populate_plan_list_tree()でTreeviewへ
-                # 渡す際はcols_plan分だけにスライスして渡すため、画面上の列には現れない。
+                # 隠し要素2: production_side。「入力済みを隠す」が (setup_file_no, production_side) で file_actuals を引くのに使う。
                 str(plan_item.get("production_side") or ""),
             ))
 
@@ -837,13 +616,8 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
     def _populate_plan_list_tree(self, rows):
         """
-        渡された行データ（全件、またはフィルタ後の部分集合）でTreeviewを更新する。
-        UIスレッド専用。全件データの保持・絞り込みの適用はこのメソッドの責務ではない
-        （呼び出し元がどのデータを渡すか決める）。
-
-        併せて self._plan_row_iid_by_kitting_no（(kitting_list_no, lot_no) -> iid）
-        を、この呼び出しで実際にTreeviewへ挿入した行だけで作り直す
-        （_refresh_plan_list_for_lot()が登録直後の部分更新に使う）。
+        渡された行（全件、または絞り込み後）で Treeview を作り直す。UI スレッド専用。
+        _plan_row_iid_by_kitting_no も、実際に挿入した行だけで作り直す。
         """
         self._close_cell_edit_entry()
 
@@ -851,9 +625,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
             self.tree_plan_list.delete(item)
 
         self._plan_row_iid_by_kitting_no = {}
-        # rowsの各要素はcols_plan（表示列）に加え、末尾に2つの隠し要素
-        # （分類・production_side、_fetch_plan_list_rows()参照）を持つ場合がある。
-        # Treeviewへはcols_plan分だけをスライスして渡す（余分な値を渡さない）。
+        # 末尾の隠し要素2つ（分類・production_side）は Treeview に渡さない。
         col_count = len(self._plan_col_index)
         for values in rows:
             classification = values[col_count] if len(values) > col_count else ""
@@ -869,10 +641,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
     def load_plan_list(self):
         """
-        DB取得とTreeview更新をまとめて同期的に行う（「更新」ボタン等から使用）。
-        v1として、更新のたびに絞り込み条件はリセットする（ソートもTreeview再構築に
-        伴い解除される。sort_plan_list()はTreeviewの現在の表示内容を直接並べ替える
-        実装のため、再構築後は元の取得順に戻る）。
+        DB 取得と Treeview 更新を同期的に行う（「更新」ボタンなど）。更新のたびに絞り込みとソートは解除される。
         """
         rows = self._fetch_plan_list_rows()
         self._all_plan_rows = rows
@@ -890,34 +659,10 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
     def _refresh_plan_list_for_lot(self, lot_no):
         """
-        実績・NG登録完了直後、計画一覧（tree_plan_list）のうち同一lot_noに属する
-        行だけを部分更新する（_perform_registration()から呼ぶ）。
-
-        load_plan_list()のような全件再取得（list_active_plan_items(include_
-        completed=True)で全lot_noを走査し、lot_no単位でcalculate_lot_completion()
-        を都度呼ぶ）は行わず、models.kitting_plan.list_active_plan_items(lot_no=lot_no,
-        include_completed=True)でDB側から絞り込んだ上で取得する。この引数は部分
-        一致（LIKE）のため、意図しない他lot_noの誤マッチ（例：lot_no="100075"の
-        絞り込みに"1100075"等が混入）を避けるため、取得後にlot_no完全一致で
-        再フィルタする。calculate_lot_completion(lot_no)も対象lot_noについて1回
-        だけ呼ぶ（_fetch_plan_list_rows()のlot単位キャッシュと異なり、ここでは
-        対象lot_noが常に1つのみのためキャッシュ自体が不要）。
-
-        面連動（register_opposite_side_daily_result()による面1への自動登録）で
-        更新された行も、同一lot_noに属する限りlist_active_plan_items(lot_no=lot_no)
-        の結果に自動的に含まれるため、ここで別途の考慮は不要。
-
-        self._all_plan_rows（フィルタ前の全件データ、_fetch_plan_list_rows()と
-        同じtuple形式）を該当行だけ書き換え、self._plan_row_iid_by_kitting_no
-        （_populate_plan_list_tree()実行時点でTreeviewに挿入済みの行のみを持つ
-        マップ）にiidがある行だけself.tree_plan_list.set()で反映する。絞り込みで
-        現在非表示の行はiidが存在しないためTreeview更新をスキップするが、
-        _all_plan_rows側は更新しておく（絞り込み解除時に古い値が再表示される
-        事故を防ぐ）。
-
-        Treeviewは既存iidへの.set()のみで削除・再挿入を行わないため、
-        sort_plan_list()によるTreeview上の並び順（move()で管理、行の挿入順とは
-        無関係）にも、選択状態にも影響しない。
+        登録直後に、同じ lot_no の行だけを部分更新する（_perform_registration() から呼ぶ）。
+        list_active_plan_items(lot_no=...) は部分一致（LIKE）なので、取得後に lot_no の完全一致で絞り直す。
+        絞り込みで非表示の行も _all_plan_rows は更新する（解除したときに古い値が出ないように）。
+        既存 iid への set() だけなので、並び順と選択状態は変わらない。
         """
         plan_items = list_active_plan_items(lot_no=lot_no, include_completed=True)
         plan_items = [item for item in plan_items if item.get("lot_no") == lot_no]
@@ -976,14 +721,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
     def _plan_filter_predicates(self):
         """
-        現在のフィルタ状態（テキスト入力欄＋チェックボックス式ポップアップ）から、
-        列ごとの述語関数（value: str -> bool）の辞書を組み立てる。
-        絞り込みが指定されていない列は辞書に含めない（絞り込み対象外）。
-
-        テキスト部分一致・チェックボックス選択のいずれも最終的には同じ
-        「col_key -> callable(value)->bool」という形に正規化されるため、
-        apply_plan_filters() / open_plan_checkbox_filter_popup() 側は
-        列の絞り込み方式の違いを意識しない。
+        現在の絞り込み状態から、列ごとの述語（value: str -> bool）の辞書を作る。指定の無い列は含めない。
         """
         predicates = {}
         for col_key, var in self._plan_filter_vars.items():
@@ -1011,21 +749,9 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
     def apply_plan_filters(self, event=None):
         """
-        self._all_plan_rows に対して現在の全フィルタ条件をAND条件で適用し、
-        結果をTreeviewへ反映する（DBへは一切アクセスしない）。
-
-        「入力済みを隠す」は、列単位の述語（_plan_filter_predicates()）の形に
-        馴染まないため、列フィルタ適用後の結果に対して別立てで追加適用する。
-
-        判定基準はcalculate_lot_completion()のfile_actuals（ファイルNo・面単位で
-        複数のkitting_list_noの実績を合算する、月報・日報側と同じ正しいロジック）
-        を使いつつ、比較対象は同関数のcompleted_quantity（ロット内の全file_no・
-        面の実績の最小値）ではなく、**この行自身のorder_qty（発注数）**にする。
-        以前はcompleted_quantityと比較していたが、ロット全体が未登録（実績0）の
-        場合はcompleted_quantityも0になり、0 >= 0で未登録の計画まで誤って
-        「完了済み」と判定してしまう境界条件のバグがあった（実データで確認済み、
-        2026-09-24修正）。order_qtyとの比較に変更することで、この境界ケースを
-        正しく「未完了」と判定できるようにする。
+        _all_plan_rows に全フィルタを AND で適用して Treeview に反映する（DB にはアクセスしない）。
+        「入力済みを隠す」は、行の (file_no, 面) の実績合計が、その行の発注数以上かで判定する。
+        ロット完成数と比べると、実績0のロットが 0 >= 0 で「完了」と誤判定される。
         """
         predicates = self._plan_filter_predicates()
         if not predicates:
@@ -1038,10 +764,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
             file_no_index = self._plan_col_index["file_no"]
             order_qty_index = self._plan_col_index["order_qty"]
 
-            # _fetch_plan_list_rows()のlot単位キャッシュと同じパターン。
-            # このapply_plan_filters()呼び出し1回の中でのみ有効な使い捨てキャッシュ
-            # のため、複数のkitting_list_noが同一lot_noを共有していても
-            # calculate_lot_completion()は対象lot_noにつき1回しか呼ばれない。
+            # このメソッド1回の中だけで使う、ロット単位のキャッシュ。
             lot_completion_cache = {}
 
             def is_row_completed(row):
@@ -1053,12 +776,6 @@ class KittingProductionEntryWindow(tk.Toplevel):
                 file_no = row[file_no_index]
                 production_side = row[-1]
                 file_actual = lot_info["file_actuals"].get((file_no, production_side), 0)
-                # completed_quantity（ロット内の全file_no・面の最小値）との比較では、
-                # ロット全体が未登録（実績0）の場合にcompleted_quantityも0になり、
-                # 0 >= 0で誤って「完了済み」と判定されてしまう境界条件のバグが
-                # あった（実データで確認済み）。この行自身のorder_qty（発注数）との
-                # 比較に変更し、未登録（file_actual=0 < order_qty>0）を正しく
-                # 「未完了」と判定できるようにする。
                 order_qty = float(row[order_qty_index])
                 return file_actual >= order_qty
 
@@ -1082,16 +799,8 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
     def on_select_plan_list(self, event):
         """
-        計画一覧の選択（クリック・矢印キーいずれも<<TreeviewSelect>>で発火）。
-        計画情報表示・履歴読み込み（search_plan()、DBアクセスを伴う）はデバウンスし、
-        矢印キー連打中は実行しない。
-
-        tree_plan_list の選択行は values[0] に kitting_list_no、values[1] に
-        lot_no を持つ（cols_plan参照）。実DBで同一kitting_list_noが複数の異なる
-        lot_noにまたがって存在するケースが478件確認されており、この行選択の
-        時点で両方とも一意に判明しているため、_pending_plan_select_kitting_no・
-        _pending_plan_select_lot_no に保持しておき、デバウンス確定後の
-        search_plan() へ直接渡す（曖昧な単体検索を経由しない）。
+        計画一覧の選択（クリック・矢印キー）。DB 検索を伴う search_plan() はデバウンスする。
+        kitting_list_no は lot_no をまたいで重複するため、行の lot_no も一緒に渡す。
         """
         sel = self.tree_plan_list.selection()
         if not sel:
@@ -1108,16 +817,8 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
     def _on_plan_select_debounced(self):
         """
-        デバウンス確定後（矢印キー連打中は発火しない）にsearch_plan()を実行し、
-        その後で生産実績記入欄（entry_daily_qty）へフォーカスを移す。
-        on_select_plan_list()側（デバウンス予約のみ行う生の選択イベントハンドラ）で
-        即座にフォーカスを移すと、矢印キーでの計画一覧ナビゲーション中に最初の
-        キー入力でTreeviewからフォーカスが逃げてしまい、以降の矢印キーが
-        entry_daily_qty側に取られてリストナビゲーションが機能しなくなるため、
-        ここ（選択が確定した後）で行う。
-
-        on_select_plan_list()が保持しておいたkitting_list_no・lot_noをそのまま
-        search_plan()へ渡す。
+        デバウンス確定後に search_plan() を実行し、実績記入欄へフォーカスを移す。
+        選択イベントの時点で移すと、矢印キーでの一覧移動中にフォーカスが記入欄へ逃げてしまう。
         """
         self._plan_select_debounce_id = None
         self.search_plan(self._pending_plan_select_kitting_no, lot_no=self._pending_plan_select_lot_no)
@@ -1125,16 +826,8 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
     def _move_plan_selection(self, delta):
         """
-        実績記入欄・NG記入欄にフォーカスがある状態でも、上下矢印キーで計画一覧
-        （tree_plan_list）の選択行を1つ上（delta=-1）/下（delta=+1）に移動できる
-        ようにする。tree_plan_list側の選択・フォーカス行を実際に動かした上で
-        <<TreeviewSelect>>を発火させ、既存のon_select_plan_list()→デバウンス→
-        search_plan()の流れをそのまま利用する。
-
-        フォーカスはこの関数自体では動かさない。デバウンス確定後の
-        _on_plan_select_debounced()が最後にentry_daily_qtyへフォーカスを戻す処理を
-        既に行っているため、呼び出し元（entry_daily_qtyやNG記入欄）から見て
-        フォーカスは実質的に記入欄側に留まる。
+        記入欄にフォーカスがあっても、上下矢印で計画一覧の選択を1行動かす。
+        <<TreeviewSelect>> を発火させて通常の選択処理に乗せる。フォーカスはデバウンス後に記入欄へ戻る。
         """
         children = self.tree_plan_list.get_children("")
         if not children:
@@ -1181,12 +874,8 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
     def on_plan_cell_double_click(self, event):
         """
-        計画一覧のセルをダブルクリックした際、そのセルの上に一時的なEntryを重ねて
-        テキストを全選択状態で表示する（Treeviewは標準でセル内テキストのコピーに
-        対応していないための簡易的なコピー手段）。フォーカスが外れる・Escape/Enter
-        が押されると元のTreeview表示に戻る。
-        計画を開く処理（旧on_plan_double_click）はワンクリック選択に統合したため、
-        ここでは行わない。
+        セルの上に一時的な Entry を重ね、テキストを全選択で表示する（Treeview はセルをコピーできないため）。
+        Escape・Enter・フォーカス移動で閉じる。
         """
         region = self.tree_plan_list.identify_region(event.x, event.y)
         if region != "cell":
@@ -1243,27 +932,10 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
     def search_plan(self, kitting_list_no, lot_no=None):
         """
-        指定されたkitting_list_no・lot_noから計画を検索し、画面に表示する。
-
-        呼び出し元は右ペインの計画一覧の行選択（on_select_plan_list()→
-        _on_plan_select_debounced()）、日次実績履歴のダブルクリック
-        （on_history_row_double_click()）、または実績CSVステージング一覧
-        （ui.production_import_staging_window.ProductionImportStagingWindow.
-        _confirm_candidate()、左ペインの候補ダブルクリック時にself（この
-        インスタンス）へ直接呼ばれる）のいずれかで、いずれも選択・確定した
-        時点で既にkitting_list_no・lot_noの両方を把握した上で本関数を呼ぶ
-        （キッティングリストNo.欄への直接手入力による検索は廃止し、計画一覧からの
-        選択に一本化したため、lot_noが不明なままこの関数が呼ばれることは無くなった。
-        そのため search_plan_by_kitting_no() が複数候補を返す＝候補選択ダイアログ
-        （ui.plan_candidate_dialog）が必要になるケースも発生しない）。
-
-        実績CSVステージング一覧経由の登録待ち（self._pending_csv_row_removal・
-        self._pending_csv_report_date）があれば、ここでクリアする：CSV行の
-        候補選択直後はProductionImportStagingWindow._confirm_candidate()が
-        この呼び出しの直後に改めてセットするため影響が無い一方、CSVの選択を
-        経ずに別の計画へ切り替えた場合（計画一覧からの通常の行選択等）に、
-        古いCSV行のremove_callback・払い出し日が無関係な登録で誤って
-        使われてしまう事故を防ぐ。
+        kitting_list_no・lot_no で計画を検索して表示する。呼び出し元は必ず lot_no も渡す。
+        CSV 由来の登録待ち（_pending_csv_row_removal・_pending_csv_report_date）はここでクリアする。
+        CSV を経ずに別の計画へ切り替えたとき、古い CSV 行の情報が無関係な登録に使われないようにするため
+        （CSV 経由のときは、ステージング一覧がこの呼び出しの直後に改めてセットする）。
         """
         self._pending_csv_row_removal = None
         self._pending_csv_report_date = None
@@ -1288,17 +960,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         self.lbl_lot_completed.config(text=f"{plan['lot_completed_quantity']:.0f}")
         self.lbl_lot_remaining.config(text=f"{plan['lot_remaining_quantity']:.0f}")
 
-        # 同一setup_file_noで面2が存在する場合、面1は完成品ではないため表示から
-        # 除外する（models.kitting_plan.list_active_plan_items()の
-        # 「2回目計画があれば1回目除外」ロジックと同じ考え方）。
-        #
-        # lot_file_actualsのキーは、services.production_service.
-        # calculate_lot_completion()の変更により(setup_file_no, production_side)の
-        # 2要素になった（以前は(setup_file_no, production_side, kitting_list_no)の
-        # 3要素で、file_no単位で複数バッチが同時アクティブな場合はバッチごとに
-        # 個別の行として表示していたが、file_no×面単位で実績を合算する方式に
-        # 変更されたことに伴い、特定の1バッチを名指しする意味が無くなったため
-        # 表示からkitting_list_noを外した）。
+        # 同じ setup_file_no に面2がある場合、面1は完成品ではないので表示しない（list_active_plan_items() と同じ、D-8）。
         second_side_setup_files = {
             file_no for (file_no, side) in plan["lot_file_actuals"]
             if str(side).strip() == "2"
@@ -1315,18 +977,8 @@ class KittingProductionEntryWindow(tk.Toplevel):
         )
         self.lbl_lot_file_actuals.config(text=file_actuals_text or "-")
 
-        # 構成基板数マスタ（models.board_structure_master、CSVインポートのみで
-        # 更新される参照専用マスタ）から、board_nameで検索して表示する。
-        # 表記ゆれ（全角/半角・大小文字・空白）は get_board_structure() 側で
-        # 正規化して吸収するため、ここでは plan["board_name"] をそのまま渡す。
-        #
-        # 照合機能（2026-09-24追加）：マスタの構成基板数（board_count）と、
-        # 「基板別実績（file_no）」欄に実際に表示されるfile_no（面2があれば
-        # 面1を隠す既存ロジック適用後）のdistinct数を突き合わせ、一致しない
-        # 場合はマスタ登録漏れ・計画データ側の異常等の可能性があるため、
-        # ラベルを赤字にして注意喚起する（未登録の場合も同様に赤字、既存の
-        # 「未登録」表示文言自体は維持する）。一致する場合は通常の色
-        # （_add_info_row()のデフォルト色）に戻す。
+        # 構成基板数マスタの値と、表示中の file_no の数（面2があれば面1を除く）が違えば赤字にする
+        # （登録漏れや計画データの異常の可能性）。基板名の表記ゆれは get_board_structure() 側で吸収する。
         distinct_file_no_count = len(visible_file_nos)
         board_structure = get_board_structure(plan["board_name"]) if plan.get("board_name") else None
         default_color = "blue"
@@ -1349,23 +1001,8 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
     def _load_current_daily_qty(self, kitting_no, lot_no):
         """
-        選択中の計画に、現在の実績が既に登録されていれば、その数量を生産実績記入欄へ
-        表示する（_start_registration()の「既に実績が登録されています」判定と
-        整合する値）。未登録なら空欄のままにする。
-
-        以前はreport_date=当日限定で検索していたが、models.production.
-        replace_daily_result()により「1計画（kitting_list_no・lot_no）=1レコード、
-        常に上書き」となったため、report_dateを問わない全期間検索
-        （get_daily_history(kitting_no, lot_no)）に変更した。当日限定のままだと、
-        実績が過去日付で登録されたまま当日中に未更新の計画を選択した際、記入欄が
-        誤って空欄のまま表示されてしまっていた。
-
-        既存レコードが複数件ある場合（本仕様変更前の過去データ等）は、最も新しい
-        report_dateのレコードを表示する（get_daily_history()はreport_date昇順で
-        返すため末尾）。
-
-        lot_noを渡すのは、実DBで同一kitting_list_noが複数の異なるlot_noにまたがって
-        存在するケースが478件確認されているため。
+        選択中の計画に登録済みの実績があれば、記入欄に表示する。
+        1計画＝1レコードで常に上書きするので、日付を問わず検索する。複数件あれば最も新しい日付の値を使う。
         """
         self.entry_daily_qty.delete(0, tk.END)
         existing = get_daily_history(kitting_no, lot_no)
@@ -1374,38 +1011,10 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
     def load_today_log(self):
         """
-        日次実績履歴（画面上部の一覧）を「本日（report_date=今日）に入力された
-        全計画分のログ」として表示する。選択中の計画に関わらず、その日に入力された
-        全ての実績が並ぶ（計画を切り替えても履歴は消えない）。過去分も含めた
-        個別の修正・削除は引き続き「実績修正」ボタン（ActualCorrectionWindow、
-        全期間を表示する別画面）から行う。
-
-        models.production.list_daily_production_today()で当日のproduction_daily
-        全件を取得する（NG申告はproduction_dailyに含まれないため対象外）。
-        取得した生レコードをそのままself._today_all_rowsに保持する（表示側で
-        面1除外フィルタをかけても、元データ自体は変更しない）。
-
-        各行のロットNo・基板名は、日報画面（_build_report_rows()）と同じパターンで
-        kitting_list_noからfind_plan_item_by_kitting_no()により補完する（計画が
-        見つからない場合は、production_daily側に記録済みの値（登録時点のスナップ
-        ショット）にフォールバックする）。
-
-        find_plan_item_by_kitting_no()には、rec自身が持つrec["lot_id"]（その実績が
-        実際に登録されたlot_no）も一緒に渡す。実DBで同一kitting_list_noが複数の
-        異なるlot_noにまたがって存在するケースが478件確認されており、
-        kitting_list_noだけの検索ではどちらの計画が返るか不定になるため
-        （_build_report_rows()と同じ理由）。
-
-        表示フィルタ：同一(lot_no, setup_file_no)で面2の計画が存在する行がある
-        場合、面1の行は完成品ではないため一覧から除外する
-        （models.kitting_plan.list_active_plan_items()の「2回目計画があれば
-        1回目除外」ロジックと同じ考え方）。判定のため、Treeviewへの挿入前に
-        全レコードの計画解決を1回済ませ、面2が存在する(lot_no, setup_file_no)の
-        集合を作ってから、挿入するレコードを絞り込む。
-
-        除外により見た目上の行と self._today_all_rows の対応が崩れるため、
-        on_history_row_double_click()はTreeview上の位置（tree.index()）ではなく、
-        挿入時に記録するiid→レコードの対応（self._today_row_by_iid）で逆引きする。
+        本日（report_date＝今日）に入力された全計画分の実績を表示する。計画を切り替えても消えない。
+        計画の検索には実績の lot_id も渡す（kitting_list_no は lot_no をまたいで重複するため）。
+        同じ (lot_no, setup_file_no) に面2がある面1の行は表示しない。表示と _today_all_rows の並びがずれるので、
+        ダブルクリックでは位置ではなく iid -> レコードの対応（_today_row_by_iid）で引く。
         """
         for item in self.tree.get_children():
             self.tree.delete(item)
@@ -1450,24 +1059,8 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
     def on_history_row_double_click(self, event):
         """
-        日次実績履歴（本日の全計画ログ）の行をダブルクリックすると、対応する計画を
-        直接search_plan()へ渡して呼ぶ（既存のUIパターン：
-        ui.unified_report_window.UnifiedReportWindow.on_row_double_click()や
-        ui.ng_input_window.NgInputWindow.on_ng_list_double_click()と同じ、
-        「行→保持データからkitting_list_noを逆引き→対応する処理を呼ぶ」導線）。
-        計画情報表示・NG欄・実績記入欄は、search_plan()内の既存処理
-        （_setup_ng_side_ui()・_load_current_daily_qty()呼び出し）でまとめて更新される。
-
-        self._today_row_by_iid[row_id]はproduction_dailyの生レコードであり、
-        その実績が実際に登録されたlot_no（lot_id列）を持っている。実DBで同一
-        kitting_list_noが複数の異なるlot_noにまたがって存在するケースが478件
-        確認されているため、このlot_idをsearch_plan()へ渡し、曖昧な単体検索を
-        経由しないようにする。
-
-        面2が存在する場合に面1の行を表示から除外するフィルタ（load_today_log()）
-        により、Treeview上の見た目の行順とself._today_all_rowsの並びは一致しない
-        ため、tree.index()による位置参照ではなく、挿入時に記録したiid→レコードの
-        対応（self._today_row_by_iid）で直接引く。
+        日次実績履歴の行をダブルクリックすると、対応する計画を search_plan() で呼び出す。
+        実績の lot_id も渡す。行は位置ではなく _today_row_by_iid で引く（load_today_log() 参照）。
         """
         row_id = self.tree.identify_row(event.y)
         if not row_id:
@@ -1493,19 +1086,11 @@ class KittingProductionEntryWindow(tk.Toplevel):
         )
 
     def open_unified_report(self):
-        """
-        日報・月報を統合した実績レポート画面（ui.unified_report_window.
-        UnifiedReportWindow）を開く。旧「日報出力」「月報出力」ボタンを
-        この1つに置き換えた（2026-09-30、日報・月報統合の第一段階）。
-        """
+        """実績レポート画面（日報・月報の統合）を開く。"""
         UnifiedReportWindow(self, current_worker=self.current_worker)
 
     def open_lot_progress(self):
-        """
-        多重表示防止：self._csv_staging_window と同じパターン
-        （属性にウインドウ参照を保持し、開く前にwinfo_exists()を確認して
-        既に開いていればlift()するだけにする）。
-        """
+        """ロット進捗チェック画面を開く。開いていれば手前に出すだけ。"""
         if self._lot_progress_window is not None and self._lot_progress_window.winfo_exists():
             self._lot_progress_window.lift()
             self._lot_progress_window.focus_force()
@@ -1513,9 +1098,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         self._lot_progress_window = LotProgressWindow(self)
 
     def open_daily_drawdown(self):
-        """
-        多重表示防止：open_lot_progress()と同じパターン。
-        """
+        """日々の引落一覧を開く。開いていれば手前に出すだけ。"""
         if self._daily_drawdown_window is not None and self._daily_drawdown_window.winfo_exists():
             self._daily_drawdown_window.lift()
             self._daily_drawdown_window.focus_force()
@@ -1524,36 +1107,9 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
     def on_production_csv_import(self):
         """
-        実績CSV（lot_no + 製品名ベース）を解析するが、production_dailyへは
-        一切書き込まない（「確認・選択・転記」方式）。解析結果（生の行データ）は
-        models.production_import_staging.pending_csv_import_rowsへ永続化される
-        （parse_production_csv_for_staging()内部で実施。ステージングデータの
-        永続化）。永続化後、open_pending_csv_staging_window()でステージング
-        一覧（ui.production_import_staging_window.ProductionImportStagingWindow、
-        左：候補一覧・右：登録待ち一覧の左右ペイン構成）を開いて表示する。
-        右ペインで行を選択すると左ペインに候補が表示され、候補をダブルクリック
-        すると同ウインドウの_confirm_candidate()がself（このインスタンス）の
-        search_plan()を直接呼んで計画確定→実績記入欄への転記を行う（以前は
-        候補選択ダイアログ ui.plan_candidate_dialog.select_plan_candidate_
-        by_lot() を経由していたが、左右ペイン化に伴いモーダルダイアログを
-        経由しない形にした）。実際の登録は既存の「実績記入欄→NG面1→NG面2→
-        登録確認ダイアログ→登録」フロー（_start_registration()）にそのまま
-        乗せる。
-
-        以前はimport_production_csv()で即時登録していたが、CSVの内容を
-        確認せずに自動登録されることを避けたいという方針変更により、
-        パース専用のservices.production_import_service.
-        parse_production_csv_for_staging()を使うよう変更した
-        （import_production_csv()自体は後方互換のため変更していない）。
-
-        parse_production_csv_for_staging()はファイル読み込み・DBアクセス
-        （保留行の保存）のみを行いTkinterには一切触れないため、UIスレッドで
-        同期実行すると行数の多いCSVでは画面がフリーズしたように見える。
-        ui.kitting_plan_import.KittingPlanImportWindow.on_start_import()で
-        確立済みのパターン（LoadingWindow表示→threading.Thread(daemon=True)で
-        重い処理→queue.Queueで結果受け渡し→self.after(200, ...)ポーリング→
-        LoadingWindow.destroy()）をそのまま踏襲し、パース中もUIスレッドが
-        ブロックされないようにする。
+        実績CSVを解析して保留行として保存し、ステージング一覧を開く。production_daily には書き込まない（「確認・選択・転記」方式）。
+        実際の登録は、候補を選んで記入欄に転記した後の通常の登録フロー（_start_registration()）で行う。
+        解析は別スレッドで行い、UI を止めない。
         """
         file_path = filedialog.askopenfilename(filetypes=[("CSV files", "*.csv"), ("All files", "*.*")], parent=self.winfo_toplevel())
         if not file_path:
@@ -1562,12 +1118,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         if not self._confirm_csv_format_for_production_import(file_path):
             return
 
-        # 前回（以前）の取込データが未処理のまま残っている場合、気づかず
-        # 続けて取り込んでしまう事故を避けるため確認する。「はい」を選んだ
-        # 場合の取込自体の挙動（同一lot_no+製品名の行は新しい方が古い保留行を
-        # 上書きする、upsert_pending_csv_import_row()のdelete-then-insert）は
-        # 変更しない（既存ルールのまま）。「いいえ」の場合はファイル選択が
-        # 済んでいても取込処理自体を開始しない。
+        # 未処理の保留行が残っていれば、気づかずに続けて取り込まないよう確認する（取込時の上書きルールは変えない）。
         pending_count = len(list_pending_csv_import_rows())
         if pending_count > 0:
             if not messagebox.askyesno(
@@ -1588,19 +1139,9 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
     def _confirm_csv_format_for_production_import(self, file_path):
         """
-        実績CSV取込に、誤ってキッティング計画CSVを読み込ませていないか、
-        ヘッダー行の固有列で簡易チェックする（2026-09-24発生、実際に
-        キッティング計画CSVを実績CSV取込に読み込ませてしまい、report_date
-        （払い出し日）等が全行空欄のまま457件が混入した事故を踏まえた対策、
-        案C：自フォーマット固有列の欠如検知＋他フォーマット固有列の混入検知）。
-
-        ヘッダー読み込み自体に失敗した場合（文字コード判定不能等）は、
-        後続のparse_production_csv_for_staging()側で改めてエラーとして
-        検知・報告されるため、ここでは警告を出さずそのまま続行する。
-
-        戻り値：True＝そのまま続行してよい（警告なし、またはユーザーが
-        「はい」を選択）、False＝取込を中止する（ユーザーが「いいえ」を選択）。
-        強制ブロックはしない。
+        キッティング計画CSVを誤って読み込ませていないか、ヘッダーの固有列で簡易チェックする
+        （計画CSVを実績CSVとして取り込み、払い出し日が空欄の行が457件混入した事故への対策）。
+        ヘッダーを読めないときは後続の解析でエラーになるので、ここでは続行する。False なら取込を中止する。
         """
         try:
             header = read_csv_header(file_path)
@@ -1618,11 +1159,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         return messagebox.askyesno("CSVフォーマットの確認", message, parent=self.winfo_toplevel())
 
     def _run_csv_parse_in_thread(self, file_path, worker_id):
-        """
-        別スレッドで実行する部分。Tkinterウィジェットには一切触れず、結果は
-        self._csv_import_queueへ put するのみ（UIスレッド側のポーリング
-        （_poll_csv_import_queue()）が受け取って画面へ反映する）。
-        """
+        """別スレッドで実行する。ウィジェットには触れず、結果は _csv_import_queue に入れるだけ。"""
         try:
             result = parse_production_csv_for_staging(file_path, default_worker_id=worker_id)
             self._csv_import_queue.put((True, result))
@@ -1630,15 +1167,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
             self._csv_import_queue.put((False, str(e)))
 
     def _poll_csv_import_queue(self):
-        """
-        _run_csv_parse_in_thread()の完了をポーリングで検知し、UIスレッド上で
-        ロード画面を閉じる。parse_production_csv_for_staging()は既にCSVの
-        行データをmodels.production_import_staging.pending_csv_import_rowsへ
-        永続化済みのため（ステージングデータの永続化）、ここでは保存件数
-        （imported_count）・警告を確認した上で、open_pending_csv_staging_window()
-        （このCSVで新規追加された分・以前から未処理のまま残っていた分を
-        まとめてDBから読み込んで表示する共通の入口）を呼ぶ。
-        """
+        """解析の完了をポーリングで検知し、ロード画面を閉じてステージング一覧を開く。"""
         try:
             success, payload = self._csv_import_queue.get_nowait()
         except queue.Empty:
@@ -1666,9 +1195,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
             )
 
         if already_registered_count > 0:
-            # services.production_import_service.is_already_registered()で、
-            # 既にproduction_dailyへ同じ数量で登録済みと判定された行の件数
-            # （ステージング一覧には表示しない）。
+            # 同じ数量で登録済みと判定された行の件数（ステージング一覧には出さない）。
             messagebox.showinfo(
                 "実績CSV取込",
                 f"{already_registered_count}件は登録済みのためスキップしました。",
@@ -1678,60 +1205,20 @@ class KittingProductionEntryWindow(tk.Toplevel):
         already_registered_rows = payload.get("already_registered_rows") or []
 
         if imported_count == 0 and not already_registered_rows:
-            # このCSVからは1件も保留行を追加できず、登録済みリストへ回す
-            # 行も無かった、という意味のメッセージ（以前から残っている
-            # 未処理行の有無とは別の話）。過去の未処理行を確認したい場合は、
-            # 隣の「実績CSV取込状況」ボタン（本画面）から改めて開いてもらう。
+            # この CSV から追加した行が無いという意味（以前からの未処理行は「実績CSV取込状況」から開く）。
             messagebox.showinfo("実績CSV取込", "登録対象の行がありませんでした。", parent=self.winfo_toplevel())
             return
 
-        # imported_count==0でもalready_registered_rowsがあれば、登録済み
-        # リストだけでもユーザーに見せるためウインドウを開く（open_or_notify()
-        # 側もこの条件で判定する、そちらのdocstring参照）。
+        # 追加が0件でも登録済みの行があれば、それを見せるために開く（open_or_notify() も同じ条件で判定する）。
         self.open_pending_csv_staging_window(already_registered_rows=already_registered_rows)
 
     def open_pending_csv_staging_window(self, already_registered_rows=None):
         """
-        実績CSV取込状況（未処理のステージング行、models.production_import_
-        staging.list_pending_csv_import_rows()）を開く。新規CSV取込直後
-        （_poll_csv_import_queue()）・本画面右下の「実績CSV取込状況」ボタン
-        （btn_csv_staging_status、新規CSV取込を経由しない再開）の両方から
-        呼ばれる共通の入口。以前はメインメニュー側にこの機能のボタン
-        （ui.main_window.MainWindow.open_production_import_staging()）が
-        あったが、生産実績入力画面が既に開いている必要がある機能のため、
-        本画面側（実績CSV取込ボタンの隣）へ移設し、メインメニュー側は削除した。
-
-        未処理行が1件も無ければui.production_import_staging_window.
-        open_or_notify()が案内メッセージのみ表示し、ウインドウは開かない。
-
-        既に開いている場合は多重に開かず前面に出す（_perform_registration()
-        末尾のlift()処理（登録完了時にステージング一覧を手前に戻す）が参照する
-        self._csv_staging_windowと常に同じインスタンスを指すようにするため）。
-
-        ProductionImportStagingWindow（左右ペイン構成：左＝候補一覧、右＝
-        登録待ち一覧）は、候補確定時にself（このKittingProductionEntryWindow
-        インスタンス）のsearch_plan()・entry_daily_qty・_pending_csv_row_
-        removal・_pending_csv_report_dateへ直接アクセスする（同ウインドウの
-        _confirm_candidate()参照）。以前のように候補選択ダイアログ
-        （ui.plan_candidate_dialog.select_plan_candidate_by_lot()）経由・
-        コールバック（on_row_confirmed）経由で本ウインドウ側のメソッドを
-        呼んでもらう間接的な連携ではなくなったため、open_or_notify()に
-        コールバックを渡す必要は無くなった。
-
-        already_registered_rows：直前のCSV取込（_poll_csv_import_queue()）で
-        「登録済み」と判定された行の詳細情報リスト（services.production_import_
-        service.parse_production_csv_for_staging()の戻り値
-        "already_registered_rows"、既に登録済みのためpending_csv_import_rows
-        へは保存されなかった行）。DBに永続化されないため、「実績CSV取込状況」
-        ボタン経由（新規取込を伴わない再開）で呼ばれた場合は常にNone（空）に
-        なる（本画面のdocstring・CANONICAL_DESIGN_DECISIONS.md参照）。
-        - 新規ウインドウを開く場合：ProductionImportStagingWindow()の
-          コンストラクタへそのまま渡し、self._already_registered_rows の
-          初期値にする。
-        - 既にウインドウが開いている場合：新しいCSV取込で新たに見つかった
-          分を、既存ウインドウのadd_already_registered_rows()で追記する
-          （lift()するだけでは、このCSVの登録済み判定結果が失われてしまう
-          ため）。
+        実績CSV取込状況（未処理の保留行）を開く。新規取込の直後と「実績CSV取込状況」ボタンの共通の入口。
+        未処理行が無ければ open_or_notify() が案内を出すだけで、ウインドウは開かない。
+        既に開いていれば多重に開かない（_perform_registration() が lift() する参照と同じインスタンスに保つため）。
+        already_registered_rows: 直前の取込で「登録済み」と判定された行。DB に保存されないので、ボタン経由では None。
+        開いているウインドウには add_already_registered_rows() で追記する（lift() だけでは結果が失われる）。
         """
         if self._csv_staging_window is not None and self._csv_staging_window.winfo_exists():
             if already_registered_rows:
@@ -1741,11 +1228,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         self._csv_staging_window = open_or_notify(self, already_registered_rows=already_registered_rows)
 
     def _on_daily_qty_enter(self, event=None):
-        """
-        実績記入欄でのEnterキー：一直線フローの1段階目。入力値が数値として妥当か
-        検証するだけで、DBへは一切書き込まない。妥当であれば、NG面1欄（無効なら
-        NG面2欄）へフォーカスを移す（_focus_first_ng_entry()）。
-        """
+        """実績記入欄の Enter。数値かを確かめるだけで DB には書かず、NG 入力欄へ進む。"""
         if not self.current_plan:
             return "break"
 
@@ -1760,12 +1243,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         return "break"
 
     def _focus_first_ng_entry(self):
-        """
-        NG面1欄が有効（対象計画あり）ならそちらへ、無効（片面のみの計画で面1が
-        存在しない）ならNG面2欄へフォーカスを移す。両面とも無効な場合（計画未選択
-        時のみ想定、通常この関数は計画選択済みの場合にしか呼ばれない）は、
-        フォーカス移動をせずそのまま登録確認へ進む。
-        """
+        """有効な NG 欄（面1、無ければ面2）へフォーカスを移す。両方無効なら登録確認へ進む。"""
         for side in ("1", "2"):
             entry = self._ng_side_entries[side]
             if str(entry.cget("state")) != str(tk.DISABLED):
@@ -1774,11 +1252,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         self._start_registration()
 
     def _on_ng_side1_enter(self, event=None):
-        """
-        NG面1欄でのEnter：一直線フローの2段階目。入力の有無を問わずNG面2欄へ
-        フォーカスを移す（面2欄が無効＝片面のみの計画の場合は、そのまま登録確認へ
-        進む）。
-        """
+        """NG面1欄の Enter。入力の有無を問わず面2欄へ進む（面2が無効なら登録確認へ）。"""
         if not self.current_plan:
             return "break"
         entry2 = self._ng_side_entries["2"]
@@ -1797,17 +1271,8 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
     def _setup_arrow_focus_navigation(self):
         """
-        生産実績記入欄・NG記入欄（面1・面2）・登録ボタン・実績修正ボタンの間を、
-        左右矢印キーで順番にフォーカス移動できるようにする（Tabキー順序の
-        左右矢印版）。実績・NG登録は1つの「登録」ボタンに統合済みのため、
-        対象は実績記入欄→NG面1欄→NG面2欄→登録ボタン→実績修正ボタンの5つ
-        （画面上の並び順と一致させている）。
-
-        テキスト入力欄（Entry）では、矢印キーでのテキストカーソル移動と競合しない
-        よう、カーソルが欄の先頭にある場合のみ<Left>で前のウィジェットへ、末尾にある
-        場合のみ<Right>で次のウィジェットへ移動する（それ以外の位置では通常の
-        テキストカーソル移動をそのまま行わせる＝ハンドラ内でbreakを返さない）。
-        ボタンにはテキストカーソルの概念が無いため、矢印キーで無条件に移動する。
+        実績記入欄→NG面1→NG面2→登録→実績修正 の間を、左右矢印でフォーカス移動できるようにする。
+        Entry ではテキストカーソルの移動と競合しないよう、カーソルが先頭（左）・末尾（右）にあるときだけ移動する。
         """
         self._arrow_nav_widgets = [
             self.entry_daily_qty,
@@ -1851,13 +1316,8 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
     def _start_registration(self):
         """
-        実績・NG入力の内容を検証し、登録確認ダイアログを表示する（統合登録ボタン、
-        またはNG面2欄でのEnter、いずれからも呼ばれる一直線フローの最終段階）。
-
-        ここではDBへの問い合わせ（既存レコードの有無の確認、_build_registration_
-        preview()参照）のみを行い、書き込みは一切行わない。実際の書き込みは、
-        確認ダイアログで「登録」が選ばれた場合にのみ_perform_registration()で行う。
-        キャンセル時・入力エラー時は何もせず実績記入欄へフォーカスを戻す。
+        入力を検証し、登録確認ダイアログを出す。ここでは DB を読むだけで、書き込まない。
+        書き込みは、確認ダイアログで「登録」を選んだときの _perform_registration() だけ。
         """
         if not self.current_plan:
             return
@@ -1884,14 +1344,8 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
     def _validate_ng_inputs(self):
         """
-        NG面1・面2の入力欄を検証する。「今回入力された固有分」を空欄は0として
-        扱い、過去の保存値への加算は行わない（今回の入力のみが正）。両面とも
-        空欄でもエラーにはしない（NGを入力せず実績のみを登録することを許容する。
-        NG面1欄・面2欄いずれもEnterでは「入力の有無を問わず」次へ進む仕様のため）。
-
-        戻り値：(own_qty_by_side, error_message) のタプル。error_messageが
-        Noneでなければ入力エラーがあったことを示し、その場合own_qty_by_sideは
-        空辞書で意味を持たない。
+        NG面1・面2の入力を検証する。空欄は0とし、過去の保存値には加算しない（今回の入力だけが正）。
+        両面とも空欄でもよい（実績だけの登録を許す）。戻り値は (own_qty_by_side, error_message)。
         """
         own_qty_by_side = {}
         for side in ("1", "2"):
@@ -1913,12 +1367,10 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
     def _compute_ng_save_qty(self, own_qty_by_side):
         """
-        面2欄の値を面1へ連動させたNG保存値を計算する。
-          - 面1への保存値 ＝ 面1欄の入力値 ＋ 面2欄の入力値（どちらか一方が空でも
-            もう片方の値がそのまま反映される。例：面1欄=空・面2欄=5 → 面1へ5）
-          - 面2への保存値 ＝ 面2欄の入力値のみ（面1欄の値は面2に一切影響しない）
-        合計が0（＝両面とも未入力）の面は保存対象に含めない
-        （save_ng_declaration()を呼ばない＝既存のNG申告に触れない）。
+        NG の保存値を計算する（面2の NG は面1にも連動させる）。
+          - 面1の保存値 ＝ 面1欄の入力値 ＋ 面2欄の入力値
+          - 面2の保存値 ＝ 面2欄の入力値のみ
+        合計が0の面は保存しない（既存の NG 申告に触れない）。docs/domain/production_entry.md 参照。
         """
         own_2 = own_qty_by_side.get("2", 0.0)
         save_qty_by_side = {}
@@ -1932,35 +1384,17 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
     def _build_registration_preview(self, daily_qty, save_qty_by_side):
         """
-        登録確認ダイアログに表示する内容を、DBへ一切書き込まずに事前計算する。
-
-        既存レコードの有無：self.current_plan（選択中の面）についてのみ
-        get_daily_history(kitting_no, lot_no)（report_date不問の全期間検索、
-        _load_current_daily_qty()と同じ考え方）で確認する。反対側の面の既存
-        レコードは、選択中の面で既にユーザーが確認済みという前提で（従来通り）
-        確認なしで自動上書きするため、ここでは見ない。
-
-        不一致判定：models.production.replace_daily_result()の「1計画（kitting_
-        list_no・lot_no）=1レコード、常に上書き」ルールにより、登録後の実績値は
-        常にdaily_qtyそのものになる（選択中の面・反対側の面いずれも、連動により
-        同じdaily_qtyに揃うため）。そのためDBへの書き込みを待たず、daily_qtyを
-        そのまま使って判定できる（従来の_warn_ng_quantity_mismatch()が登録後に
-        DBへ問い合わせていたのに対し、書き込み前に同じ結果を計算できる）。
-
-        比較対象はplanned_qty（予定生産数、その面の計画数量）であり、order_qty
-        （発注数、ロット全体の注文数量）ではない（以前はorder_qtyと比較していたが、
-        1面分の実績+NGの合計を比較する対象としてはplanned_qtyの方が実態に
-        合っているため変更した）。
+        登録確認ダイアログの内容を、DB に書き込まずに計算する。
+        既存の実績は選択中の面だけ確認する。反対側の面は確認なしで上書きする（選択中の面で確認済みという前提）。
+        登録後の実績は必ず daily_qty になる（1計画＝1レコードで上書き）ので、書き込み前に不一致を判定できる。
+        不一致は予定生産数（planned_qty、その面の計画数）と比べる。発注数（order_qty）ではない。
         """
         kitting_no = self.current_plan["kitting_list_no"]
         lot_no = self.current_plan["lot_no"]
         existing = get_daily_history(kitting_no, lot_no)
         existing_daily_qty = existing[-1]["daily_qty"] if existing else None
         existing_report_date = existing[-1]["report_date"] if existing else None
-        # これから登録する実績の日付（表示用）。実績CSVステージング経由なら
-        # self._pending_csv_report_dateを解決した値、通常の手入力では
-        # Noneのまま（register_daily_result()/overwrite_daily_result()側で
-        # 実行日にフォールバックするのと同じ意味）。
+        # これから登録する実績の日付（表示用）。手入力では None（実行日を使う）。
         new_report_date = _resolve_csv_report_date(self._pending_csv_report_date)
 
         mismatch_lines = []
@@ -1977,10 +1411,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
                     f"NG{ng_qty:.0f} = {total:.0f}（予定生産数{planned_qty:.0f}と不一致）"
                 )
 
-        # 面1のみの計画（同一(lot_no, setup_file_no)に面2の計画が無い計画）の
-        # 生産面マスターによる分類（2026-10-07新設、D-9x参照）。手入力の登録
-        # フローでも、b（面2待ち）・c（生産面マスター未登録）の場合は確認
-        # ダイアログで理由を示す（登録そのものは禁止しない）。
+        # 面1だけの計画で b（面2待ち）・c（生産面マスター未登録）なら、確認ダイアログで理由を示す（D-9x。登録は禁止しない）。
         side1_only_classification = classify_side1_only_plan(self.current_plan)
 
         return {
@@ -1995,13 +1426,8 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
     def _show_registration_confirm_dialog(self, preview):
         """
-        実績・NG登録の内容をまとめて確認するモーダルダイアログを表示する。
-        既存レコードの有無・「実績＋NG数量」と計画数の不一致があれば、登録内容と
-        一緒に1画面でまとめて表示する。ダイアログ内でEnterキー＝「登録」
-        （デフォルトボタンにフォーカスを置く）、Esc＝「キャンセル」。
-
-        戻り値：「登録」が選ばれた場合True、「キャンセル」またはウインドウを
-        閉じた場合False。
+        実績・NG の登録内容をまとめて確認するモーダルダイアログ。Enter＝登録、Esc＝キャンセル。
+        「登録」なら True、キャンセルか閉じたら False。
         """
         plan = self.current_plan
         lines = []
@@ -2043,9 +1469,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
                 "生産面マスターに登録がありません（後行面があるかどうか不明です）。"
             )
 
-        # selfが最小化状態だと、transient(self)したダイアログがstate()="withdrawn"
-        # のまま実際には表示されない（ui.plan_candidate_dialog._show_candidate_list_dialog()
-        # と同じ理由・同じ対策、UI_WORKFLOW_FIXES_NOTES.md参照）。
+        # 最小化中だと transient のダイアログが表示されないため、先に元に戻す（UI_WORKFLOW_FIXES_NOTES.md）。
         if self.state() == "iconic":
             self.deiconify()
 
@@ -2085,24 +1509,8 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
     def confirm_overwrite_if_existing(self, kitting_list_no, lot_no, new_daily_qty, new_report_date_raw):
         """
-        実績CSVステージング一覧の右クリック「即時登録」（ui.production_import_
-        staging_window.ProductionImportStagingWindow._register_candidate_
-        immediately()）から、登録の実行前に呼ぶ。対象の計画（kitting_list_no・
-        lot_no）に既にproduction_daily行がある場合のみ、登録済みの実績
-        （日付・数量）とこれから登録する実績（日付・数量）を示す確認
-        ダイアログを表示し、「続けると登録済みの実績は置き換えられます」と
-        明記する。既存レコードが無ければダイアログを出さずTrueを返す
-        （即時登録の「即時」性を保つ）。
-
-        通常の手入力登録フロー（_start_registration()→_show_registration_
-        confirm_dialog()）は、既存レコードの有無を問わず常に確認ダイアログを
-        経由するため、この専用メソッドを呼ぶ必要はない（そちらの表示内容は
-        _show_registration_confirm_dialog()側で同様に日付・数量を示すよう
-        拡張済み）。
-
-        戻り値：続行してよければTrue（既存レコード無し、または「はい」）。
-        既存レコードがあり「いいえ」を選んだ場合はFalse（呼び出し元は
-        登録処理・保留行の削除のいずれも行わないこと）。
+        ステージング一覧の右クリック即時登録の前に呼ぶ。既に実績があるときだけ、置き換えの確認ダイアログを出す。
+        実績が無ければ確認なしで True（即時性を保つ）。False のとき、呼び出し元は登録も保留行の削除もしないこと。
         """
         existing = get_daily_history(kitting_list_no, lot_no)
         if not existing:
@@ -2122,46 +1530,18 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
     def _perform_registration(self, daily_qty, preview, record_history=True):
         """
-        登録確認ダイアログで「登録」が選ばれた後、実績→NGの順に逐次登録する。
-        途中でエラーが発生しても、既に成功した分はそのまま残し（完全ロールバックは
-        しない、services.production_import_service.import_production_csv()の
-        「1行の異常が他行に影響しない」設計と同じ考え方）、エラー内容を明示する。
-
-        record_history：Trueの場合（デフォルト、通常の登録フロー・右クリック
-        単発即時登録はこのまま）、register_daily_result()/overwrite_daily_
-        result()および反対面連動（_register_opposite_side_daily_result()）に
-        そのまま渡り、登録成功後に即座にlot_status_historyへ記録される。
-        ui.production_import_staging_window.py::_on_bulk_register()（Shift+S
-        一括登録）がFalseを渡した場合は、この記録をスキップする（呼び出し元が
-        バッチ処理の最後にdistinctなlot_no単位でまとめて記録するため、
-        2026-09-30追加）。
-
-        実績側は、_build_registration_preview()で既に既存レコードの有無を確認・
-        ユーザーの承認も確認ダイアログで得ている（この時点で既にexisting_daily_
-        qtyが分かっている）ため、register_daily_result(check_duplicate=True)の
-        例外ハンドリングは経由せず、existing_daily_qtyの有無で直接
-        register_daily_result()/overwrite_daily_result()を呼び分ける。
-
-        report_date：実績CSVステージング一覧経由の登録（self._pending_csv_
-        report_date）であれば、CSV行の払い出し日を_resolve_csv_report_date()で
-        検証した上でreport_dateとして渡す（パース不能・未設定ならNoneのまま＝
-        register_daily_result()/overwrite_daily_result()側のデフォルト動作である
-        実行日にフォールバックする）。CSV経由でない通常の手動登録では
-        self._pending_csv_report_dateは常にNoneのため、従来通り実行日になる。
-
-        登録完了後も同じ計画のまま画面が続く（次の計画を選び直すとは限らない）ため、
-        最後に_load_current_daily_qty()・_setup_ng_side_ui()を再度呼び、実績記入欄・
-        NG面1/面2欄を今回登録した最新の値でプリフィルし直す（呼ばないと、次に
-        画面を開き直すまで登録前の入力内容が表示され続けてしまう）。
+        確認ダイアログで「登録」が選ばれた後、実績→反対側の面→NG の順に登録する。
+        途中でエラーが出ても、成功した分は残してエラーを表示する（ロールバックしない）。
+        record_history=False は Shift+S 一括登録用（呼び出し元が最後にロット単位でまとめて記録する）。
+        実績の日付は CSV の払い出し日（手入力なら実行日）、NG の日付は当日。
+        登録後も同じ計画のまま続くので、最後に記入欄を最新の保存値で入れ直す。
         """
         worker_id = self.current_worker.get("worker_id", "SYSTEM")
         kitting_no = self.current_plan["kitting_list_no"]
         lot_no = self.current_plan["lot_no"]
         report_date = _resolve_csv_report_date(self._pending_csv_report_date)
         self._pending_csv_report_date = None
-        # self._pending_csv_row_removalはこの直後（remove_callback呼び出し時）に
-        # Noneへクリアされるため、末尾でのステージング一覧lift()の要否判定用に
-        # ここで先に控えておく。
+        # _pending_csv_row_removal は直後にクリアされるので、最後の lift() の要否判定用に先に控えておく。
         from_csv_staging = self._pending_csv_row_removal is not None
 
         try:
@@ -2185,12 +1565,8 @@ class KittingProductionEntryWindow(tk.Toplevel):
             detail=f"{kitting_no} / ロットNo. {lot_no} / {daily_qty:g}",
         )
 
-        # 実績CSVステージング一覧（ui.production_import_staging_window）経由の
-        # 登録であれば、実績登録が成功した時点でその行を一覧から消す
-        # （ProductionImportStagingWindow._confirm_candidate()で転記時に
-        # セットされたコールバック）。NG申告・反対側連動の成否には関係なく、
-        # 主たる実績登録が成功した時点で消す（CSV行が表すのは実績数量そのもの
-        # であり、NG申告は別枠のため）。
+        # CSV 経由なら、実績の登録が成功した直後にその行を一覧から消す。
+        # NG・反対側連動の成否は問わない（CSV 行が表すのは実績数量だけで、NG は別枠のため）。
         if self._pending_csv_row_removal is not None:
             self._pending_csv_row_removal()
             self._pending_csv_row_removal = None
@@ -2204,6 +1580,8 @@ class KittingProductionEntryWindow(tk.Toplevel):
         except Exception as e:
             errors.append(f"反対側の面への実績連動登録に失敗しました：{e}")
 
+        # NG は当日の日付で保存する（実績は CSV の払い出し日のまま）。report_date をここで当日に置き換えるので、
+        # 実績と反対側連動の登録より後に置くこと。
         report_date = datetime.now().strftime("%Y-%m-%d")
         declared_faces = []
         for side in ("1", "2"):
@@ -2222,14 +1600,9 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
         self.lbl_app_cum.config(text=f"{new_cumulative:.0f}")
         self.load_today_log()
-        # 登録直後も同じ計画のまま画面が続くため、実績記入欄・NG面1/面2欄を
-        # 最新の保存値で再プリフィルする（計画を選び直さない限り自動更新されない
-        # ため、ここで明示的に呼ぶ）。
         self._load_current_daily_qty(kitting_no, lot_no)
         self._setup_ng_side_ui(self.current_plan)
-        # 計画一覧（tree_plan_list）のうち、今回の登録（実績本体＋面連動＋NG）で
-        # 値が変わり得る同一lot_no内の行だけを、全件再取得せずに部分更新する。
-        # 全てのDB書き込み（実績・反対側連動・NG申告）が完了した後に呼ぶ。
+        # 同じ lot_no の行だけ部分更新する。すべての書き込み（実績・反対側連動・NG）の後に呼ぶこと。
         self._refresh_plan_list_for_lot(lot_no)
 
         msg_lines = [f"実績を登録しました。アプリ入力累計：{new_cumulative:.0f}"]
@@ -2244,22 +1617,8 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
         messagebox.showinfo("登録完了", "\n".join(msg_lines), parent=self.winfo_toplevel())
 
-        # 実績CSVステージング一覧経由の登録であれば、ここで一覧を手前に戻し、
-        # かつキーボードフォーカスも一覧側（self._csv_staging_window.tree）へ
-        # 渡す（2026-10-06修正）。以前はここで無条件にself.entry_daily_qty.
-        # focus_set()を呼んでおり、その後lift()で一覧を視覚的に前面へ戻しても、
-        # lift()はウインドウの重ね順（Z順）を変えるだけでTkのキーボード
-        # フォーカスは移動しないため、画面上は一覧が手前に見えても実際の
-        # キー入力は本ウインドウの実績数入力欄（entry_daily_qty）に残り
-        # 続けていた。この状態で一覧側でShift+Sを押すと、実際には実績数
-        # 入力欄へ「s」が1文字入力されるだけになり、一括登録が効かない
-        # 不具合の直接の原因になっていた。
-        # 常時最前面（topmost）は、この後に開く可能性がある他のモーダル
-        # ダイアログ（候補選択・登録確認・エラー等）まで覆い隠してしまう恐れが
-        # あるため採用せず、登録完了のこのタイミングでのみ前面に戻す方式とした。
-        # ステージング一覧が最小化（アイコン化）されていた場合にlift()だけでは
-        # 復元されない問題は、ui.plan_candidate_dialog._show_candidate_list_
-        # dialog()のiconic対策と同じ考え方でdeiconify()してから戻す。
+        # CSV 経由なら一覧を手前に戻し、キーボードフォーカスも一覧へ渡す。lift() だけではフォーカスが記入欄に残り、
+        # 一覧で押した Shift+S が文字入力になる（D-84）。topmost は後に開くダイアログを隠すので使わない。
         if from_csv_staging and self._csv_staging_window is not None \
                 and self._csv_staging_window.winfo_exists():
             if self._csv_staging_window.state() == "iconic":
@@ -2268,36 +1627,15 @@ class KittingProductionEntryWindow(tk.Toplevel):
             self._csv_staging_window.focus_force()
             self._csv_staging_window.tree.focus_set()
         else:
-            # CSVステージング経由でない通常の手動登録では、従来通り実績数
-            # 入力欄へフォーカスを戻し、続けて次の実績を入力しやすくする。
+            # 手動登録では、続けて入力できるよう実績記入欄へ戻す。
             self.entry_daily_qty.focus_set()
 
     def _register_opposite_side_daily_result(self, daily_qty, worker_id, report_date=None,
                                                record_history=True):
         """
-        選択中の計画（self.current_plan）の反対側の面への連動登録。
-        実体は services.production_service.register_opposite_side_daily_result()
-        （CSV自動取込 services.production_import_service.import_production_csv()
-        とも共通で使われる）に委譲する薄いラッパー。self.current_plan は
-        register_opposite_side_daily_result() が要求する計画dict形状
-        （kitting_list_no・lot_no・setup_file_no・production_side・
-        plan_start_datetime）をそのまま満たしているため、変換不要でそのまま渡せる。
-
-        report_date：主たる面の登録に使ったreport_date（_perform_registration()の
-        ローカル変数、CSV由来の値またはNone）をそのまま渡す。以前は本引数自体が
-        存在せず、反対側は常にNone（＝register_daily_result()/overwrite_daily_
-        result()側のデフォルト動作である実行日）になっていたため、主たる面が
-        CSV由来の正しい日付で登録されていても、反対側だけ今日の日付になって
-        しまう問題があった（2026-09-29の調査で判明）。Noneのまま渡した場合は、
-        主たる面と同様、models.production.replace_daily_result()が反対側自身の
-        既存行のreport_dateを引き継ぐ（上書きの場合）か、実行日を使う
-        （新規登録の場合）。
-
-        戻り値：反対側への登録を実際に行った場合True、反対側が存在しない場合False。
-
-        record_history：_perform_registration()から受け取った値をそのまま
-        services.production_service.register_opposite_side_daily_result()へ渡す
-        （2026-09-30追加）。
+        反対側の面へ同じ数量を連動登録する（register_opposite_side_daily_result() の薄いラッパー）。
+        report_date には主たる面と同じ値を渡す（渡さないと反対側だけ実行日になる）。
+        反対側へ登録したら True、反対側が無ければ False。
         """
         return register_opposite_side_daily_result(
             self.current_plan, daily_qty, worker_id, report_date=report_date,
@@ -2306,30 +1644,11 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
     def _setup_ng_side_ui(self, plan):
         """
-        計画選択時（search_plan()成功時）に、面1・面2のNG入力欄を更新する。
-
-        選択中の計画自身の面（plan["production_side"]）をそのproduction_side用
-        スロットに、find_opposite_side_plan()で見つかった反対側の計画をもう片方の
-        スロットに割り当てる。反対側が見つからない（0件＝片面のみの計画）場合、
-        そのスロットはNoneのままとなり、対応する入力欄は無効化・空欄になる。
-
-        いずれかの面に、現在のNG申告（models.ng_declarations、report_dateを問わない
-        「1計画・面＝1レコード」の現在値）があれば、その数量をNG入力欄へ自動表示
-        する（_load_current_daily_qty()と同じ「登録済みの数量を表示する」パターン。
-        以前はreport_date=当日限定だったため、過去日付のまま当日中に未更新の
-        申告を拾えない不具合があったが、get_ng_declaration()の全期間検索化に
-        伴い解消した）。
-
-        面2：保存されているNG申告値をそのまま表示する（面2の保存値＝面2欄の入力値
-        のみで、他面からの影響を受けないため）。
-
-        面1：_perform_registration()が毎回「面1欄＋面2欄」を合算して面1へ保存する
-        仕様のため、面1の保存値を（区別せず）そのまま表示すると、次に画面を開いて
-        何も変えず再登録した際に「保存されている合算値」＋「面2欄の値」でさらに
-        加算されてしまう（二重加算）。これを避けるため、面1欄には「面1固有分」＝
-        面1の保存値 − 面2の保存値（0未満は表示しない＝空欄）を表示する
-        （面2の保存値は常に「面2欄のみ」なので、この引き算で面1固有分を
-        正しく復元できる）。
+        計画選択時に、面1・面2の NG 入力欄を更新する。反対側の計画が無い面の欄は無効にする。
+        現在の NG 申告（日付を問わない「1計画・面＝1レコード」）があれば、その値を入れておく。
+          - 面2: 保存値をそのまま表示する
+          - 面1: 「面1固有分」＝面1保存値−面2保存値 を表示する（0以下なら空欄）。
+            面1には毎回「面1欄＋面2欄」を保存するので、保存値をそのまま出すと、何も変えずに再登録したとき面2分が二重に加算される
         """
         side = str(plan.get("production_side") or "").strip()
 
@@ -2356,8 +1675,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         for s in ("1", "2"):
             side_plan = self._ng_side_plans.get(s)
             entry = self._ng_side_entries[s]
-            # ttk.Entryはstate=DISABLEDのままinsert/deleteしても無視される（テキストが
-            # 残ったままになる）ため、内容を変更する際は必ずNORMALに戻してから行う。
+            # ttk.Entry は DISABLED のままだと insert/delete が無視されるので、先に NORMAL に戻す。
             entry.config(state=tk.NORMAL)
             entry.delete(0, tk.END)
             if side_plan is None:
@@ -2459,11 +1777,8 @@ class ActualCorrectionWindow(tk.Toplevel):
 
     def on_update(self):
         """
-        実績の修正。両面の計画があるロットの場合、反対側の面の実績も同じ
-        数量へ連動させる（2026-10-08追加、D-112。以前はActualCorrection
-        Windowが面連動を行わず片面のみを修正できたため、面1・面2の実績が
-        食い違う状態を作れていた。調査により確認済み）。連動の有無・相手の
-        特定方法に関わらず、確定前に必ず確認ダイアログを出す。
+        実績を修正する。両面の計画があるロットでは、反対側の面の実績も同じ数量にそろえる（D-112）。
+        連動の有無にかかわらず、確定前に必ず確認ダイアログを出す。
         """
         sel = self.tree.selection()
         if not sel:
@@ -2520,12 +1835,8 @@ class ActualCorrectionWindow(tk.Toplevel):
 
     def _show_correction_confirm_dialog(self, preview, action):
         """
-        修正・削除の確認ダイアログ（2026-10-08追加、D-112）。
-        修正・削除する実績本体の内容、連動して変わる反対側の実績（計画No・
-        変更前→変更後）、相手の特定方法（a/b）を示す。b（登録時の自動入力と
-        同じ方法での絞り込み）の場合、または相手の実績が修正・削除前の値と
-        一致していなかった場合（pre_existing_mismatch）は、その旨を目立たせる
-        （行頭に「※」を付けて強調する）。
+        修正・削除の確認ダイアログ（D-112）。反対側の実績の変化と、相手の特定方法（a/b）を示す。
+        b で特定した場合や、連動前から両面が食い違っていた場合は「※」で強調する。
         """
         primary = preview["primary"]
         secondary = preview.get("secondary")

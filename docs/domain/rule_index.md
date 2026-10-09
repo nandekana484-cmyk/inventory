@@ -4,6 +4,7 @@
 **本文の移動（ここへ集約し、コードには参照を1行だけ残す作業）はまだしていない。**
 パスは `inventory_app/` からの相対パス。D番号は CANONICAL_DESIGN_DECISIONS.md / CHANGELOG.md の番号。
 抽出に使ったのは、行数上位10ファイルと DB関連の services/models のコメント・docstring。ほかのファイルは網羅していない。
+生産実績入力（`ui/kitting_production_entry.py`）のルールと設計メモは、コメントから `docs/domain/production_entry.md` に移した（2026-10-09）。
 
 ## 計画・ロットの特定
 
