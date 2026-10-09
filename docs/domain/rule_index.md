@@ -5,7 +5,7 @@
 パスは `inventory_app/` からの相対パス。D番号は CANONICAL_DESIGN_DECISIONS.md / CHANGELOG.md の番号。
 抽出に使ったのは、行数上位10ファイルと DB関連の services/models のコメント・docstring。ほかのファイルは網羅していない。
 生産実績入力（`ui/kitting_production_entry.py`）のルールと設計メモは、コメントから `docs/domain/production_entry.md` に移した（2026-10-09）。
-コメント軽量化でほかに移した先: 実績CSV取込のステージング一覧 → `docs/domain/production_import_staging.md`、実績の登録とロットの完成数・引落 → `docs/domain/lot_completion.md`、メインメニュー → `docs/domain/main_menu.md`、NG入力・BOM展開 → `docs/domain/ng_input.md`、仕掛展開 → `docs/domain/wip_expansion.md`、生産面マスター → `docs/domain/production_side_master.md`、キッティング計画 → `docs/domain/kitting_plan.md`
+コメント軽量化でほかに移した先: 実績CSV取込のステージング一覧 → `docs/domain/production_import_staging.md`、実績の登録とロットの完成数・引落 → `docs/domain/lot_completion.md`、メインメニュー → `docs/domain/main_menu.md`、NG入力・BOM展開 → `docs/domain/ng_input.md`、仕掛展開 → `docs/domain/wip_expansion.md`、生産面マスター → `docs/domain/production_side_master.md`、キッティング計画 → `docs/domain/kitting_plan.md`、PDF 読み取り・OCR（調整値の根拠）→ `docs/domain/pdf_ocr.md`
 
 ## 計画・ロットの特定
 
