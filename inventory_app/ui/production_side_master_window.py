@@ -1,22 +1,7 @@
-# ui/production_side_master_window.py
 """
-生産面マスタの画面（2026-10-07新設、2026-10-08に編集モード・判定結果列等を
-追加）。構成基板数マスター・基板丁数マスター（ui/board_structure_import_
-window.py・ui/parts_attributes_import_window.py）と同じ「CSVをマスタとした
-差分同期」方式のCSV取込・出力に加え、画面上での直接編集（先行面・後行面の
-有無の切替、行の追加・削除）を提供する。
-
-一覧の1行＝(setup_file_no, mounting_line)。保存先（models.production_side_master）
-は(setup_file_no, mounting_line, production_side)単位で持つため、画面編集時は
-「元の状態」と「現在の状態」を行ごとに比較し、変化した面（先行面・後行面）だけを
-upsert/deleteする（CSV取込のような全件差分同期をここで使うと、画面編集では
-持っていない補助列（ボンド打ちフラグ等）がNoneで上書きされてしまうため、
-あえて使わない）。
-
-編集モード（2026-10-08追加）：通常は閲覧専用（一覧クリックで内容は変わらない）。
-「編集」ボタンで編集モードに入り、先行面・後行面セルのクリック・行の追加・削除が
-可能になる。「保存」で確定して閲覧専用へ戻る、「元に戻す」で未保存の変更を
-すべて取り消して閲覧専用へ戻る。
+生産面マスタの画面。CSV 取込・出力（CSV をマスタとした差分同期）と、画面上での直接編集（先行面・後行面の切替、行の追加・削除）。
+画面編集では、変化した面だけを upsert/delete する（全件の差分同期を使うと、画面に無い補助列が None で上書きされるため）。
+通常は閲覧専用で、「編集」で編集モードに入る。設計の詳細は docs/domain/production_side_master.md。
 """
 import csv
 import threading
@@ -46,7 +31,7 @@ from ui.window_utils import center_window
 from ui.checkable_treeview import CHECKED_MARK, UNCHECKED_MARK
 from ui.highlight_colors import MISMATCH_RED
 
-# CSVの列名（固定、列名ゆらぎ吸収は行わない。本タスクの仕様で列名が明示されているため）
+# CSV の列名（仕様で明示されているので固定。列名のゆらぎは吸収しない）
 COL_NO = "No"
 COL_SELECT = "選択"
 COL_DELETE = "削除"
@@ -73,16 +58,11 @@ _COLUMN_LABELS = {
 _SEARCHABLE_COLUMNS = ("setup_file_no", "mounting_line")
 _KEY_COLUMN = "setup_file_no"
 
-# ファイルNo単位の判定結果（True/False/None、models.production_side_master.
-# compute_file_no_status_map()の戻り値の値）の表示ラベル。
+# ファイルNo単位の判定結果（compute_file_no_status_map() の値）の表示ラベル。
 _FILE_STATUS_LABELS = {True: "2回目あり", False: "1回目のみ", None: "未登録"}
 _FILE_STATUS_SORT_WEIGHT = {True: 0, False: 1, None: 2}
 
-# 行の背景色（未保存の変更の種類ごと。既存の画面で使っている配色を踏襲し、
-# 「追加」は緑系（ui.plan_candidate_dialogのauto_confirmableと同じ）、
-# 「変更」は黄系（同large_diffと同じ）、「削除予定」は赤系（同large_diff_both
-# と同じ）を再利用する。新しい配色を増やさないことで、アプリ全体の配色の
-# 意味が利用者にとって一貫するようにする。
+# 未保存の変更の背景色。既存の配色（追加＝緑、変更＝黄、削除予定＝赤）を使い、色の意味をアプリ全体でそろえる。
 _ROW_TAG_ADDED = "row_added"
 _ROW_TAG_CHANGED = "row_changed"
 _ROW_TAG_DELETED = "row_deleted"
@@ -90,8 +70,7 @@ _ROW_BG_ADDED = "#c8f7c5"
 _ROW_BG_CHANGED = "#fff3cd"
 _ROW_BG_DELETED = MISMATCH_RED
 
-# 判定結果（ファイルNo単位）の文字色による区別（上の背景色とは別のプロパティ
-# のため、同じ行に両方のタグを付けても競合しない）。
+# 判定結果は文字色で示す（背景色と別の属性なので、同じ行に両方付けられる）。
 _CLASS_TAG_SIDE2 = "class_side2"
 _CLASS_TAG_SIDE1_ONLY = "class_side1_only"
 _CLASS_FG_SIDE2 = "#0d47a1"
@@ -107,43 +86,11 @@ def _normalize_for_search(text) -> str:
 
 def _parse_production_side_csv(file_path):
     """
-    生産面マスタCSV（No,選択,削除,セットアップファイルNo,実装ライン,生産面,
-    ボンド打ちフラグ,共通部品グループ,ライン優先順位,タクト時間）を解析する
-    （DBへの書き込みは一切行わない。取込前の確認ダイアログ用の差分計算まで行う）。
-
-    No・選択・削除列は読み取らない（仕様通り無視）。
-
-    必須：セットアップファイルNo・実装ライン・生産面（いずれかが空の行は
-    警告の上スキップ）。生産面は「先行面」「後行面」のいずれかであること
-    （それ以外の値の行は警告の上スキップ）。
-
-    CSV内の重複キー（正規化後の(setup_file_no, mounting_line, production_side)
-    が同じ行が複数）：最後に出現した行の値を採用する（既存のON CONFLICT上書き
-    の挙動と一致させるため）。重複の件数は警告として全件記録する。
-
-    「後行面だけがあり先行面が無い」：**setup_file_no単位**（実装ラインを
-    問わない）で集計し、全件を警告として記録する（登録を妨げない、情報提供
-    のみ）。同じファイルNoで先行面・後行面を別の実装ラインに分けて登録する
-    運用があるため（例：Dラインに先行面のみ、Kラインに後行面のみ）、
-    (setup_file_no, mounting_line)単位で判定すると、他のラインに先行面が
-    あるにもかかわらず誤って警告してしまう。この判定単位は、
-    `models/production_side_master.py::get_second_side_status_by_file_no()`・
-    `compute_file_no_status_map()`が採用した「ファイルNo単位」の規則
-    （2026-10-08改訂、D-9x改訂）に揃えた（2026-10-08改訂）。
-
-    ボンド打ちフラグ・共通部品グループ・ライン優先順位・タクト時間は、
-    判定には使わず値をそのまま（文字列として）保存する。
-
-    戻り値：{
-        "resolved_rows": [{"setup_file_no", "mounting_line", "production_side",
-            "bond_flag", "common_parts_group", "line_priority", "takt_time"}, ...]
-            （重複解決後、1キー1件、setup_file_no/mounting_lineは正規化済み）,
-        "plan": compute_production_side_sync_plan()の戻り値,
-        "total_rows": CSVの有効データ行数,
-        "skipped_count": 必須値空欄・生産面不正でスキップした行数,
-        "warnings": [...]（必須値空欄・生産面不正・CSV内重複・後行面のみの組、全て含む全件表示用）,
-        "abort_reason": str または None,
-    }
+    生産面マスタの CSV を解析し、取込前の確認用に差分を計算する（DB には書き込まない）。No・選択・削除列は読まない。
+    必須の列（セットアップファイルNo・実装ライン・生産面）が空か、生産面が「先行面」「後行面」以外の行は、警告してスキップする。
+    CSV 内でキーが重複したら、最後の行を使う（ON CONFLICT の上書きと同じ）。
+    「後行面だけで先行面が無い」はファイルNo単位で判定して警告する（同じファイルNoで面を別のラインに分ける運用があるため。D-9x）。
+    補助列（ボンド打ちフラグなど）は判定に使わず、文字列のまま保存する。戻り値の形は docs/domain/production_side_master.md。
     """
     warnings = []
 
@@ -215,8 +162,7 @@ def _parse_production_side_csv(file_path):
                 f"CSV内に{len(occ)}回登場（{row_nos}行目）、最後の行の値を採用しました。"
             )
 
-    # 後行面だけがあり先行面が無い、の警告（setup_file_no単位、実装ラインを
-    # 問わない。取込後の状態＝resolved_rows・orderに基づいて判定する）。
+    # 後行面だけで先行面が無いかを、ファイルNo単位（実装ラインを問わない）で、取込後の状態から判定する。
     file_sides = {}
     for key in order:
         file_sides.setdefault(key[0], set()).add(key[2])
@@ -280,25 +226,9 @@ def _build_completion_message(result, count_summary):
 
 class ProductionSideMasterWindow(tk.Toplevel):
     """
-    生産面マスタの一覧・編集・CSV取込/出力画面。
-
-    self._rows：画面内でのみ保持する編集中の状態（DBからの読み込み結果＋
-    画面上の追加・削除・切替を反映した最新状態）。各要素：
-        {"setup_file_no", "mounting_line", "has_side1", "has_side2",
-         "orig_has_side1", "orig_has_side2", "is_new", "pending_delete"}
-    "orig_has_side1"/"orig_has_side2"は読み込み時点（または直前の保存時点）の
-    値で、保存時にこれと現在値を比較し、変化した面だけをupsert/deleteする
-    （差分だけを個別に反映する方式。CSV取込のような全件差分同期をここで使うと、
-    画面編集では持っていない補助列（ボンド打ちフラグ等）がNoneで上書きされて
-    しまうため、あえて使わない）。
-
-    "is_new"：画面上で追加し、まだ保存していない行。
-    "pending_delete"：画面上で削除を指示したが、まだ保存していない行
-    （2026-10-08改訂：即座にself._rowsから取り除くのではなく、保存するまで
-    一覧に残し、背景色で区別する。「元に戻す」で取り消せるようにするため）。
-    is_new かつ pending_delete の行（追加した直後に同じ編集セッション内で
-    削除した行）は、保存対象が何も無いためself._rowsから即座に取り除く
-    （on_delete_row()参照）。
+    生産面マスタの一覧・編集・CSV 取込/出力画面。_rows は画面上の編集中の状態で、保存時に orig_has_side1/2 と比べて
+    変わった面だけを反映する。削除は保存するまで一覧に残し（pending_delete）、「元に戻す」で取り消せる。
+    追加した直後に削除した行は、保存するものが無いのですぐに取り除く。
     """
     def __init__(self, parent, current_worker=None):
         super().__init__(parent)
@@ -323,11 +253,7 @@ class ProductionSideMasterWindow(tk.Toplevel):
         self.btn_import.pack(side=tk.LEFT, padx=15)
         ttk.Button(top_frame, text="CSV出力", command=self.on_export_csv).pack(side=tk.LEFT)
 
-        # 計画データとの食い違い・未登録の確認（2026-10-07新設・2026-10-08
-        # ファイルNo単位に改訂、D-9x改訂参照）。マスターでは後行面なしだが
-        # 計画データに面2がある場合、計画データを優先して面2のみ表示する
-        # 既存方針（D-8）は変えないが、その食い違いの事実は利用者が確認できる
-        # ようにする。
+        # 計画データとの食い違い・未登録の確認（ファイルNo単位、D-9x）。計画データを優先する方針（D-8）は変えず、食い違いを確認できるようにする。
         check_frame = ttk.Frame(self, padding=(10, 0, 10, 0))
         check_frame.pack(fill=tk.X)
         ttk.Button(
@@ -352,7 +278,7 @@ class ProductionSideMasterWindow(tk.Toplevel):
         status_frame.pack(fill=tk.X)
         self.lbl_count = ttk.Label(status_frame, text="登録件数: -組")
         self.lbl_count.pack(side=tk.LEFT)
-        # 編集モード中であることを示すラベル（見出し・色での表示、2026-10-08追加）。
+        # 編集モード中であることを示すラベル。
         self.lbl_mode = ttk.Label(status_frame, text="", font=("", 10, "bold"))
         self.lbl_mode.pack(side=tk.LEFT, padx=(15, 0))
 
@@ -480,12 +406,7 @@ class ProductionSideMasterWindow(tk.Toplevel):
         return None
 
     def _current_status_map(self):
-        """
-        ファイルNo単位の判定結果（2回目あり/1回目のみ/未登録）を、画面の
-        現在の状態（未保存の変更を含む）から計算する。保存を試みた場合に
-        削除される行（pending_delete）は対象から除外し、「保存したらどうなるか」
-        を表す（2026-10-08追加、D-9x改訂）。
-        """
+        """ファイルNo単位の判定結果を、未保存の変更を含む画面の状態から計算する（削除予定の行は除く＝「保存したらどうなるか」。D-9x）。"""
         return compute_file_no_status_map([r for r in self._rows if not r["pending_delete"]])
 
     def _apply_filter_and_render(self):
@@ -495,9 +416,7 @@ class ProductionSideMasterWindow(tk.Toplevel):
 
         col = self._sort_column
         if col in ("has_side1", "has_side2"):
-            # 昇順＝有り（チェック済み）を先頭にまとめる、降順＝その逆。
-            # 同じファイルNoの行がまとまって見えるよう、常に(setup_file_no,
-            # mounting_line)をタイブレーク（第2・第3キー）にする。
+            # 昇順は「有り」を先にまとめる。同じファイルNoの行がまとまるよう、(setup_file_no, mounting_line) を第2・第3キーにする。
             filtered.sort(key=lambda r: (not r[col], r["setup_file_no"], r["mounting_line"]))
             if not self._sort_ascending:
                 filtered.reverse()
@@ -515,10 +434,7 @@ class ProductionSideMasterWindow(tk.Toplevel):
                 reverse=not self._sort_ascending,
             )
 
-        # iidを行の識別に使うsetup_file_no/mounting_lineの組に揃える
-        # （クリックハンドラでの照合用。is_newの行はDB側に同名の既存行が無い
-        # 前提のため、同じ(setup_file_no, mounting_line)が重複することは
-        # on_add_row()側のチェックで防止している）。
+        # iid は (setup_file_no, mounting_line) にそろえる（クリック時の照合用。追加行が既存と重ならないことは on_add_row() で確認している）。
         for item in self.tree.get_children():
             self.tree.delete(item)
         for row in filtered:
@@ -565,10 +481,8 @@ class ProductionSideMasterWindow(tk.Toplevel):
 
     def _set_mode(self, mode):
         """
-        mode："view"（閲覧専用）または"edit"（編集中）。ボタン・入力欄の
-        有効/無効と、モード表示ラベルの文言・色を切り替える（2026-10-08追加）。
-        既存の他画面（既定DB未選択時の操作禁止等）と同じ、ウィジェットを
-        隠すのではなくstate=DISABLEDで無効化する方針に揃える。
+        mode: "view"（閲覧専用）か "edit"（編集中）。ボタン・入力欄の有効/無効とモード表示を切り替える
+        （ほかの画面と同じく、隠さずに DISABLED で無効にする）。
         """
         self._mode = mode
         is_edit = mode == "edit"
@@ -605,11 +519,7 @@ class ProductionSideMasterWindow(tk.Toplevel):
 
     def _on_tree_click(self, event):
         """
-        閲覧専用モードでは何もしない（一覧をクリックしても内容が変わらない、
-        2026-10-08追加）。編集モード中も、先行面・後行面のセル以外をクリック
-        しても何も起きない（既存の仕様を維持）。削除予定（pending_delete）の
-        行はクリックしても切り替わらない（削除予定行の内容を変えても保存時に
-        使われないため）。
+        閲覧専用モードでは何もしない。編集モードでも、先行面・後行面のセル以外や、削除予定の行のクリックでは何もしない。
         """
         if self._mode != "edit":
             return
@@ -697,8 +607,7 @@ class ProductionSideMasterWindow(tk.Toplevel):
             return
 
         if row["is_new"]:
-            # 保存前に追加した行をそのまま削除する場合、保存対象自体が無いため
-            # 即座に取り除く（削除予定として残す必要が無い）。
+            # 保存前に追加した行なら、保存するものが無いのですぐに取り除く。
             self._rows.remove(row)
         else:
             row["pending_delete"] = True
@@ -710,12 +619,8 @@ class ProductionSideMasterWindow(tk.Toplevel):
 
     def _build_pending_changes(self):
         """
-        未保存の変更を、保存前の確認ダイアログ用に整理する（2026-10-08新設）。
-        戻り値：(changes, file_no_status_changes)
-          changes：[{"setup_file_no","mounting_line","kind"（"add"/"update"/"delete"）,
-                     "before","after"}, ...]（表示用の文字列はSIDE_VALUE_TO_LABEL等を
-                     使って呼び出し側で組み立てる）
-          file_no_status_changes：[(setup_file_no, before_label, after_label), ...]
+        未保存の変更を、保存前の確認ダイアログ用にまとめる。戻り値は (changes, file_no_status_changes)。
+        changes の要素は setup_file_no・mounting_line・kind（add/update/delete）・before・after。
         """
         changes = []
         for row in self._rows:
@@ -979,13 +884,8 @@ class ProductionSideMasterWindow(tk.Toplevel):
 
     def on_export_csv(self):
         """
-        取込と同じ列構成でCSV出力する。出力したファイルをそのまま取り込み
-        直せるよう、Noは1から振り直し、選択・削除列は空にする。
-
-        画面でまだ保存していない変更（追加した行・切替中の状態・削除予定）は
-        出力に含めない（DBに保存済みの内容を出力する。取込と同じ理由で保存
-        済みのデータが正である設計に揃える）。保存していない変更がある場合は
-        出力前に確認する。
+        取込と同じ列構成で CSV 出力する（そのまま取り込み直せるよう、No は1から振り直し、選択・削除列は空にする）。
+        出力するのは DB に保存済みの内容。未保存の変更があれば、出力の前に確認する。
         """
         if self._count_unsaved_changes():
             if not messagebox.askyesno(
@@ -1034,11 +934,8 @@ class ProductionSideMasterWindow(tk.Toplevel):
 
     def on_show_discrepancies(self):
         """
-        「マスターではこのファイルNoは後行面なし（1回目のみ）と判定されて
-        いるが、計画データには（いずれかの実装ラインに）このファイルNoの
-        面2の計画が存在する」ファイルNoを一覧表示する（2026-10-07新設、
-        2026-10-08ファイルNo単位に改訂、D-9x改訂参照）。計画データを優先する
-        既存方針（D-8）は変更せず、食い違いの事実を確認できるのみ。
+        マスターでは後行面なし（1回目のみ）だが、計画データにはそのファイルNoの面2の計画があるファイルNoを一覧表示する（D-9x）。
+        計画データを優先する方針（D-8）は変えず、食い違いを確認できるだけ。
         """
         discrepancies = find_master_plan_discrepancies()
         win = tk.Toplevel(self)
@@ -1078,17 +975,9 @@ class ProductionSideMasterWindow(tk.Toplevel):
 
     def on_show_unregistered(self):
         """
-        計画データに存在するが、生産面マスターに全く登録が無い（どの実装
-        ラインにも1件も登録が無い）setup_file_noを一覧表示する（2026-10-07
-        新設、2026-10-08ファイルNo単位に改訂、D-9x改訂参照）。
-        classify_side1_only_plan()の「生産面マスター未登録」はこの一覧と
-        同じ判定基準。
-
-        CSV出力：生産面マスターへの登録に使えるよう、各ファイルNoについて
-        計画データに実在する実装ラインをすべて行に展開して出力する（生産面列は
-        空のまま出力し、利用者が先行面/後行面を判断して埋めてから取り込み直す
-        想定。生産面は必須項目のため、空のままでは通常の取込で警告の上スキップ
-        される＝誤って登録されない）。
+        計画データにあるが、生産面マスターにどの実装ラインも登録が無い setup_file_no を一覧表示する（D-9x）。
+        classify_side1_only_plan() の「生産面マスター未登録」と同じ基準。
+        CSV 出力では、計画にある実装ラインごとに生産面を空欄で出す（利用者が埋めて取り込む。空のままなら取込でスキップされる）。
         """
         unregistered = find_unregistered_production_side_file_nos()
         file_nos = [item["setup_file_no"] for item in unregistered]
@@ -1150,9 +1039,7 @@ class ProductionSideMasterWindow(tk.Toplevel):
 
     def on_show_missing_lines(self):
         """
-        参考情報専用（判定には使わない、2026-10-08新設、D-9x改訂）：ファイルNo
-        自体は生産面マスターに登録があるが、計画データ上のこの実装ラインには
-        登録が無い組み合わせを一覧表示する。
+        参考情報（判定には使わない。D-9x）: ファイルNoは登録があるが、計画データ上のこの実装ラインには登録が無い組み合わせを一覧表示する。
         """
         missing = find_registered_file_nos_missing_line_combinations()
         win = tk.Toplevel(self)
