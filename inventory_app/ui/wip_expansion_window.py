@@ -1,4 +1,3 @@
-# ui/wip_expansion_window.py
 import threading
 import queue
 
@@ -17,42 +16,17 @@ from ui.loading_window import LoadingWindow
 from ui.wip_scrap_correction_window import WipScrapCorrectionWindow
 from ui.window_utils import center_window
 
-# アプリ全体で共有する単一のBOMServiceインスタンス（services.bom_service.
-# get_shared_bom_service()参照）。ui.ng_input_window.pyと共有するため、
-# 先にどちらの画面を開いても共有フォルダのインデックス構築は1回で済む。
+# 共有の BOMService（NG入力画面と共有するので、共有フォルダのインデックス作成は1回で済む）。
 _bom_service = get_shared_bom_service()
 
 
 class WipExpansionWindow(tk.Toplevel):
     """
-    仕掛（WIP）展開画面。
-
-    実績レポート画面（ui/unified_report_window.py、旧ui/monthly_report_window.py。
-    2026-10-01に削除・統合済み）の「仕掛数量抽出」で保存された
-    models.wip_board_snapshot（仕掛基板一覧のスナップショット）を右ペインに
-    一覧表示し、行をダブルクリックするとその基板の仕掛数量分をBOM展開して
-    左ペインに部品一覧を表示する（ui/ng_input_window.py の左右ペイン構成を
-    複製・適応したもの）。
-
-    NG入力画面と異なり、本画面は展開結果の確認・閲覧のみを目的とする
-    （DBへの登録操作は行わない。仕掛の部品はまだ消費されていない在庫として
-    扱われるため、NGのように「登録」して確定させる対象ではない）。
-
-    フロー：
-      1. 右ペインの一覧（models.wip_board_snapshot.list_wip_snapshot()）から
-         行をダブルクリック
-      2. その行のfile_no・生産面・mounting_line・surplus_qty（仕掛数量）を使い、
-         BOMService.expand_wip_to_parts() でBOM展開
-      3. 展開結果（96コードごとの数量）をCheckableTreeview（ui.checkable_treeview）に
-         表示。デフォルト全選択状態（閲覧用のため、チェックの意味自体は無いが、
-         NG入力画面と見た目を揃えるため踏襲した）
+    仕掛（WIP）展開画面。実績レポートの「仕掛数量抽出」で保存した仕掛基板のスナップショットを右ペインに表示し、
+    行をダブルクリックすると、その仕掛数量分を BOM 展開して左ペインに部品を表示する。
+    チェックした部品は「確定」で wip_scrap_records に登録する（on_confirm()）。詳細は docs/domain/wip_expansion.md。
     """
-    # 仕掛一覧（tree_wip_list）の列順。_fetch_wip_list_rows()が返すタプルの並びと
-    # 一致させる必要がある。クラス属性として公開し、_create_wip_list_widgets()と
-    # services.unprocessed_check_service.check_unprocessed_items()（在庫差異
-    # レポートを開く前の未処理項目チェック）の両方が、位置決め打ちではなく
-    # この定義を単一の情報源として参照できるようにしている
-    # （ui.ng_input_window.NgInputWindow.NG_LIST_COLUMNSと同じ考え方）。
+    # 仕掛一覧の列順。_fetch_wip_list_rows() のタプルと一致させること（unprocessed_check_service もこの定義を参照する）。
     WIP_LIST_COLUMNS = (
         "kitting_list_no", "board_name", "file_no", "side", "lot_no",
         "mounting_line", "surplus_qty", "status", "created_at", "excluded",
@@ -63,8 +37,7 @@ class WipExpansionWindow(tk.Toplevel):
         self.current_worker = current_worker
         self.current_row = None
 
-        # 右ペイン（仕掛一覧）の絞り込み基盤：ui.ng_input_window.py の
-        # NG一覧（_all_ng_rows等）と同じパターンをWIP一覧用に再実装したもの。
+        # 仕掛一覧の絞り込み（NG 一覧と同じ設計）。
         self._all_wip_rows = []
         self._wip_filter_vars = {}
         self._wip_checkbox_filters = {}
@@ -76,8 +49,7 @@ class WipExpansionWindow(tk.Toplevel):
         self.title("仕掛展開")
         self.geometry("1150x600")
         center_window(self, parent)
-        # 開いた直後から最大化状態にする（2026-10-07追加、ui.ng_input_window.
-        # NgInputWindowと同じ考え方・同じ理由）。
+        # 開いた直後に最大化する（NG入力画面と同じ）。
         self.state("zoomed")
 
         self.create_widgets()
@@ -110,8 +82,7 @@ class WipExpansionWindow(tk.Toplevel):
                 ("consumed_qty", "消費数量（仕掛数量×員数）", 200, tk.E),
             ],
             height=10,
-            # 消費数量のみダブルクリックで編集可能にする（96コード列は編集不可のまま。
-            # 本画面は登録処理を持たないため、編集結果は表示上の確認・閲覧にのみ使う）。
+            # 消費数量だけを編集できる（96コード列は編集不可）。
             editable_columns={"consumed_qty"},
         )
 
@@ -150,14 +121,8 @@ class WipExpansionWindow(tk.Toplevel):
 
     def on_wip_list_double_click(self, event):
         """
-        仕掛一覧の行をダブルクリックすると、その行のfile_no・生産面・
-        mounting_line・surplus_qty（仕掛数量）を使ってBOM展開する。
-
-        STATUS_CONFIRMED_ORPHAN（スナップショットに対応行が無い確定済み行）は
-        基板名・実装ライン・仕掛数量等のスナップショット由来の情報を持たないため
-        展開できない。誤って空欄のsurplus_qtyでBOM展開しようとして分かりにくい
-        エラー（「仕掛数量を数値として解釈できません」等）になるのを避け、
-        「実績修正」を案内する専用メッセージを表示して処理を打ち切る。
+        仕掛一覧の行をダブルクリックすると、その行の file_no・生産面・実装ライン・仕掛数量で BOM 展開する。
+        スナップショットの無い確定済み行（STATUS_CONFIRMED_ORPHAN）は展開できないので、「実績修正」を案内して終わる。
         """
         row_id = self.tree_wip_list.identify_row(event.y)
         if not row_id:
@@ -186,26 +151,9 @@ class WipExpansionWindow(tk.Toplevel):
 
     def expand_by_identity(self, kitting_list_no, lot_no=None, production_side=None):
         """
-        外部（ui.wip_product_report_window.WipProductReportWindow等）から、
-        kitting_list_no（・lot_no・production_side）を指定して該当基板を
-        自動展開するための入口（ui.product_ng_report_window.ProductNgReportWindow
-        がui.ng_input_window.NgInputWindowの検索欄を埋めてon_expand()を呼ぶのと
-        同じ役割）。
-
-        self._all_wip_rows（_fetch_wip_list_rows()の結果、仕掛一覧の全件）から
-        一致する行を検索し、on_wip_list_double_click()と同じ展開処理
-        （_expand_row()）を呼ぶ。lot_no・production_sideを渡すとその条件でも
-        絞り込む（省略時はkitting_list_noのみで一致した最初の行を使う）。
-
-        一致する行が無い場合はエラーダイアログを表示してFalseを返す
-        （呼び出し時点でwip_board_snapshotの内容が変わっている等、
-        通常は起こらないはずだが念のため）。
-
-        STATUS_CONFIRMED_ORPHAN（スナップショットに対応行が無い確定済み行）は
-        検索対象から除外する。この行はboard_name・surplus_qty等のスナップショット
-        由来の情報を持たず展開できないため（on_wip_list_double_click()と同じ理由）、
-        また呼び出し元（仕掛製品レポートのダブルクリック）の動作は今回変更しない
-        方針のため、従来通り「見つからない」場合と同じエラー扱いにする。
+        ほかの画面（仕掛製品レポートなど）から、kitting_list_no（と lot_no・production_side）を指定して自動展開する入口。
+        一覧の全件から一致する行を探して展開する（lot_no 等を省略すると、kitting_list_no が一致する最初の行）。
+        見つからなければエラーを出して False。スナップショットの無い確定済み行は展開できないので、検索の対象から外す。
         """
         idx = self._wip_col_index
         for row in self._all_wip_rows:
@@ -231,12 +179,7 @@ class WipExpansionWindow(tk.Toplevel):
         return False
 
     def _get_selected_wip_row_identity(self):
-        """
-        仕掛一覧（tree_wip_list）で選択中の行から、models.wip_exclusion_listの
-        識別キー（kitting_list_no, lot_no, file_no, side）を取り出す
-        （ui.ng_input_window.NgInputWindow._get_selected_ng_row_identity()と
-        同じパターン）。選択が無い場合は警告を表示してNoneを返す。
-        """
+        """選択中の行から、対象外リストの識別キー (kitting_list_no, lot_no, file_no, side) を取り出す。選択が無ければ None。"""
         sel = self.tree_wip_list.selection()
         if not sel:
             messagebox.showwarning("警告", "対象の行を選択してください。", parent=self.winfo_toplevel())
@@ -257,16 +200,10 @@ class WipExpansionWindow(tk.Toplevel):
         return kitting_list_no, lot_no, file_no, side
 
     def _prompt_wip_exclusion_reason(self):
-        """
-        対象外にする理由（任意入力）を尋ねる簡単なモーダルダイアログ
-        （ui.ng_input_window.NgInputWindow._prompt_ng_exclusion_reason()と同じ
-        実装）。OKで理由文字列（空欄ならNone）を返し、キャンセル時はFalseを返す。
-        """
+        """対象外にする理由（任意）を尋ねる。OK なら理由（空欄なら None）、キャンセルなら False。"""
         result = {"confirmed": False, "reason": ""}
 
-        # selfが最小化状態だと、transient(self)したダイアログがstate()="withdrawn"
-        # のまま実際には表示されない（ui.plan_candidate_dialog._show_candidate_list_dialog()
-        # と同じ理由・同じ対策、UI_WORKFLOW_FIXES_NOTES.md参照）。
+        # 最小化中だと transient のダイアログが表示されないため、先に元に戻す（UI_WORKFLOW_FIXES_NOTES.md）。
         if self.state() == "iconic":
             self.deiconify()
 
@@ -303,11 +240,7 @@ class WipExpansionWindow(tk.Toplevel):
         return result["reason"] or None
 
     def on_mark_wip_excluded(self):
-        """
-        仕掛一覧で選択中の行を「対象外」として登録する（models.wip_exclusion_list.
-        mark_wip_excluded()）。理由は_prompt_wip_exclusion_reason()で任意入力させる
-        （キャンセル時は何もしない）。登録後は一覧を再取得し、「対象外」列に反映する。
-        """
+        """選択中の行を「対象外」にする（理由は任意入力。キャンセルなら何もしない）。"""
         identity = self._get_selected_wip_row_identity()
         if identity is None:
             return
@@ -327,10 +260,7 @@ class WipExpansionWindow(tk.Toplevel):
         self.load_wip_list()
 
     def on_unmark_wip_excluded(self):
-        """
-        仕掛一覧で選択中の行の「対象外」指定を解除する
-        （models.wip_exclusion_list.unmark_wip_excluded()）。
-        """
+        """選択中の行の「対象外」を解除する。"""
         identity = self._get_selected_wip_row_identity()
         if identity is None:
             return
@@ -354,17 +284,8 @@ class WipExpansionWindow(tk.Toplevel):
 
     def on_open_wip_scrap_correction(self):
         """
-        仕掛一覧で選択中の行のwip_scrap_records明細（96コード単位）を、個別に
-        修正・削除できるui.wip_scrap_correction_window.WipScrapCorrectionWindowで
-        開く（ui.ng_input_window.NgInputWindow.on_open_scrap_correction()と同じ
-        パターン）。_get_selected_wip_row_identity()で選択行から
-        (kitting_list_no, lot_no, file_no, side)を取得し、sideをproduction_side
-        指定としてそのまま渡す（同一kitting_list_no・lot_noでも面ごとに
-        wip_scrap_recordsのグループが分かれているため、選択行の面だけに絞り込んだ
-        明細を表示する）。
-
-        on_updated=self.load_wip_listにより、修正画面で数量修正・削除を行うたびに
-        仕掛一覧側の状態表示も即座に更新される。
+        選択中の行の wip_scrap_records 明細（96コード単位）を修正画面で開く。面ごとに分かれているので、その面だけを表示する。
+        修正のたびに仕掛一覧の状態も更新する（on_updated=self.load_wip_list）。
         """
         identity = self._get_selected_wip_row_identity()
         if identity is None:
@@ -378,25 +299,9 @@ class WipExpansionWindow(tk.Toplevel):
 
     def _run_bom_expansion_async(self, work_fn, on_success):
         """
-        BOMService.expand_wip_to_parts()（共有フォルダへのファイルアクセスを
-        伴い得るため実行時間が読めない）を非同期化する共通ヘルパー。
-        ui.kitting_plan_import.KittingPlanImportWindow.on_start_import()等で
-        確立済みのLoadingWindow＋threading.Thread(daemon=True)＋queue.Queue＋
-        self.after(200,...)ポーリングパターンをそのまま踏襲する
-        （ui.ng_input_window.NgInputWindow._run_bom_expansion_async()と同じ実装。
-        両画面それぞれが小規模なUI部品を個別に持つ既存の設計方針
-        （NG一覧・仕掛一覧のフィルタ・ソート実装が共通コンポーネント化されて
-        いないのと同じ考え方）に合わせ、共通モジュールへの切り出しは行わず
-        画面ごとに複製している）。
-
-        呼び出し元（_expand_row()）は、入力検証・実装ライン特定（既に
-        Treeview行またはexpand_by_identity()の呼び出し引数から確定済み）を
-        あらかじめ済ませた上で、BOM展開部分のみをwork_fnとして渡す。
-
-        on_success(parts)：展開成功時、UIスレッド上で呼ばれるコールバック。
-        FileNotFoundError/ValueErrorはここで捕捉し従来と同じ文言でエラー
-        ダイアログを表示、それ以外の例外はself.after()のコールバック内で
-        再送出しTkinterの通常の例外報告に委ねる（元のコードの挙動を維持）。
+        BOM 展開（共有フォルダを読むので時間が読めない）を別スレッドで実行する共通処理（NG入力画面と同じ実装を、画面ごとに持っている）。
+        入力検証は呼び出し元が先に済ませ、展開だけを work_fn で渡す。FileNotFoundError・ValueError は従来の文言で表示し、
+        それ以外は Tkinter の通常の例外報告に任せる。
         """
         loading = LoadingWindow(self, message="BOM展開中です（共有フォルダへアクセスしています）…")
         result_queue = queue.Queue()
@@ -433,12 +338,7 @@ class WipExpansionWindow(tk.Toplevel):
 
     def _expand_row(self, kitting_list_no, board_name, file_no, side_text, lot_no, mounting_line, surplus_qty_text):
         """
-        on_wip_list_double_click()・expand_by_identity()共通の展開処理本体
-        （値の取得元がTreeviewの行かexpand_by_identity()の検索結果かの違いを
-        吸収し、以降のバリデーション・BOM展開ロジックを一本化する）。
-
-        入力検証まではUIスレッドで同期的に行い、実際のBOM展開（_bom_service.
-        expand_wip_to_parts()）のみを_run_bom_expansion_async()で非同期化する。
+        ダブルクリックと expand_by_identity() に共通の展開処理。入力検証は UI スレッドで行い、BOM 展開だけを非同期にする。
         """
         try:
             side = int(side_text)
@@ -499,10 +399,8 @@ class WipExpansionWindow(tk.Toplevel):
 
     def on_confirm(self):
         """
-        選択された部品を仕掛展開結果として確定登録する。対象kitting_list_no・
-        lot_no・production_sideの既存wip_scrap_records（あれば）は全て削除した上で、
-        今回チェック済み（選択済み）の部品のみを登録し直す（delete-then-insert。
-        ui.ng_input_window.NgInputWindow.on_register() と同じパターン）。
+        チェックした部品を、仕掛展開の結果として確定登録する。その kitting_list_no・lot_no・面の既存の wip_scrap_records を
+        削除してから登録し直す（NG入力画面の on_register() と同じ）。
         """
         if not self.current_row:
             return
@@ -547,13 +445,7 @@ class WipExpansionWindow(tk.Toplevel):
 
     def load_parts_tree(self, parts, wip_qty):
         """
-        展開結果をCheckableTreeviewへ反映する。ui.ng_input_window.load_parts_tree()と
-        同じく、呼び出しのたびに前回の内容をclear()してから作り直し、デフォルト
-        全選択状態で表示する（本画面では選択状態自体は登録に使わないが、
-        NG入力画面と見た目を揃えるため踏襲した）。
-
-        item_type="board"（基板自身、K行の96コード）の行は、区分列に「基板」と
-        表示して通常部品と区別する（ui.ng_input_window.load_parts_tree()と同じ方針）。
+        展開結果を表示し直す（前の内容を消してから作る。全行チェック済み）。基板自身の行は区分列に「基板」と出す（NG入力画面と同じ）。
         """
         self.tree.clear()
         for part in parts:
@@ -567,24 +459,8 @@ class WipExpansionWindow(tk.Toplevel):
 
     def _get_bulk_wip_expand_targets(self):
         """
-        「一括展開・登録」の対象行（未確定 かつ 対象外でない）を抽出する
-        （ui.ng_input_window.NgInputWindow._get_bulk_expand_targets()と同じ考え方）。
-
-        _fetch_wip_list_rows()と同じ判定ロジック（wip_board_snapshotにあるが
-        wip_scrap_records集計が無い＝未確定）を使うが、Treeview表示用に整形済みの
-        文字列（"面1"相当の生産面等）ではなくproduction_side（int）・
-        surplus_qty（float）を生のまま使いたいため、list_wip_snapshot()等の
-        戻り値を直接参照する（self._all_wip_rowsは表示用に整形済みのため、
-        ここでは使わない）。
-
-        list_wip_snapshot()はキー（kitting_list_no, lot_no, production_side）の
-        一意性がDBスキーマ上保証されていない（wip_board_snapshotはテーブル全体
-        差し替え方式のスナップショットのため）ため、_fetch_wip_list_rows()と
-        同様にdictへ丸めず、リストをそのまま走査する。
-
-        戻り値：list_wip_snapshot()の要素（{"kitting_list_no", "file_no",
-        "board_name", "production_side", "mounting_line", "lot_no",
-        "surplus_qty", "created_at"}）のうち対象のもののリスト。
+        「一括展開・登録」の対象（未確定で、対象外でない行）を返す。表示用の _all_wip_rows ではなく、list_wip_snapshot() の生の値を使う。
+        スナップショットはキーの一意性が保証されていない（テーブル全体を差し替える方式）ので、dict にまとめずリストのまま走査する。
         """
         confirmed_keys = {
             (s["kitting_list_no"], s["lot_no"] or "", str(s["production_side"]))
@@ -610,21 +486,9 @@ class WipExpansionWindow(tk.Toplevel):
 
     def _bulk_expand_and_register_one_wip(self, target):
         """
-        一括展開・登録の対象1行分を処理する（バックグラウンドスレッドから
-        呼ばれるため、Tkinterウィジェットには一切触れない）。
-        ui.ng_input_window.NgInputWindow._bulk_expand_and_register_one()と
-        同じ考え方だが、wip_board_snapshotの行は既にfile_no・生産面・lot_no・
-        mounting_line・仕掛数量を保持しているため、NG入力画面のような
-        「kitting_list_noから計画を検索し、複数候補があれば曖昧」という
-        ステップ自体が存在しない（計画あり／計画外の区別も無い）。
-
-        「実装ラインが複数ある場合はその行だけエラーとして扱う」という制約のみ
-        該当し得る：スナップショットのmounting_lineが空欄（未確定）の行に限り、
-        BOMService.list_mounting_lines()でTSV上の実装ライン候補を確認し、
-        複数あればバックグラウンドからは選択できないためエラーとする
-        （ui.ng_input_window.NgInputWindow._expand_from_file_no()の
-        計画外パターンと同じロジック。1件ならそのまま採用、0件ならNoneのまま
-        BOMService._calculate_bom()のデフォルト方針に委ねる）。
+        一括展開・登録の1行分（バックグラウンドで実行するので、ウィジェットには触れない）。
+        スナップショットの行は file_no・生産面・実装ライン・仕掛数量を持っているので、計画の検索は無い。
+        実装ラインが空欄の行だけ TSV の候補を調べ、複数あればエラーにする（1件ならそれを使い、0件なら None）。
         """
         kitting_list_no = target["kitting_list_no"]
         file_no = target["file_no"]
@@ -659,13 +523,7 @@ class WipExpansionWindow(tk.Toplevel):
         save_wip_scrap_records(kitting_list_no, file_no, side, records, lot_no=lot_no, mounting_line=mounting_line)
 
     def _run_bulk_wip_expand_worker(self, targets):
-        """
-        対象行を1件ずつ処理し、1件のエラーで処理全体を止めず他の行の処理を継続する
-        （ui.ng_input_window.NgInputWindow._run_bulk_expand_worker()と同じ設計）。
-
-        戻り値：{"total", "success_count", "failures"}。failuresは
-        [{"label": "表示用の行の識別子", "error": "エラーメッセージ"}, ...]。
-        """
+        """対象行を1件ずつ処理する。1件のエラーで全体を止めない。戻り値は {"total", "success_count", "failures"}。"""
         success_count = 0
         failures = []
         for target in targets:
@@ -706,17 +564,8 @@ class WipExpansionWindow(tk.Toplevel):
 
     def on_bulk_expand_register(self):
         """
-        仕掛一覧の「未確定」かつ「対象外」でない行をすべて一括で展開・登録する
-        （ui.ng_input_window.NgInputWindow.on_bulk_expand_register()と同じ考え方。
-        対象外を除く未確定項目の一括処理。個別のチェック確認ステップは行わず、
-        展開された全部品をそのまま登録する）。
-
-        BOM展開・DB登録は件数によっては時間がかかり得るため、既存の非同期パターン
-        （LoadingWindow＋threading.Thread(daemon=True)＋queue.Queue＋
-        self.after(200,...)ポーリング）を適用する。_run_bom_expansion_async()を
-        そのまま使わないのは、あちらが単一work_fn／単一on_successの1件専用設計
-        であるのに対し、こちらは行ごとの成功・失敗を個別に追跡し、1件のエラーで
-        全体を止めずに処理を継続する必要があるため（NG入力画面と同じ理由）。
+        未確定で対象外でない行を、すべて一括で展開・登録する（チェックの確認はしない）。別スレッドで実行する。
+        _run_bom_expansion_async() は1件用なので使わず、行ごとの成否を追う（NG入力画面と同じ）。
         """
         targets = self._get_bulk_wip_expand_targets()
         if not targets:
@@ -778,12 +627,7 @@ class WipExpansionWindow(tk.Toplevel):
     # ------------------------------------------------------------------
 
     def _create_wip_list_widgets(self, right_frame):
-        """
-        右ペイン（仕掛一覧）のウィジェットを構築する。ui.ng_input_window.py の
-        NG一覧（_create_ng_list_widgets()）と同じ構成
-        （絞り込みエリア→Treeview→水平/垂直スクロールバー→更新ボタン、のpack順）を
-        WIP一覧用に再実装したもの。
-        """
+        """右ペイン（仕掛一覧）を作る（NG 一覧と同じ構成）。"""
         cols_wip = self.WIP_LIST_COLUMNS
         self._wip_col_index = {key: i for i, key in enumerate(cols_wip)}
 
@@ -843,9 +687,7 @@ class WipExpansionWindow(tk.Toplevel):
         self.tree_wip_list.column("created_at", width=140, anchor=tk.W)
         self.tree_wip_list.column("excluded", width=70, anchor=tk.CENTER)
 
-        # スナップショットに対応行が無い確定済み行（STATUS_CONFIRMED_ORPHAN）を、
-        # 状態列の文字だけでなく文字色でも区別できるようにする
-        # （このTreeviewでは他にタグを使っていないため、名前の衝突は無い）。
+        # スナップショットの無い確定済み行は、状態の文字だけでなく文字色でも区別する。
         self.tree_wip_list.tag_configure("confirmed_orphan", foreground="#b30000")
 
         vsb_wip = ttk.Scrollbar(right_frame, orient="vertical", command=self.tree_wip_list.yview)
@@ -854,8 +696,7 @@ class WipExpansionWindow(tk.Toplevel):
         hsb_wip = ttk.Scrollbar(right_frame, orient="horizontal", command=self.tree_wip_list.xview)
         self.tree_wip_list.configure(xscrollcommand=hsb_wip.set)
 
-        # pack順序：ui.ng_input_window.py のNG一覧と同じ理由により、
-        # ボタン行→水平スクロールバーの順でside=tk.BOTTOMにpackする。
+        # pack 順の罠: ボタン行→水平スクロールバーの順に side=BOTTOM で pack する（NG 一覧と同じ）。
         wip_action_frame = ttk.Frame(right_frame)
         wip_action_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(5, 0))
         ttk.Button(wip_action_frame, text="更新", command=self.load_wip_list).pack(
@@ -910,11 +751,7 @@ class WipExpansionWindow(tk.Toplevel):
         )
 
     def open_wip_checkbox_filter_popup(self, col_key):
-        """
-        基板名/file_no/生産面/ロットNo./実装ライン用の、エクセルのオートフィルタ風
-        チェックボックス式絞り込みポップアップを開く（ui.ng_input_window.py の
-        open_ng_checkbox_filter_popup() と同じ設計）。
-        """
+        """基板名/file_no/生産面/ロットNo./実装ライン のチェックボックス式絞り込みポップアップを開く（NG 一覧と同じ設計）。"""
         label_text = self._wip_filter_labels[col_key]
         col_index = self._wip_col_index[col_key]
 
@@ -930,9 +767,7 @@ class WipExpansionWindow(tk.Toplevel):
         current_selection = self._wip_checkbox_filters.get(col_key)
         checked_values = set(full_values) if current_selection is None else set(current_selection)
 
-        # selfが最小化状態だと、transient(self)したポップアップがstate()="withdrawn"
-        # のまま実際には表示されない（ui.plan_candidate_dialog._show_candidate_list_dialog()
-        # と同じ理由・同じ対策、UI_WORKFLOW_FIXES_NOTES.md参照）。
+        # 最小化中だと transient のダイアログが表示されないため、先に元に戻す（UI_WORKFLOW_FIXES_NOTES.md）。
         if self.state() == "iconic":
             self.deiconify()
 
@@ -1016,47 +851,16 @@ class WipExpansionWindow(tk.Toplevel):
 
         return popup
 
-    # スナップショットに対応行が無い確定済みwip_scrap_recordsを一覧に追加する際の
-    # 状態文字列。「確定済み」「未確定」とは別の値にして、既存の判定（一括展開・登録の
-    # 対象抽出、services.unprocessed_check_service.check_unprocessed_items()の
-    # 未確定件数カウント等）が誤って対象に含めないようにする。
+    # スナップショットの無い確定済み行の状態。「確定済み」「未確定」と別の値にして、一括展開・登録の対象や未確定件数に入らないようにする。
     STATUS_CONFIRMED_ORPHAN = "確定済み(スナップショットなし)"
 
     @staticmethod
     def _fetch_wip_list_rows():
         """
-        WIP一覧のDBアクセス部分のみを行う（Tkinterウィジェットには一切触れない）。
-        models.wip_board_snapshot.list_wip_snapshot() の内容に、
-        models.wip_scrap_records.list_wip_scrap_summary()（確定登録済みの
-        仕掛展開結果）を(kitting_list_no, lot_no, production_side)キーで
-        突き合わせ、「確定済み」「未確定」の状態列を付与する
-        （ui.ng_input_window._fetch_ng_list_rows()の未展開／展開済み判定と同じ考え方）。
-
-        キー比較時、wip_board_snapshot.production_sideはTEXT列・
-        wip_scrap_records.production_sideはINTEGER列と型が異なるため、
-        str()で揃えてから比較する。
-
-        対象外マーク（models.wip_exclusion_list）：list_wip_exclusions()で全件を
-        取得し、(kitting_list_no, lot_no, file_no, production_side) キーで
-        突き合わせて「対象外」列を付与する。ui.ng_input_window._fetch_ng_list_rows()
-        と同じ方針で、対象外にした行も一覧からは除外せず「対象外」列で区別表示する
-        （一覧から消すと対象外にした事実・解除の導線が失われるため）。
-
-        スナップショットに存在しない確定済み行（wip_scrap_recordsに登録済みだが、
-        月報の「仕掛数量抽出」が再実行される等でwip_board_snapshotから当該ロットが
-        消えたケース）も、末尾に追加で一覧に含める。ui.ng_input_window._fetch_ng_list_rows()の
-        「申告(ng_declarations) ∪ 展開済み(scrap_records)」という和集合方式と同じ考え方を
-        採用し、確定登録の後にスナップショットが入れ替わっても、実績修正の対象として
-        見つけられるようにするため（本来はwip_board_snapshotに無い時点で「実績修正」で
-        訂正すべき状態のため、正常フローでは滅多に発生しないはずだが、発生した場合に
-        一覧・実績修正ボタンから見失われないようにする）。
-
-        この追加行は、状態列にSTATUS_CONFIRMED_ORPHAN（「確定済み(スナップショットなし)」）を
-        設定し、既存の「確定済み」「未確定」とは区別する。基板名・実装ライン・仕掛数量・
-        抽出日時はスナップショット由来の情報のため、対応する行が無いこの追加行では
-        空欄のままとする（list_wip_scrap_summary()のtotal_qtyは消費数量であり
-        仕掛数量とは意味が異なるため、surplus_qty列には入れない）。file_noのみ
-        list_wip_scrap_summary()が返す値をそのまま使う。
+        仕掛一覧の DB アクセスだけを行う（ウィジェットに触れない）。
+        スナップショットと確定済みの展開結果を (kitting_list_no, lot_no, production_side) で合わせ、「確定済み」「未確定」を付ける。
+        production_side はスナップショットが TEXT、確定済みが INTEGER なので、str() にそろえて比べる。
+        対象外の行も一覧から消さず「対象外」列で示す。スナップショットから消えた確定済み行も、実績修正で見つけられるよう末尾に足す。
         """
         summaries = list_wip_scrap_summary()
         confirmed_keys = {
