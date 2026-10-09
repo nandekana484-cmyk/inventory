@@ -38,7 +38,9 @@ def main() -> int:
     path = sys.argv[1].replace("\\", "/")
     rev = sys.argv[2] if len(sys.argv) > 2 else "HEAD"
 
-    shown = subprocess.run(["git", "show", f"{rev}:{path}"], capture_output=True)
+    # "./" を付けると、git がリポジトリ直下ではなく実行中のフォルダからのパスとして解釈する
+    git_path = path if path.startswith(("./", "../", "/")) else f"./{path}"
+    shown = subprocess.run(["git", "show", f"{rev}:{git_path}"], capture_output=True)
     if shown.returncode != 0:
         print(f"比較元を取得できません: {rev}:{path}")
         print(shown.stderr.decode("utf-8", errors="replace"))
