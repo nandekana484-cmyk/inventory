@@ -12,6 +12,18 @@
 
 ## 進捗
 
+## 未解決の宿題
+
+### D-9x の仮番号
+
+コメントの「D-9x」は、CANONICAL_DESIGN_DECISIONS.md の D番号が決まる前に書かれた仮番号。内容から D-92〜D-94（生産面マスター）のどれかと思われるが、どれに当たるかは未確認。正しい番号が分かったら置き換える。
+
+- 前回確認した3か所（`ui/kitting_production_entry.py`）
+  - `_fetch_plan_list_rows()` の隠し要素1のコメント（生産面マスターの分類）
+  - `create_widgets()` の計画一覧のタグ設定のコメント（b・c の背景色）
+  - `_build_registration_preview()` の分類のコメント（b・c なら確認ダイアログで理由を示す）
+- ほかにも同じ仮番号がある（2026-10-09 時点、計34か所）: `models/kitting_plan.py`（8）、`models/production_side_master.py`（7）、`ui/production_side_master_window.py`（6）、`ui/kitting_plan_import.py`（3）、`ui/production_import_staging_window.py`（3）、`ui/main_window.py`（2）、`services/master_merge_service.py`（1）、`services/production_import_service.py`（1）
+
 ## 既知の違反
 
 2026-10-09 時点（HEAD c08a88a）。どれも既存コード。新しく増やさず、そのファイルを触るときに直す（CLAUDE.md「層のルール」）。

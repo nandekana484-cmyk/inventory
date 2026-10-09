@@ -18,7 +18,7 @@
 - `tests/` — テスト
 - `docs/` — 詳細ドキュメント（必要なときだけ読む）
 - 実態: ui/services/models/db/tests は `inventory_app/` の下にある。`docs/` だけリポジトリ直下
-- 実態: `scripts/` はまだない。単発スクリプトは `inventory_app/` 直下（check_*・delete_*・dump_schema・list_*・verify_*・test_kitting_import.py）とルート（check_db.py・check_env.py）にある
+- 実態: `scripts/` は `inventory_app/scripts/`（check_code_unchanged.py）。古い単発スクリプトは `inventory_app/` 直下（check_*・delete_*・dump_schema・list_*・verify_*・test_kitting_import.py）とルート（check_db.py・check_env.py）に残っている
 - 実態: `db/` には実行時のDB（`db/<フォルダ名>/inventory.db`・`master.db`）とバックアップ（`*.bak_*`）も置かれる
 - その他: `inventory_app/imports/`（取込サンプル）、ルートの CANONICAL_DESIGN_DECISIONS.md（設計判断の記録。D番号で grep する）・CHANGELOG.md・*_NOTES.md
 
