@@ -1,4 +1,3 @@
-# ui/ng_input_window.py
 import threading
 import queue
 from datetime import datetime
@@ -24,53 +23,18 @@ from ui.loading_window import LoadingWindow
 from ui.scrap_correction_window import ScrapCorrectionWindow
 from ui.window_utils import center_window
 
-# アプリ全体で共有する単一のBOMServiceインスタンス（services.bom_service.
-# get_shared_bom_service()参照）。ui.wip_expansion_window.pyと共有するため、
-# 先にどちらの画面を開いても共有フォルダのインデックス構築は1回で済む。
+# 共有の BOMService（仕掛展開画面と共有するので、共有フォルダのインデックス作成は1回で済む）。
 _bom_service = get_shared_bom_service()
 
 
 class NgInputWindow(tk.Toplevel):
     """
-    NG（仕損）実績入力画面。
-
-    入力フロー：
-      1a. キッティングリストNo.を入力（計画あり登録）
-          ── または ──
-      1b. ファイルNo.＋生産面を入力（計画外登録。kitting_plan_itemsに対応する
-          計画が存在しない場合。キッティングリストNo.欄が空欄の場合にこちらが
-          使われる）
-      2. NG数量（枚数）を入力。生産実績入力画面（ui.kitting_production_entry.py）で
-         当日既に申告済み（models.ng_declarations）であれば、Entryが空欄の場合に
-         限り自動的に表示される（_resolve_ng_qty()）
-      3. 「展開」ボタン →
-         1aの場合：計画からfile_no・生産面を特定し、search_plan_by_kitting_no()で
-                   計画情報を取得した上でBOM展開
-         1bの場合：入力されたfile_no・生産面をそのまま使い、計画を介さず
-                   BOMService.expand_scrap_to_parts() を直接呼んでBOM展開
-                   （planned_qty超過警告は計画が無いためスキップする）
-      4. 使用部品一覧（96コードごとの消費数量）をCheckableTreeview（ui.checkable_treeview）に
-         表示。デフォルト全選択状態。「全選択」「全解除」ボタンで一括切替可能
-      5. 実際に仕損とする部品のチェックを必要に応じて外す
-      6. 「仕損登録」ボタン → チェック済み行のみ models.scrap_records.replace_scrap_records() で
-         保存（対象kitting_list_no・production_sideの既存レコードは全て削除してから
-         登録し直すdelete-then-insert。既存レコードがある場合＝上書きになる場合のみ
-         事前に確認ダイアログを表示する。1bの場合は is_unplanned=True を渡す）
-      7. 保存済みのscrap_recordsは services.inventory_diff_service 側で
-         96コード単位に集計され、在庫差異レポートへ反映される
-         （is_unplannedの有無に関わらず、part_no単位のSUMに含まれる）
-      8. 右ペインのNG一覧（kitting_list_no・production_side単位の集計、
-         models.ng_declarations×models.scrap_records のアプリ層マージ）は、
-         「未展開」（申告のみ）／「展開済み」（申告＋展開済み）／
-         「展開済み（申告記録なし）」（展開済みデータのみ）の3状態を区別して表示する。
-         行をダブルクリックすると、その計画（または計画外のfile_no＋生産面）が
-         自動的に再展開される（on_ng_list_double_click()）
+    NG（仕損）実績入力画面。キッティングリストNo.（計画あり）か、ファイルNo.＋生産面（計画外）で BOM を展開し、
+    チェックした部品を scrap_records に登録する（その計画・面の既存分は削除してから登録し直す）。
+    右ペインの NG 一覧は、申告と展開済みを合わせて「未展開／展開済み／展開済み（申告記録なし）」を表示する。
+    入力の流れの詳細は docs/domain/ng_input.md。
     """
-    # NG一覧（tree_ng_list）の列順。_fetch_ng_list_rows()が返すタプルの並びと
-    # 一致させる必要がある。クラス属性として公開し、_create_ng_list_widgets()と
-    # services.unprocessed_check_service.check_unprocessed_items()（在庫差異
-    # レポートを開く前の未処理項目チェック）の両方が、位置決め打ちではなく
-    # この定義を単一の情報源として参照できるようにしている。
+    # NG 一覧の列順。_fetch_ng_list_rows() のタプルと一致させること（unprocessed_check_service もこの定義を参照する）。
     NG_LIST_COLUMNS = (
         "kitting_list_no", "lot_no", "board_name", "file_no", "side",
         "is_unplanned", "status", "declared_ng_qty", "part_count",
@@ -80,23 +44,11 @@ class NgInputWindow(tk.Toplevel):
     def __init__(self, parent, current_worker):
         super().__init__(parent)
         self.current_worker = current_worker
-        # {"kitting_list_no", "file_no", "side", "ng_qty", "is_unplanned"}
-        # 計画外（is_unplanned=True）の場合、kitting_list_noには対応する計画が
-        # 存在しないため file_no をそのまま流用する（scrap_records.kitting_list_no は
-        # NOT NULL制約があり、実在するkitting_list_noの命名規則
-        # "{file_no}-{side}-{種別}-{日付}-{連番}" とは形が異なるため実データと
-        # 衝突しない）。
+        # 計画外のときは kitting_list_no に file_no を入れる（NOT NULL のため。実在の kitting_list_no とは形が違うので衝突しない）。
         self.current_plan = None
 
-        # NG一覧（右ペイン）の絞り込み基盤：ui.kitting_production_entry.py の
-        # 計画一覧（tree_plan_list）と同じパターンをNG一覧用に再実装したもの
-        # （フィルタ・ソートのロジック自体はインスタンス状態に強く依存しているため、
-        # そのまま流用はできず、同じ設計をコピー＆適応している）。
-        # - _all_ng_rows：_fetch_ng_list_rows() の全件結果（フィルタ前）。
-        # - _ng_filter_vars：列key -> テキスト部分一致フィルタ入力欄のStringVar。
-        # - _ng_checkbox_filters：列key -> 選択済み値の集合（チェックボックス式）。
-        # - _ng_checkbox_buttons：列key -> ▼ボタンウィジェット。
-        # - _ng_col_index：列key -> rowタプル内でのインデックス。
+        # NG 一覧の絞り込み（生産実績入力画面の計画一覧と同じ設計）。_all_ng_rows は絞り込み前の全件、
+        # _ng_checkbox_filters にキーが無い列＝絞り込み無し。
         self._all_ng_rows = []
         self._ng_filter_vars = {}
         self._ng_checkbox_filters = {}
@@ -108,14 +60,8 @@ class NgInputWindow(tk.Toplevel):
         self.title("NG（仕損）入力")
         self.geometry("1150x600")
         center_window(self, parent)
-        # 開いた直後から最大化状態にする（2026-10-07追加）。center_window()が
-        # 設定した"1150x600"＋中央座標は、Windowsの最大化/復元の仕組みにより
-        # 「復元後（最大化解除後）の既定サイズ・位置」としてそのまま使われる
-        # （state("zoomed")を解除すると、この直前のgeometry()の値に戻る）。
-        # center_window()内部のwithdraw()〜deiconify()は非表示のまま行われる
-        # ため、ここでstate("zoomed")を呼んでも「小さく表示されてから広がる」
-        # ような見え方にはならない。タイトルバーは残る（Windowsの通常の
-        # 最大化と同じ状態）。
+        # 開いた直後に最大化する。直前の geometry() の値が、最大化を解除したときの大きさと位置になる。
+        # center_window() は非表示のまま位置を決めるので、「小さく出てから広がる」動きにはならない。
         self.state("zoomed")
 
         self.create_widgets()
@@ -172,8 +118,7 @@ class NgInputWindow(tk.Toplevel):
                 ("consumed_qty", "消費数量（NG数×員数）", 180, tk.E),
             ],
             height=10,
-            # 消費数量のみダブルクリックで編集可能にする（96コード列は誤って
-            # 書き換えてDBに保存される事故を防ぐため編集不可のまま）。
+            # 消費数量だけを編集できる（96コードを誤って書き換えて保存する事故を防ぐ）。
             editable_columns={"consumed_qty"},
         )
 
@@ -205,12 +150,7 @@ class NgInputWindow(tk.Toplevel):
         PartsNgReportWindow(self)
 
     def _create_ng_list_widgets(self, right_frame):
-        """
-        右ペイン（NG一覧）のウィジェットを構築する。ui.kitting_production_entry.py の
-        計画一覧（create_widgets()内、tree_plan_list関連部分）と同じ構成
-        （絞り込みエリア→Treeview→水平/垂直スクロールバー→更新ボタン、のpack順）を
-        NG一覧用に再実装したもの。
-        """
+        """右ペイン（NG 一覧）を作る（生産実績入力画面の計画一覧と同じ構成）。"""
         cols_ng = self.NG_LIST_COLUMNS
         self._ng_col_index = {key: i for i, key in enumerate(cols_ng)}
 
@@ -282,11 +222,7 @@ class NgInputWindow(tk.Toplevel):
         hsb_ng = ttk.Scrollbar(right_frame, orient="horizontal", command=self.tree_ng_list.xview)
         self.tree_ng_list.configure(xscrollcommand=hsb_ng.set)
 
-        # pack順序：ui.kitting_production_entry.py の計画一覧と同じ理由により、
-        # ボタン行→水平スクロールバーの順でside=tk.BOTTOMにpackする
-        # （Tkのpackはpackを呼んだ順にcavityを消費するため、ボタンを先に確保しないと
-        # 水平スクロールバーがウィンドウ最下端を先に取ってしまい、ボタンとの間に
-        # 割り込んで視覚的に切り離された配置になる）。
+        # pack 順の罠: ボタン行→水平スクロールバーの順に side=BOTTOM で pack する（逆だと、スクロールバーがボタンとの間に割り込む）。
         ng_action_frame = ttk.Frame(right_frame)
         ng_action_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(5, 0))
         ttk.Button(ng_action_frame, text="更新", command=self.load_ng_list).pack(
@@ -313,20 +249,8 @@ class NgInputWindow(tk.Toplevel):
 
     def on_ng_list_double_click(self, event):
         """
-        NG一覧の行をダブルクリックすると、その行のkitting_list_no（計画あり）または
-        file_no＋生産面（計画外、is_unplanned列で判定）を左ペインの検索欄へ反映し、
-        on_expand()（「展開」ボタンと同じ処理）を自動実行する。
-
-        NG数量（entry_ng_qty）はここでは変更しない。未入力・0以下の場合は
-        on_expand()側の既存バリデーションがそのまま働き、通常の「展開」操作時と
-        同じ入力エラーメッセージが表示される。
-
-        計画あり行の場合、NG一覧は既にlot_no列（models.scrap_records.
-        list_scrap_summary_by_kitting_no()等でkitting_list_noとあわせて集計済み）を
-        持っているため、on_expand()へ渡す。実DBで同一kitting_list_noが複数の
-        異なるlot_noにまたがって存在するケースが478件確認されており、これにより
-        曖昧な単体検索（search_plan_by_kitting_no(kitting_list_no)のみ）を経由せず、
-        一意に計画を特定できる。計画外行はlot_noを持たないため渡さない。
+        NG 一覧の行をダブルクリックすると、その計画（計画外なら file_no＋生産面）を検索欄に入れて展開する。
+        NG 数量は変えない（未入力なら通常どおり入力エラーになる）。計画ありの行は lot_no も渡す（kitting_list_no は重複するため）。
         """
         row_id = self.tree_ng_list.identify_row(event.y)
         if not row_id:
@@ -352,10 +276,7 @@ class NgInputWindow(tk.Toplevel):
 
     def _get_selected_ng_row_identity(self):
         """
-        NG一覧（tree_ng_list）で選択中の行から、models.ng_exclusion_listの
-        識別キー（kitting_list_no, side, lot_no）を取り出す。選択が無い場合は
-        警告を表示してNoneを返す。生産面が「面1」「面2」の形式でない場合も
-        （通常発生しない想定だが念のため）エラーを表示してNoneを返す。
+        選択中の行から、対象外リストの識別キー (kitting_list_no, side, lot_no) を取り出す。選択が無い・生産面が想定外なら None。
         """
         sel = self.tree_ng_list.selection()
         if not sel:
@@ -376,16 +297,11 @@ class NgInputWindow(tk.Toplevel):
 
     def _prompt_ng_exclusion_reason(self):
         """
-        対象外にする理由（任意入力）を尋ねる簡単なモーダルダイアログ。
-        OKで理由文字列（空欄ならNone）を返し、キャンセル（ウインドウを閉じる
-        場合も含む）時はFalseを返す（Noneは「理由未入力」を表すため、
-        キャンセルとの区別にFalseの値を用いる）。
+        対象外にする理由（任意）を尋ねる。OK なら理由（空欄なら None）、キャンセルなら False（None と区別するため）。
         """
         result = {"confirmed": False, "reason": ""}
 
-        # selfが最小化状態だと、transient(self)したダイアログがstate()="withdrawn"
-        # のまま実際には表示されない（ui.plan_candidate_dialog._show_candidate_list_dialog()
-        # と同じ理由・同じ対策、UI_WORKFLOW_FIXES_NOTES.md参照）。
+        # 最小化中だと transient のダイアログが表示されないため、先に元に戻す（UI_WORKFLOW_FIXES_NOTES.md）。
         if self.state() == "iconic":
             self.deiconify()
 
@@ -422,12 +338,7 @@ class NgInputWindow(tk.Toplevel):
         return result["reason"] or None
 
     def on_mark_ng_excluded(self):
-        """
-        NG一覧で選択中の行を「対象外」として登録する（models.ng_exclusion_list.
-        mark_ng_excluded()）。理由は_prompt_ng_exclusion_reason()で任意入力させる
-        （キャンセル時は何もしない）。登録後は一覧を再取得し、「対象外」列に
-        反映する。
-        """
+        """選択中の行を「対象外」にする（理由は任意入力。キャンセルなら何もしない）。"""
         identity = self._get_selected_ng_row_identity()
         if identity is None:
             return
@@ -447,12 +358,7 @@ class NgInputWindow(tk.Toplevel):
         self.load_ng_list()
 
     def on_unmark_ng_excluded(self):
-        """
-        NG一覧で選択中の行の「対象外」指定を解除する
-        （models.ng_exclusion_list.unmark_ng_excluded()）。元々対象外でなかった
-        行に対して呼んでも何も起きない（unmark_ng_excluded()側で無害）ため、
-        事前の状態確認は行わない。
-        """
+        """選択中の行の「対象外」を解除する（対象外でない行に呼んでも害は無いので、状態は確かめない）。"""
         identity = self._get_selected_ng_row_identity()
         if identity is None:
             return
@@ -476,15 +382,8 @@ class NgInputWindow(tk.Toplevel):
 
     def on_open_scrap_correction(self):
         """
-        NG一覧で選択中の行のscrap_records明細（96コード単位）を、個別に
-        修正・削除できるui.scrap_correction_window.ScrapCorrectionWindowで開く。
-        _get_selected_ng_row_identity()で選択行から(kitting_list_no, side, lot_no)を
-        取得し、そのままproduction_side指定として渡す（同一kitting_list_no・lot_no
-        でも面ごとにscrap_recordsのグループが分かれているため、選択行の面だけに
-        絞り込んだ明細を表示する）。
-
-        on_updated=self.load_ng_listにより、修正画面で数量修正・削除を行うたびに
-        NG一覧側のpart_count/record_count/NG数量等の集計表示も即座に更新される。
+        選択中の行の scrap_records 明細（96コード単位）を修正画面で開く。面ごとに分かれているので、その面だけを表示する。
+        修正のたびに NG 一覧の集計も更新する（on_updated=self.load_ng_list）。
         """
         identity = self._get_selected_ng_row_identity()
         if identity is None:
@@ -498,17 +397,11 @@ class NgInputWindow(tk.Toplevel):
 
     def on_expand(self, lot_no=None):
         """
-        lot_no：呼び出し元（NG一覧のダブルクリック等）が既にlot_noを把握している
-        場合に渡す。指定があれば_expand_from_kitting_no()経由で
-        search_plan_by_kitting_no(kitting_no, lot_no)による一意特定の経路を使う。
-        省略時（検索欄への直接入力による「展開」ボタン操作）は従来通り
-        曖昧な単体検索のまま（次のステップ：候補選択UIで対応予定）。
-        ファイルNo.＋生産面検索（計画外）はlot_noを扱わないため無関係。
+        lot_no: 呼び出し元が lot_no を把握していれば渡す（一意に特定する）。省略時は _expand_from_kitting_no() が候補を選ばせる。
         """
         kitting_no = self.entry_kitting_no.get().strip()
         if kitting_no:
-            # キッティングリストNo.が入力されていれば、従来通り計画あり登録として扱う
-            # （ファイルNo.欄に何か入っていても無視する＝キッティングNo.優先）。
+            # キッティングリストNo.があれば、計画ありとして扱う（ファイルNo.欄は無視する）。
             self._expand_from_kitting_no(kitting_no, lot_no=lot_no)
             return
 
@@ -526,18 +419,8 @@ class NgInputWindow(tk.Toplevel):
 
     def _resolve_ng_qty(self, kitting_list_no, side, lot_no):
         """
-        NG数量Entryが空欄の場合、現在の申告（models.ng_declarations、生産実績
-        入力画面 ui.kitting_production_entry.py で申告済み。get_ng_declaration()は
-        report_dateを問わず「1計画・面＝1レコード」の現在値を返す）があれば
-        自動的にEntryへ表示した上でその値を使う。Entryに既に値が入力されていれば
-        そちらを優先する（申告値と異なる枚数で展開したい場合に上書きできるように
-        するため）。
-
-        lot_no：計画あり（1a）の場合は選択中の計画のlot_no、計画外（1b）の場合は
-        None（get_ng_declaration()側でlot_no=NULLの申告のみに絞り込まれる）。
-
-        数値として不正・0以下の場合はエラーメッセージを表示してNoneを返す
-        （呼び出し元はNoneを受け取ったら展開処理を中断すること）。
+        NG 数量の欄が空なら、現在の NG 申告（日付を問わない「1計画・面＝1レコード」）の値を入れて使う。欄に値があればそちらを優先する。
+        lot_no は計画ありなら計画の lot_no、計画外なら None。不正・0以下ならエラーを出して None（呼び出し元は展開を中断すること）。
         """
         text = self.entry_ng_qty.get().strip()
         if not text:
@@ -561,28 +444,9 @@ class NgInputWindow(tk.Toplevel):
 
     def _run_bom_expansion_async(self, work_fn, on_success):
         """
-        BOMService.expand_scrap_to_parts()（共有フォルダへのファイルアクセスを
-        伴い得るため実行時間が読めない）を非同期化する共通ヘルパー。
-        ui.kitting_plan_import.KittingPlanImportWindow.on_start_import()等で
-        確立済みのLoadingWindow＋threading.Thread(daemon=True)＋queue.Queue＋
-        self.after(200,...)ポーリングパターンをそのまま踏襲する。
-
-        呼び出し元（_expand_from_kitting_no()・_expand_from_file_no()）は、
-        DB検索・入力検証・候補選択ダイアログ／実装ライン選択ダイアログ
-        （いずれもTkinterウィジェット操作を伴うためUIスレッドで完結させる
-        必要がある）をあらかじめ済ませた上で、BOM展開部分のみをwork_fn
-        （引数なしのcallable、成否に関わらず戻り値または例外で結果を返す）
-        として渡す。
-
-        on_success(parts)：展開成功時、UIスレッド上で呼ばれるコールバック
-        （CheckableTreeviewへの反映等はここで行う）。
-
-        FileNotFoundError/ValueError（BOMService側の既知のエラー、file_no
-        未整備・複数K行検出等）はここで捕捉し、従来と同じ文言のエラー
-        ダイアログを表示する。それ以外の予期しない例外はself.after()の
-        コールバック内で再送出し、Tkinterの通常の例外報告に委ねる
-        （元のコードも同様にFileNotFoundError/ValueError以外は捕捉して
-        いなかったため、挙動を変えていない）。
+        BOM 展開（共有フォルダを読むので時間が読めない）を別スレッドで実行する共通処理。
+        ダイアログを伴う計画の特定・入力検証は、呼び出し元が UI スレッドで先に済ませ、展開だけを work_fn で渡す。
+        FileNotFoundError・ValueError は既知のエラーとして従来の文言で表示し、それ以外は Tkinter の通常の例外報告に任せる。
         """
         loading = LoadingWindow(self, message="BOM展開中です（共有フォルダへアクセスしています）…")
         result_queue = queue.Queue()
@@ -619,23 +483,9 @@ class NgInputWindow(tk.Toplevel):
 
     def _expand_from_kitting_no(self, kitting_no, lot_no=None):
         """
-        キッティングリストNo.検索（計画あり）での展開。
-
-        lot_no：呼び出し元が既にlot_noを把握している場合に渡すと、
-        search_plan_by_kitting_no(kitting_no, lot_no)がfind_plan_item_by_kitting_no()
-        を(kitting_list_no, lot_no)で呼び一意に計画を特定する。
-
-        省略時（検索欄への直接入力による「展開」操作）で、該当kitting_no に複数の
-        lot_no候補がある場合は、ui.plan_candidate_dialog.select_plan_candidate()
-        でユーザーに選択させ、選ばれたlot_noで改めて検索し直す（候補が1件のみの
-        場合はダイアログを経由せず従来通りそのまま確定する。ui.plan_candidate_dialog
-        は元々、生産実績入力画面 ui.kitting_production_entry.KittingProductionEntryWindow
-        と共用するために切り出したもの。同画面はキッティングリストNo.検索欄を廃止し
-        計画一覧からの選択に一本化したため、現在この経路を使うのは本画面のみ）。
-
-        候補選択ダイアログまでの計画特定・入力検証はUIスレッドで同期的に行い、
-        実際のBOM展開（_bom_service.expand_scrap_to_parts()、共有フォルダへの
-        アクセスを伴い得る）のみを_run_bom_expansion_async()で非同期化する。
+        キッティングリストNo.での展開（計画あり）。lot_no があれば一意に特定する。
+        無ければ、lot_no の候補が複数あるときに ui.plan_candidate_dialog で選ばせる（候補が1件ならそのまま）。
+        計画の特定までは UI スレッドで行い、BOM 展開だけを非同期にする。
         """
         plan, candidates = search_plan_by_kitting_no(kitting_no, lot_no)
         if candidates is not None:
@@ -710,16 +560,10 @@ class NgInputWindow(tk.Toplevel):
         )
 
     def _select_mounting_line(self, lines):
-        """
-        複数の実装ライン候補から使用するラインをユーザーに1つ選ばせる
-        モーダルダイアログ。キャンセル時は None を返す
-        （呼び出し元は展開処理を中断すること）。
-        """
+        """複数の実装ラインから1つを選ばせるモーダルダイアログ。キャンセルなら None（呼び出し元は展開を中断すること）。"""
         selected = {"value": None}
 
-        # selfが最小化状態だと、transient(self)したダイアログがstate()="withdrawn"
-        # のまま実際には表示されない（ui.plan_candidate_dialog._show_candidate_list_dialog()
-        # と同じ理由・同じ対策、UI_WORKFLOW_FIXES_NOTES.md参照）。
+        # 最小化中だと transient のダイアログが表示されないため、先に元に戻す（UI_WORKFLOW_FIXES_NOTES.md）。
         if self.state() == "iconic":
             self.deiconify()
 
@@ -757,22 +601,9 @@ class NgInputWindow(tk.Toplevel):
 
     def _expand_from_file_no(self, file_no, side):
         """
-        ファイルNo.＋生産面検索（計画外）での展開。kitting_plan_itemsを一切参照しない
-        （BOMService.expand_scrap_to_parts()はfile_no・sideのみで完結する設計のため）。
-        計画が無いため、planned_qty超過警告は行わない。
-
-        計画（mounting_line）を持たないため、TSV上の実装ラインをBOMService.
-        list_mounting_lines()で確認し、複数存在する場合は展開前にユーザーに
-        選択させる（1件のみの場合は選択UIを出さずそのまま使う。0件の場合は
-        mounting_line=Noneのまま渡し、BOMService._calculate_bom()の
-        デフォルト方針＝最初に見つかったライン1本分に委ねる）。
-
-        list_mounting_lines()・実装ライン選択ダイアログはUIスレッドで同期的に
-        行い（ダイアログ表示を伴うため）、実際のBOM展開（_bom_service.
-        expand_scrap_to_parts()）のみを_run_bom_expansion_async()で非同期化する
-        （list_mounting_lines()自体も共有フォルダのTSV読み込みを伴うが、今回の
-        対象はexpand_scrap_to_parts()/expand_wip_to_parts()のみのため、
-        list_mounting_lines()は従来通り同期のままとした）。
+        ファイルNo.＋生産面での展開（計画外）。計画を参照しないので、予定生産数の超過警告は出さない。
+        TSV の実装ラインが複数あれば選ばせる（1件ならそのまま、0件なら None で BOMService の既定に任せる）。
+        実装ラインの一覧取得と選択は UI スレッドで行い、BOM 展開だけを非同期にする。
         """
         ng_qty = self._resolve_ng_qty(file_no, side, None)
         if ng_qty is None:
@@ -832,15 +663,8 @@ class NgInputWindow(tk.Toplevel):
 
     def load_parts_tree(self, parts, ng_qty):
         """
-        展開結果をCheckableTreeviewへ反映する。呼び出しのたびに前回の内容を
-        clear()してから作り直す（NG一覧からの再展開等、on_expand()が複数回
-        呼ばれる場合に古い行が残らないようにするため）。デフォルト全選択状態
-        （insert_row()のchecked=True）で表示する。
-
-        item_type="board"（基板自身、K行の96コード。BOMService._calculate_bom()
-        参照）の行は、区分列に「基板」と表示して通常部品と区別する（96コード列
-        自体への文字列付加は、DB保存時の96コードを誤って書き換える事故に
-        つながるため避け、別列での区別とした）。
+        展開結果を表示し直す（前の内容を消してから作る。全行チェック済み）。
+        基板自身の行（item_type="board"）は区分列に「基板」と出す（96コード列に文字を足すと、保存時に96コードを書き換えてしまうため）。
         """
         self.tree.clear()
         for part in parts:
@@ -854,11 +678,8 @@ class NgInputWindow(tk.Toplevel):
 
     def on_register(self):
         """
-        選択された部品を登録する。対象kitting_list_noの既存scrap_records（あれば）は
-        全て削除した上で、今回チェック済み（選択済み）の部品のみを登録し直す
-        （delete-then-insert。「後からの展開・登録を正として上書きする」ため）。
-        既存レコードがある場合＝上書きになる場合のみ、事前に確認ダイアログを表示する
-        （初回登録の場合は確認不要）。
+        チェックした部品を登録する。その計画・面の既存の scrap_records を削除してから登録し直す（後からの展開・登録を正とする）。
+        上書きになる場合だけ、事前に確認する。
         """
         if not self.current_plan:
             return
@@ -877,10 +698,7 @@ class NgInputWindow(tk.Toplevel):
 
         records = []
         for iid in checked_iids:
-            # 列位置ではなくcolumn_index（col_key→インデックス）経由で取得する
-            # ことで、区分列（item_type_label）等、将来の列追加・順序変更の
-            # 影響を受けない（以前は固定位置での3要素unpackだったため、列を
-            # 追加すると要素数不一致で例外になっていた）。
+            # 列の位置ではなく列名で取る（位置で取り出していたとき、列を足して要素数が合わず例外になった）。
             part_no = self.tree.get_row_value(iid, "part_no")
             consumed_qty_text = self.tree.get_row_value(iid, "consumed_qty")
             try:
@@ -920,17 +738,8 @@ class NgInputWindow(tk.Toplevel):
 
     def _get_bulk_expand_targets(self):
         """
-        「一括展開・登録」の対象行（status="未展開" かつ 対象外でない）を抽出する。
-
-        _fetch_ng_list_rows()と同じ判定ロジック（申告はあるがscrap_records集計が
-        無い＝未展開）を使うが、Treeview表示用に整形済みの文字列（"面1"等）ではなく
-        production_side（int）・ng_qty（float）を生のまま使いたいため、
-        list_ng_declarations_latest()等の戻り値を直接参照する
-        （self._all_ng_rowsは表示用に整形済みのため、ここでは使わない）。
-
-        戻り値：list_ng_declarations_latest()の要素（{"kitting_list_no", "file_no",
-        "production_side", "lot_no", "ng_qty", "report_date", "is_unplanned"}）の
-        うち対象のもののリスト。
+        「一括展開・登録」の対象（未展開で、対象外でない行）を返す。表示用に整形した _all_ng_rows ではなく、
+        list_ng_declarations_latest() の生の値（production_side は int、ng_qty は float）を使う。
         """
         declarations = {
             (d["kitting_list_no"], d["lot_no"] or "", d["production_side"]): d
@@ -953,20 +762,9 @@ class NgInputWindow(tk.Toplevel):
 
     def _bulk_expand_and_register_one(self, target, report_date):
         """
-        一括展開・登録の対象1行分を処理する（バックグラウンドスレッドから
-        呼ばれるため、Tkinterウィジェットには一切触れない）。
-
-        _expand_from_kitting_no()・_expand_from_file_no()と同じ計画解決・BOM展開
-        ロジックを踏襲するが、以下の点が異なる：
-          - 候補が複数ある場合（計画あり：search_plan_by_kitting_no()がcandidatesを
-            返す／計画外：list_mounting_lines()が2件以上返す）、バックグラウンド
-            スレッドからは選択ダイアログを表示できないため、その行はエラーとして
-            扱い（呼び出し元でcatchされる）、他の行の処理は継続する。
-          - チェック確認のステップは行わず、展開された全部品をそのまま
-            replace_scrap_records()で登録する（対象は「未展開」＝既存の
-            scrap_recordsが無い行のみのため、実質的に新規追加になる。
-            on_register()の上書き確認ダイアログも、対象がバックグラウンド処理
-            であることも踏まえて出さない）。
+        一括展開・登録の1行分（バックグラウンドで実行するので、ウィジェットには触れない）。
+        候補が複数ある行は、ダイアログを出せないのでエラーにする（ほかの行は続ける）。
+        チェックの確認はせず、展開した全部品を登録する（対象は未展開の行なので、実質は新規追加）。
         """
         kitting_list_no = target["kitting_list_no"]
         lot_no = target["lot_no"]
@@ -1032,12 +830,7 @@ class NgInputWindow(tk.Toplevel):
 
     def _run_bulk_expand_worker(self, targets, report_date):
         """
-        対象行を1件ずつ処理し、1件のエラーで処理全体を止めず他の行の処理を継続する
-        （services.production_import_service.import_production_csv()等、既存の
-        CSV取込系機能と同じ「1行の異常が他行に影響しない」設計）。
-
-        戻り値：{"total", "success_count", "failures"}。failuresは
-        [{"label": "表示用の行の識別子", "error": "エラーメッセージ"}, ...]。
+        対象行を1件ずつ処理する。1件のエラーで全体を止めない。戻り値は {"total", "success_count", "failures"}。
         """
         success_count = 0
         failures = []
@@ -1079,22 +872,8 @@ class NgInputWindow(tk.Toplevel):
 
     def on_bulk_expand_register(self):
         """
-        NG一覧の「未展開」かつ「対象外」でない行をすべて一括で展開・登録する
-        （対象外を除く未展開項目の一括処理。個別のチェック確認ステップは行わず、
-        展開された全部品をそのまま登録する）。
-
-        BOM展開・DB登録は件数によっては時間がかかり得るため、既存の非同期パターン
-        （LoadingWindow＋threading.Thread(daemon=True)＋queue.Queue＋
-        self.after(200,...)ポーリング）を適用する。_run_bom_expansion_async()を
-        そのまま使わないのは、あちらが単一work_fn／単一on_successの1件専用設計
-        であるのに対し、こちらは行ごとの成功・失敗を個別に追跡し、1件のエラーで
-        全体を止めずに処理を継続する必要があるため。
-
-        ui.kitting_plan_import.KittingPlanImportWindow._run_import_in_thread()と
-        同様、ワーカースレッド内で予期しない例外が発生した場合も
-        （_run_bulk_expand_worker()自体のバグ等、行単位のtry/exceptで捕捉し
-        きれない想定外の事態）、キューへ(False, エラー内容)を渡してUIスレッド側で
-        エラーダイアログを表示する（アプリごと落ちることを防ぐ）。
+        未展開で対象外でない行を、すべて一括で展開・登録する（チェックの確認はしない）。別スレッドで実行する。
+        _run_bom_expansion_async() は1件用なので使わず、行ごとの成否を追う。想定外の例外もキュー経由でダイアログに出す（アプリを落とさない）。
         """
         targets = self._get_bulk_expand_targets()
         if not targets:
@@ -1188,11 +967,7 @@ class NgInputWindow(tk.Toplevel):
         )
 
     def open_ng_checkbox_filter_popup(self, col_key):
-        """
-        ロットNo./基板名/file_no/生産面/計画外用の、エクセルのオートフィルタ風
-        チェックボックス式絞り込みポップアップを開く（ui.kitting_production_entry.py の
-        open_plan_checkbox_filter_popup() と同じ設計）。
-        """
+        """ロットNo./基板名/file_no/生産面/計画外 のチェックボックス式絞り込みポップアップを開く（生産実績入力画面と同じ設計）。"""
         label_text = self._ng_filter_labels[col_key]
         col_index = self._ng_col_index[col_key]
 
@@ -1208,9 +983,7 @@ class NgInputWindow(tk.Toplevel):
         current_selection = self._ng_checkbox_filters.get(col_key)
         checked_values = set(full_values) if current_selection is None else set(current_selection)
 
-        # selfが最小化状態だと、transient(self)したポップアップがstate()="withdrawn"
-        # のまま実際には表示されない（ui.plan_candidate_dialog._show_candidate_list_dialog()
-        # と同じ理由・同じ対策、UI_WORKFLOW_FIXES_NOTES.md参照）。
+        # 最小化中だと transient のダイアログが表示されないため、先に元に戻す（UI_WORKFLOW_FIXES_NOTES.md）。
         if self.state() == "iconic":
             self.deiconify()
 
@@ -1297,41 +1070,10 @@ class NgInputWindow(tk.Toplevel):
     @staticmethod
     def _fetch_ng_list_rows():
         """
-        NG一覧のDBアクセス部分のみを行う（Tkinterウィジェットには一切触れない）。
-
-        models.ng_declarations.list_ng_declarations_latest()（申告、kitting_list_no・
-        lot_no・production_side単位の最新1件）と
-        models.scrap_records.list_scrap_summary_by_kitting_no()（BOM展開済み、
-        同じくkitting_list_no・lot_no・production_side単位）を、
-        (kitting_list_no, lot_no, production_side) キーでアプリ層マージし、
-        以下の「状態」を列として付与する：
-          - 未展開：申告のみあり、まだBOM展開・scrap_records登録されていない
-          - 展開済み：申告・展開済みデータの両方がある
-          - 展開済み（申告記録なし）：scrap_recordsのみあり、申告記録がない
-            （本機能導入前に登録された既存データ等）
-
-        マージキーにlot_noを含める理由：実DBで同一kitting_list_noが複数の異なる
-        lot_noにまたがって存在するケースが478件確認されており、含めないと
-        別ロットの申告・展開済みデータが1行に誤って混同されてしまう。
-
-        lot_noは、list_ng_declarations_latest()・list_scrap_summary_by_kitting_no()
-        側で既にkitting_list_no・production_sideとあわせて集計済みの値をそのまま
-        使う（改めて計画を検索し直さない）。is_unplanned=0（計画あり）の行のみ、
-        そのlot_noを使って models.kitting_plan.find_plan_item_by_kitting_no()
-        （kitting_list_no・lot_noの両方を渡すため一意に特定できる）で基板名を
-        補完する（list_active_plan_items()は「1回目除外」ロジックがあるため
-        使わない）。is_unplanned=1（計画外）の行は計画詳細が存在しないため
-        基板名は空欄のままとする。
-
-        対象外マーク（models.ng_exclusion_list）：list_ng_exclusions()で全件を
-        取得し、(kitting_list_no, lot_no, production_side) キーで突き合わせて
-        「対象外」列を付与する。「未展開」の行が対象外にされた場合も、一覧からは
-        除外せず「対象外」列で区別表示する方針とした（一覧から消してしまうと、
-        対象外にした事実そのものが見えなくなり、解除操作の導線も失われるため。
-        フィルタ・チェックボックス絞り込みで「対象外」列を使って非表示にする
-        ことは可能）。
-
-        戻り値：Treeviewへそのまま渡せる values タプルのリスト。
+        NG 一覧の DB アクセスだけを行う（ウィジェットに触れない）。
+        NG 申告と展開済み（scrap_records）を (kitting_list_no, lot_no, production_side) で合わせ、状態を付ける:
+        未展開（申告だけ）／展開済み（両方）／展開済み（申告記録なし）（展開済みだけ。機能の導入前のデータなど）。
+        キーに lot_no を含めるのは kitting_list_no が重複するため。対象外の行も一覧から消さず、「対象外」列で示す（解除の導線を残す）。
         """
         declarations = {
             (d["kitting_list_no"], d["lot_no"] or "", d["production_side"]): d
