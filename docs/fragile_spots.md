@@ -15,7 +15,7 @@ CLAUDE.md「壊しやすい箇所」の根拠。2026-10-09 時点（HEAD c08a88a
   - D-101 より前は、一覧の状態表示と Shift+S 本体が別々の基準で判定していた（CHANGELOG 1.2.0）
   - production_import_staging_window.py: 変更14コミット、2416行（行数2位）
   - production_import_service.py: 変更9コミット
-- 注意: 判定の優先順位は `evaluate_auto_register_eligibility()` の docstring にある。Shift+S と Shift+Q の差は日付の許容日数の定数だけ（同ファイル L141 付近のコメント）
+- 注意: 判定の優先順位は `evaluate_auto_register_eligibility()` の docstring にある。Shift+S と Shift+Q の差は日付の許容日数の定数だけ（同ファイルの定数 `AUTO_REGISTER_MAX_DAYS_SHIFT_S` のコメント）
 
 ## 2. ロット完成数の集計キー
 
