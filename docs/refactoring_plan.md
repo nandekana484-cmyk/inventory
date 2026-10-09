@@ -24,6 +24,14 @@
   - `_build_registration_preview()` の分類のコメント（b・c なら確認ダイアログで理由を示す）
 - ほかにも同じ仮番号がある（2026-10-09 時点、計34か所）: `models/kitting_plan.py`（8）、`models/production_side_master.py`（7）、`ui/production_side_master_window.py`（6）、`ui/kitting_plan_import.py`（3）、`ui/production_import_staging_window.py`（3）、`ui/main_window.py`（2）、`services/master_merge_service.py`（1）、`services/production_import_service.py`（1）
 
+### CANONICAL §7 の「C:\python310」と、この PC の状態の食い違い
+
+CANONICAL_DESIGN_DECISIONS.md §7（実行環境・依存パッケージのドリフト問題）と run_app.bat のコメントは、システムの Python を `C:\python310` として書いている（§7 の対応1は `C:\python310\python.exe -m pip install -r requirements.txt`）。CANONICAL は書き換えていない。
+
+- 2026-10-09 時点のこの PC には `C:\python310` が無い。PATH 上の Python は `C:\Users\nande\AppData\Local\Programs\Python\Python310\python.exe`（3.10.11）
+- 同じ日の時点で、リポジトリ直下の `.venv` も無く、run_app.bat で起動できなかった。`.venv` を作り直して `inventory_app/requirements.txt` を入れ、起動できることを確認した（`.venv` も上の Python 3.10.11 から作った）
+- §7 の記録が別の PC（2拠点のもう一方）のものなのか、この PC で Python を入れ直したのかは未確認。どちらかを確かめて、§7 に「どの PC の話か」を書き足すか、記述を直す
+
 ### D-5x・D-8x の仮番号
 
 D-9x と同じく、D番号が決まる前に書かれた仮番号。どれに当たるかは未確認（2026-10-09 時点、計11か所）。
