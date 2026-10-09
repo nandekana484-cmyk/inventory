@@ -32,6 +32,21 @@ CANONICAL_DESIGN_DECISIONS.md §7（実行環境・依存パッケージのド�
 - 同じ日の時点で、リポジトリ直下の `.venv` も無く、run_app.bat で起動できなかった。`.venv` を作り直して `inventory_app/requirements.txt` を入れ、起動できることを確認した（`.venv` も上の Python 3.10.11 から作った）
 - §7 の記録が別の PC（2拠点のもう一方）のものなのか、この PC で Python を入れ直したのかは未確認。どちらかを確かめて、§7 に「どの PC の話か」を書き足すか、記述を直す
 
+### opencv-python-headless が 5 系になった
+
+2026-10-09 に `.venv` を作り直したとき、`inventory_app\requirements.txt`（`>=4.9.0`）から opencv-python-headless 5.0.0.93 が入った（`requirements.lock.txt` に記録）。それまでは 4 系で動かしていたと思われる。
+
+- 使っているのは PDF 読み取りの OCR の前処理（`services/pdf_ocr_service.py` の `preprocess_image_for_ocr()`・`_deskew()`。bilateralFilter・CLAHE・adaptiveThreshold・minAreaRect など）
+- メニューの「PDF読み取り」は常に無効（D-85）なので、画面から動作を確かめられない。有効にするときに、OCR の前処理が以前と同じ結果になるかを確認する（`docs/domain/pdf_ocr.md` の調整値は 4 系で決めたもの）
+
+### リポジトリ直下の requirements.txt
+
+リポジトリ直下の `requirements.txt` は古い pip freeze（UTF-16、版を `==` で固定）で、`inventory_app\requirements.txt` と紛らわしい。
+
+- PDF 読み取りのパッケージ（pdfplumber・pytesseract・pdf2image・opencv-python-headless）が入っていない
+- run_app.bat と `docs/setup.md` が使うのは `inventory_app\requirements.txt`。版の固定は `inventory_app\requirements.lock.txt` で行う
+- 削除するか、整理する（どちらにするかは未決定）
+
 ### D-5x・D-8x の仮番号
 
 D-9x と同じく、D番号が決まる前に書かれた仮番号。どれに当たるかは未確認（2026-10-09 時点、計11か所）。
