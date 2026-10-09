@@ -1,79 +1,7 @@
-# ui/unified_report_window.py
 """
-日報（旧DailyReportWindow）・月報（旧MonthlyReportWindow）を1つの画面に
-統合したもの。
-
-経緯：
-- 旧DailyReportWindowは、起動直後（build_daily_report()）を除けば、日付を
-  変更するたびにbuild_monthly_report(selected_date, selected_date)を呼んで
-  おり、実質的に「1日だけの月報」として動いていた。
-- 旧DailyReportWindowはconfigure_status_color_tags()を一度も呼んでおらず、
-  「確認事項」欄の赤字・オレンジ字（needs_review/shortfall）による警告表示が
-  機能していないバグがあった（調査で発見、隔離コピー上でtag_configure()の
-  foregroundが空文字のままであることを実機確認済み）。
-
-期間指定は「今日/今週/今月/カスタム範囲」の4択に統一し、いずれの場合も
-build_monthly_report(from_date, to_date)を呼ぶことで上記2点を解消した。
-
-旧ui/monthly_report_window.py::MonthlyReportWindowは、本クラスへの機能移植
-完了（仕掛数量抽出・マスタ未登録等3種のCSV出力を含む全機能）を確認した上で、
-2026-10-01に削除した。5種の警告ダイアログ（_show_*_warning_if_any()）・
-仕掛数量抽出（on_extract_wip()）・3種のCSV出力メソッドは、削除前は
-MonthlyReportWindowとロジックが重複していたが、削除により本クラスの
-実装のみが残っている（重複は解消済み）。
-
-5種の警告のオン/オフ切り替え（2026-10-01追加）：self.warning_toggle_vars
-（5つのtk.BooleanVar、デフォルト全てTrue）で管理する。_build_report_rows()
-自体は5種の判定をまとめて1回の処理で行っており、特定の1種だけを計算対象から
-外す作りにはなっていない（評価コスト自体も1ロットあたり数ms程度と軽い、
-既存のベンチマーク参照）ため、計算は常に全て行い、オフにした警告はダイアログ
-表示（_show_*_warning_if_any()の呼び出し）だけを省略する方式を採った
-（on_display()・refresh_report()参照）。
-
-CSV出力ボタン（マスタ未登録・構成基板数超過・構成基板数不一致）は、対応する
-警告のオン/オフとは独立に常に有効なままとした（ボタンの無効化は行わない）。
-理由：警告チェックボックスは「集計のたびにダイアログで知らされたくない」
-という表示上の好みを表すものであり、「その種類の異常を今後一切気にしない」
-という意味ではないと考えたため。たとえば恒常的に件数が多い既知の問題（マスタ
-未登録等）をダイアログでは毎回見たくないが、整備の進捗を確認するために
-CSVで時々書き出したい、という利用シーンを妨げないようにした。self.xxx_
-warningsが空の場合に「対象がありません」と案内する既存の挙動（旧
-MonthlyReportWindowから踏襲）は変更していない。
-
-行の絞り込み（2026-10-01追加）：ui.wip_expansion_window.py・ui.ng_input_window.py
-で確立済みの「テキスト部分一致＋チェックボックス式ポップアップ」パターンを
-踏襲する。絞り込みの軸はロットNo.（部分一致）・状態（一致/不足/超過/未登録/
-構成基板数不一致、チェックボックス式）・NGの有無（あり/なし、チェックボックス
-式）の3つ。「状態」「NGの有無」はTreeviewの表示列には含めない（既存の
-"確認事項"列も同様にTreeview表示列には含まれておらず、色分けタグとCSV/PDF
-出力でのみ表現する既存方針に揃えた）。「状態」はservices.production_service.
-_build_report_rows()が2026-10-01に新設した各行の"status"キー（"match"|
-"shortfall"|"excess"|"unregistered"|"board_count_inconsistent"|None）を、
-ui.lot_progress_window.STATUS_LABELSと同じ日本語ラベルに変換して使う。
-「NGの有無」も同時に新設した"has_ng"キー（models.scrap_records.
-list_scrap_summary_by_kitting_no()・models.ng_declarations.
-list_ng_declarations_latest()を事前に一括取得し、(kitting_list_no, lot_no,
-production_side)単位で存在有無を判定したもの）をそのまま使う。
-
-絞り込みはself.report_rows（集計結果の全件）に対してPython側でフィルタし、
-populate_report_tree()で絞り込み後の行だけを再描画する方式（wip_expansion_
-window.pyのapply_wip_filters()と同じ）。これによりロット単位の縞模様は
-絞り込み後の行だけを対象に再計算される（絞り込みで消えた行の分だけ縞模様の
-境目が変わるのは意図した挙動）。絞り込み後にソート済みだった順序は保持されない
-（populate_report_tree()がself.report_rowsの元の順序で再描画するため）。これは
-ui.wip_expansion_window.py・ui.ng_input_window.py・生産実績入力画面の計画一覧
-（「フィルタ適用後、ソート状態を自動的に再適用する機能は無い」とv1仕様として
-明記済み）と同じ、本アプリ全体で一貫した既存の挙動であり、本画面固有の制約
-ではない。
-
-列の表示/非表示（2026-10-01追加）：列ヘッダーを右クリックすると、
-tk.Menuのチェックボタン項目で表示する列を選べるようにした（Treeviewの
-"displaycolumns"プロパティで実際の表示列を制御する、tkinter標準の仕組み。
-データ自体（columns）は変更しないため、CSV出力・PDF出力は常にself.report_rows
-から全列を出力し、表示設定の影響を受けない。表示列と出力列を独立に保つ
-ことで、「画面では今は要らない列を隠しつつ、出力時は漏れなく記録に残す」
-という使い方ができるようにした。全列を非表示にすることはできない
-（最低1列は残すよう制御する）。
+日報・月報を統合した実績レポート画面。期間（今日/今週/今月/カスタム）を選び、build_monthly_report(from, to) で集計する。
+警告5種のオン/オフ・行の絞り込み・列の表示/非表示・CSV/PDF 出力・仕掛数量抽出を持つ。
+設計と経緯は docs/domain/unified_report.md。
 """
 import csv
 import os
@@ -111,31 +39,14 @@ PERIOD_LABEL_TO_KEY = {
     "カスタム範囲": "custom",
 }
 
-# 列ヘッダーソート（sort_by_column()）で数値として比較する列。
-# board_countは"未登録"という非数値文字列が入り得るため、sort_key()側で
-# 変換失敗時のフォールバックを用意する（ui.lot_progress_window.py::
-# sort_by_column()と同じ考え方）。
+# ソートで数値として比べる列。board_count には「未登録」が入りうるので、sort_key() で変換の失敗に備える。
 _NUMERIC_COLUMNS = {"seq", "board_count", "daily_qty", "order_qty", "lot_completed", "surplus_qty", "lot_remaining"}
 
 
 def compute_period_dates(period_key: str, today: datetime = None):
     """
-    period_key（"today"|"this_week"|"this_month"）から、開始日・終了日
-    （date型）を計算する。"custom"はここでは計算できない
-    （呼び出し元がDateEntryの値をそのまま使うため、Noneを返す）。
-
-    週の起算日：月曜起算とした（ISO 8601・Python標準のdatetime.weekday()の
-    定義（0=月曜）に素直に合わせた。業務上の慣習として日曜起算が使われて
-    いないか、または「今週」の終わりを（まだ来ていない）日曜まで含めるべきか
-    どうかは、今回のスコープでは判断できておらず、以下の通り「開始日は月曜、
-    終了日は今日」という設計を採用した）。
-
-    終了日の扱い：週・月のいずれも、期間の理論上の終わり（週なら日曜、月なら
-    月末）ではなく、「今日」を終了日とする。理由：production_dailyのreport_date
-    に未来の日付が入ることは無い（実績は過去〜当日分しか登録されない）ため、
-    理論上の終わりを終了日にしても表示結果は同じになるが、「今月」を選んだ
-    ときにタイトルへ表示される終了日が月末（まだ来ていない日付）になると
-    誤解を招く可能性があるため、今日までとした。
+    period_key（today/this_week/this_month）から開始日・終了日を返す（custom は None）。
+    週は月曜から。終了日は期間の終わりではなく今日にする（まだ来ていない日付をタイトルに出して誤解させないため。実績は今日までしか無い）。
     """
     today = today or datetime.now()
     today_date = today.date()
@@ -154,13 +65,7 @@ def compute_period_dates(period_key: str, today: datetime = None):
 
 class UnifiedReportWindow(tk.Toplevel):
     """
-    実績レポート画面（日報・月報統合）。期間指定（今日/今週/今月/カスタム範囲）に
-    応じてbuild_monthly_report()を呼び、一覧表示・印刷・印刷プレビュー・
-    PDF出力・CSV出力・仕掛数量抽出・マスタ未登録等3種のCSV出力を行う。
-
-    旧ui/monthly_report_window.py::MonthlyReportWindowが持っていた機能は
-    全て本クラスへ移植済みであることを確認した上で、2026-10-01に同ファイルを
-    削除した（モジュールdocstring参照）。
+    実績レポート画面（日報・月報の統合）。期間に応じて build_monthly_report() を呼び、一覧・印刷・PDF/CSV 出力・仕掛数量抽出・警告の CSV 出力を行う。
     """
     def __init__(self, parent, current_worker=None):
         super().__init__(parent)
@@ -174,9 +79,7 @@ class UnifiedReportWindow(tk.Toplevel):
         self.excess_file_no_warnings = []
         self.board_count_inconsistency_warnings = []
 
-        # 5種の警告のオン/オフ（2026-10-01追加）。デフォルトは全てTrue
-        # （既存の「月報は常に全て表示」という挙動を変えないため）。
-        # キーはon_display()・refresh_report()が参照する際の名前。
+        # 警告5種のオン/オフ。既定はすべてオン（月報は常に全部出していた挙動を変えないため）。
         self.warning_toggle_vars = {
             "inconsistency": tk.BooleanVar(value=True),
             "order_qty_inconsistency": tk.BooleanVar(value=True),
@@ -211,12 +114,7 @@ class UnifiedReportWindow(tk.Toplevel):
 
         ttk.Button(period_frame, text="表示", command=self.on_display).pack(side=tk.LEFT, padx=10)
 
-        # 警告表示のオン/オフ（2026-10-01追加）。計算自体（_build_report_rows()・
-        # evaluate_lot_status()）は5種まとめて1回で行われ、計算コスト自体は
-        # 軽い（既存のベンチマークで1ロットあたり数ms程度）ため、計算は省略せず
-        # 常に行い、ダイアログ表示だけをここでオン/オフする（on_display()・
-        # refresh_report()参照）。CSV出力ボタンはこのチェックボックスとは独立に
-        # 常に有効のまま（CSV出力の扱いについてはモジュールdocstring末尾参照）。
+        # 警告のオン/オフはダイアログの表示だけを切り替える（計算は軽いので常に全部行う）。警告の CSV 出力ボタンは、これと関係なく常に使える。
         warning_frame = ttk.LabelFrame(self, text="警告表示（オン/オフ）", padding=10)
         warning_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
 
@@ -236,9 +134,7 @@ class UnifiedReportWindow(tk.Toplevel):
             warning_frame, text="構成基板数不一致", variable=self.warning_toggle_vars["board_count_inconsistency"],
         ).pack(side=tk.LEFT, padx=5)
 
-        # 行の絞り込み（2026-10-01追加）。ui.wip_expansion_window.py・
-        # ui.ng_input_window.pyの「テキスト部分一致＋チェックボックス式
-        # ポップアップ」パターンを踏襲（モジュールdocstring参照）。
+        # 行の絞り込み（NG一覧・仕掛一覧と同じ「テキスト部分一致＋チェックボックス式」）。
         filter_frame = ttk.LabelFrame(self, text="絞り込み", padding=8)
         filter_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
 
@@ -260,11 +156,8 @@ class UnifiedReportWindow(tk.Toplevel):
         tree_frame = ttk.Frame(self, padding=10)
         tree_frame.pack(expand=True, fill=tk.BOTH)
 
-        # "report_date"（登録日、2026-10-01追加）は、REPORT_HEADERS側で
-        # "確認事項"の直前（インデックス10）に追加したため、ここでも同じ
-        # 位置に追加する必要がある（headers辞書はself._colsとREPORT_HEADERSを
-        # zip()で位置対応させているため、順序がずれるとヘッダー文言が
-        # 1列ずつずれてしまう。"確認事項"は従来通りTreeview表示列には含めない）。
+        # report_date は REPORT_HEADERS と同じ位置（「確認事項」の直前）に置くこと
+        # （見出しは _cols と REPORT_HEADERS を zip で対応させるので、ずれると見出しが1列ずつずれる）。
         self._cols = ("seq", "file_no", "board_name", "board_count", "lot_no", "daily_qty", "order_qty",
                       "lot_completed", "surplus_qty", "lot_remaining", "report_date")
         headers = dict(zip(self._cols, REPORT_HEADERS))
@@ -283,15 +176,11 @@ class UnifiedReportWindow(tk.Toplevel):
             self.tree.column(c, width=widths[c], anchor=tk.W if c in left_aligned else tk.E)
         self.tree.pack(expand=True, fill=tk.BOTH)
         self.tree.bind("<Double-1>", self.on_row_double_click)
-        # 日報側で欠けていたバグ（configure_status_color_tags()の未呼び出し）は
-        # ここで必ず両方呼ぶことで解消する。
+        # 両方必ず呼ぶ（旧日報は configure_status_color_tags() を呼んでおらず、確認事項の色が出なかった）。
         configure_lot_stripe_tags(self.tree)
         configure_status_color_tags(self.tree)
 
-        # 列の表示/非表示（2026-10-01追加）。列ヘッダーの右クリックで
-        # チェックボタン付きメニューを出し、Treeviewの"displaycolumns"
-        # プロパティで表示列を切り替える（データ自体・columns自体は
-        # 変更しないため、CSV/PDF出力には影響しない。モジュールdocstring参照）。
+        # 列の表示/非表示（ヘッダーの右クリック）。displaycolumns だけを変えるので、CSV/PDF 出力は常に全列。
         self._column_visible_vars = {c: tk.BooleanVar(value=True) for c in self._cols}
         self.tree.bind("<Button-3>", self._on_tree_header_right_click)
 
@@ -302,9 +191,7 @@ class UnifiedReportWindow(tk.Toplevel):
         ttk.Button(btn_frame, text="印刷", command=self.on_print).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="PDF出力", command=self.on_export_pdf).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="CSV出力", command=self.on_export_csv).pack(side=tk.LEFT, padx=5)
-        # 以下4ボタンは旧MonthlyReportWindow限定だった機能（2026-09-30に
-        # 統合画面へ移植、2026-10-01に移植元のMonthlyReportWindow自体を削除。
-        # モジュールdocstring参照）。
+        # 以下4つのボタンは、旧月報画面にだけあった機能。
         ttk.Button(btn_frame, text="仕掛数量抽出", command=self.on_extract_wip).pack(side=tk.LEFT, padx=5)
         ttk.Button(
             btn_frame, text="マスタ未登録リストをCSV出力", command=self.on_export_unregistered_board_csv,
@@ -316,19 +203,13 @@ class UnifiedReportWindow(tk.Toplevel):
             btn_frame, text="構成基板数不一致リストをCSV出力", command=self.on_export_board_count_inconsistency_csv,
         ).pack(side=tk.LEFT, padx=5)
 
-        # 初期表示：「今日」を選択済みの状態で、開始日・終了日欄を読み取り
-        # 専用にし、即座に集計する（従来のDailyReportWindow・
-        # MonthlyReportWindowがいずれも開いた瞬間に何かしらの一覧を
-        # 表示していたのに合わせる）。
+        # 初期表示は「今日」で集計する（旧日報・月報も、開いた直後に一覧を出していた）。
         self._apply_period_preset("today")
         self.on_display()
 
     def _apply_period_preset(self, period_key: str):
         """
-        "today"/"this_week"/"this_month"の場合、開始日・終了日欄へ計算結果を
-        セットした上で読み取り専用（state="readonly"）にする。"custom"の
-        場合は編集可能（state="normal"）に戻すのみで、日付の値には触れない
-        （ユーザーが直前まで見ていたカスタム範囲の値をそのまま残す）。
+        today/this_week/this_month なら開始日・終了日を入れて読み取り専用にする。custom なら編集可能に戻すだけで、日付は変えない（直前の範囲を残す）。
         """
         if period_key == "custom":
             self.from_date_entry.config(state="normal")
@@ -368,10 +249,7 @@ class UnifiedReportWindow(tk.Toplevel):
         self._annotate_filter_fields(self.report_rows)
         self.clear_filters()  # 絞り込み条件をリセットした上で再描画する
 
-        # 期間の長さに関わらず常に5種とも計算する（計算自体は軽いため省略しない。
-        # モジュールdocstring参照）が、表示するかどうかは警告表示チェックボックス
-        # （self.warning_toggle_vars）に従う。デフォルトは全てTrueのため、
-        # 何もオフにしない限り従来通り全て表示される（退行なし）。
+        # 警告は常に5種とも計算し、表示するかどうかだけをチェックボックスに従う。
         if self.warning_toggle_vars["inconsistency"].get():
             self._show_inconsistency_warning_if_any()
         if self.warning_toggle_vars["order_qty_inconsistency"].get():
@@ -384,8 +262,7 @@ class UnifiedReportWindow(tk.Toplevel):
             self._show_board_count_inconsistency_warning_if_any()
 
     # ------------------------------------------------------------------
-    # 警告ダイアログ（旧MonthlyReportWindowの同名メソッドと同一ロジック。
-    # モジュールdocstring参照）
+    # 警告ダイアログ
     # ------------------------------------------------------------------
 
     def _show_order_qty_inconsistency_warning_if_any(self):
@@ -404,11 +281,7 @@ class UnifiedReportWindow(tk.Toplevel):
         )
 
     def _show_inconsistency_warning_if_any(self):
-        """
-        2026-10-08改訂（D-111）：inconsistency_warningsの形がロットNo・ファイルNo
-        単位の合計比較に変更された（_build_report_rows()のdocstring参照）ため、
-        表示もこれに合わせた。計画No（面1・面2それぞれの一覧）も表示する。
-        """
+        """面1・面2の不整合の警告。ロットNo・ファイルNoごとの合計で比べた結果と、面1・面2の計画Noを表示する（D-111）。"""
         if not self.inconsistency_warnings:
             return
         lines = "\n".join(
@@ -487,9 +360,7 @@ class UnifiedReportWindow(tk.Toplevel):
 
     def on_row_double_click(self, event):
         """
-        選択行に対応する実績（kitting_list_no・lot_no）を実績修正ウインドウ
-        （ui.kitting_production_entry.ActualCorrectionWindow）で開く。
-        循環import回避のため、ここで都度importする。
+        選択した行の実績を、実績修正画面で開く。循環 import を避けるため、ここで import する。
         """
         sel = self.tree.selection()
         if not sel:
@@ -512,9 +383,7 @@ class UnifiedReportWindow(tk.Toplevel):
 
     def refresh_report(self):
         """
-        実績修正後に一覧を再取得して表示を更新する。旧MonthlyReportWindow.
-        refresh_report()と同じく、面1/面2不整合警告のみ再表示する
-        （発注数不一致・マスタ未登録等は片面修正では変化し得ないため）。
+        実績修正の後に一覧を読み直す。再表示する警告は面1・面2の不整合だけ（ほかは片面の修正では変わらない）。
         """
         if not self.from_date or not self.to_date:
             return
@@ -524,44 +393,16 @@ class UnifiedReportWindow(tk.Toplevel):
             self.excess_file_no_warnings, self.board_count_inconsistency_warnings,
         ) = build_monthly_report(self.from_date, self.to_date)
         self._annotate_filter_fields(self.report_rows)
-        # refresh_report()は実績修正1件に伴う再取得のため、on_display()と違い
-        # 絞り込み条件はクリアせずそのまま維持する（見ていた絞り込み結果の
-        # ままデータだけ最新化する）。
+        # 実績の修正に伴う読み直しなので、on_display() と違い絞り込みはそのまま残す。
         self.apply_filters()
         if self.warning_toggle_vars["inconsistency"].get():
             self._show_inconsistency_warning_if_any()
 
     def sort_by_column(self, col):
         """
-        列ヘッダークリックでのソート（2026-10-01追加）。ui.lot_progress_window.
-        LotProgressWindow.sort_by_column()の「ロット単位のブロックにまとめて
-        からブロック単位でソートする」方式を踏襲するが、ブロックの検出方法は
-        異なる（下記の重要な違い参照）。
-
-        重要な違い（調査で確認した懸念点への対応）：LotProgressWindowの
-        build_display_rows()は、各ロットの実データ行の直後にそのロットの
-        「未確定」仮想行を続けて追加するため、同一lot_noの行は最初から
-        必ず連続している（この前提のもとでLotProgressWindow側は「現在
-        連続している行のまとまり」を単純にスキャンして検出している）。
-
-        一方、services.production_service._build_report_rows()は、実データ行を
-        production_daily のレコード順（lot_no単位にグルーピングされていない）
-        で構築した後、「未確定」仮想行は全ロット分をまとめて末尾に追加する
-        設計のため、**同一lot_noの行は最初から連続しているとは限らない**
-        （実データ行同士ですら他ロットの行で分断され得る上、「未確定」行は
-        常にロットの実データ行から離れた末尾にある）。この状態で
-        LotProgressWindowと同じ「現在連続している行のまとまり」方式を使うと、
-        同じロットの行が複数の別々のブロックに分かれてしまい、「未確定」行を
-        含むロットがブロックとして正しくまとまらない（調査で予想された懸念の
-        通り、隔離コピー上の実データで実際に発生することを確認済み。詳細は
-        対応時の報告参照）。
-
-        対応：ブロックの検出を「現在の並びで連続しているか」ではなく、
-        「lot_no値が一致する行を全て1つのブロックに集める」方式に変更した
-        （行の物理的な位置が離れていても、同じlot_noであれば必ず同じ
-        ブロックに入る）。ブロックの初期位置は、そのlot_noが現在の並びで
-        最初に出現した位置とする（複数回ソートを繰り返しても、常にこの
-        グルーピングが正しく機能する）。
+        列ヘッダーのクリックで、ロット単位のまとまりを保ったまま並べ替える。
+        同じ lot_no の行は連続しているとは限らない（実績の順に並び、「未確定」行は末尾にまとめて足される）ので、
+        連続した行ではなく、lot_no が同じ行をすべて1つのまとまりにする（まとまりの位置は、その lot_no が最初に出た位置）。
         """
         ascending = self._sort_states.get(col, True)
 
@@ -598,15 +439,11 @@ class UnifiedReportWindow(tk.Toplevel):
         self._sort_states[col] = not ascending
 
     # ------------------------------------------------------------------
-    # 行の絞り込み（2026-10-01追加。モジュールdocstring参照）
+    # 行の絞り込み
     # ------------------------------------------------------------------
 
     def _annotate_filter_fields(self, rows):
-        """
-        report_rowsの各行に、絞り込み専用の表示用キー"status_label"・
-        "ng_label"を追加する（CSV/PDF出力には使われないキーのため、
-        REPORT_HEADERS・_row_to_values()には影響しない）。
-        """
+        """各行に、絞り込み用の表示キー（status_label・ng_label）を足す（CSV/PDF 出力には使わない）。"""
         for row in rows:
             row["status_label"] = STATUS_LABELS.get(row.get("status"), row.get("status") or "判定不能")
             row["ng_label"] = "あり" if row.get("has_ng") else "なし"
@@ -633,11 +470,7 @@ class UnifiedReportWindow(tk.Toplevel):
         )
 
     def open_checkbox_filter_popup(self, col_key):
-        """
-        状態・NGの有無用の、エクセルのオートフィルタ風チェックボックス式
-        絞り込みポップアップ（ui.wip_expansion_window.py::
-        open_wip_checkbox_filter_popup()と同じ設計）。
-        """
+        """状態・NGの有無 のチェックボックス式絞り込みポップアップを開く（仕掛一覧と同じ設計）。"""
         label_text = self._filter_labels[col_key]
 
         other_predicates = self._filter_predicates()
@@ -752,7 +585,7 @@ class UnifiedReportWindow(tk.Toplevel):
         self.apply_filters()
 
     # ------------------------------------------------------------------
-    # 列の表示/非表示（2026-10-01追加。モジュールdocstring参照）
+    # 列の表示/非表示
     # ------------------------------------------------------------------
 
     def _on_tree_header_right_click(self, event):
@@ -867,19 +700,8 @@ class UnifiedReportWindow(tk.Toplevel):
         messagebox.showinfo("完了", f"CSVを保存しました：\n{save_path}", parent=self.winfo_toplevel())
 
     # ------------------------------------------------------------------
-    # 旧MonthlyReportWindow限定機能の移植（2026-09-30追加、2026-10-01に
-    # 移植元のMonthlyReportWindow自体を削除。モジュールdocstring参照）。
-    #
-    # 仕掛数量抽出の対象lot_noは、self.report_rows（＝現在選択中の期間で
-    # build_monthly_report()が返した行）のdistinctなlot_noから決める。
-    # つまり「どのロットを対象にするか」は選択中の期間に依存するが、各ロットの
-    # 状態そのもの（evaluate_lot_status()・build_wip_extraction_rows()が
-    # 計算する引落・仕掛・未生産、および保存前確認で見るneeds_review判定）は、
-    # production_daily・kitting_plan_items・board_structure_masterの「現時点の
-    # 内容」から計算され、期間（report_date範囲）には一切依存しない
-    # （calculate_lot_completion()・_evaluate_lot_status()はいずれもreport_date
-    # を引数に取らない）。この2点の違いは、旧MonthlyReportWindowでも全く同じ
-    # 挙動だったため、移植による差異は無い。
+    # 仕掛数量抽出・警告の CSV 出力（旧月報画面から移した機能）
+    # 対象のロットは選択中の期間の行から決めるが、各ロットの引落・仕掛は期間に関係なく、今の実績・計画・マスタから計算する。
     # ------------------------------------------------------------------
 
     def on_extract_wip(self):
