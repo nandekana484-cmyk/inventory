@@ -14,8 +14,8 @@ ui/main_window.py）、.exeのファイルバージョン情報（inventory_app.
 version_info.txt経由）は、いずれも本ファイルの値から導出する
 （バージョン番号を複数箇所で二重管理しない）。
 """
-APP_VERSION = "1.2.0"
-BUILD_DATE = "2026-10-08"
+APP_VERSION = "1.2.1"
+BUILD_DATE = "2026-10-09"
 
 
 def get_version_label() -> str:

@@ -404,19 +404,26 @@ class UnifiedReportWindow(tk.Toplevel):
         )
 
     def _show_inconsistency_warning_if_any(self):
+        """
+        2026-10-08改訂（D-111）：inconsistency_warningsの形がロットNo・ファイルNo
+        単位の合計比較に変更された（_build_report_rows()のdocstring参照）ため、
+        表示もこれに合わせた。計画No（面1・面2それぞれの一覧）も表示する。
+        """
         if not self.inconsistency_warnings:
             return
         lines = "\n".join(
-            f"・lot_no={w['lot_no']}（setup_file_no={w['setup_file_no']}）："
-            f"面1（{w['side1_kitting_list_no']}）={w['side1_qty']:.0f} ＞ "
-            f"面2（{w['side2_kitting_list_no']}）={w['side2_qty']:.0f}"
+            f"・lot_no={w['lot_no']}（setup_file_no={w['setup_file_no']}）：\n"
+            f"　　面1合計={w['side1_total']:.0f} ＞ 面2合計={w['side2_total']:.0f}"
+            f"（差 {w['diff']:+.0f}）\n"
+            f"　　面1の計画No：{'、'.join(w['side1_kitting_list_nos'])}\n"
+            f"　　面2の計画No：{'、'.join(w['side2_kitting_list_nos'])}"
             for w in self.inconsistency_warnings
         )
         messagebox.showwarning(
             "実績不整合の警告",
-            "以下のロットで面1・面2の実績に不整合があります（面1の実績数が面2を"
-            "上回っています）。実績修正画面（ActualCorrectionWindow）での片面のみの"
-            "修正が原因の可能性があります。\n"
+            "以下のロット・ファイルNoで面1・面2の実績に不整合があります（面1の実績の"
+            "合計が面2の合計を上回っています）。実績修正画面（ActualCorrectionWindow）"
+            "での片面のみの修正・削除が原因の可能性があります。\n"
             "該当する面1の行は、通常表示されるはずの面2省略ルールにより一覧からは"
             "除外されていますが、内容のご確認をお願いします。\n\n"
             f"{lines}",

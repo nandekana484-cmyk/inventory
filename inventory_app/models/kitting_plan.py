@@ -383,6 +383,34 @@ def find_opposite_side_plan(lot_no: str, setup_file_no: str, current_side,
     return candidates[0]
 
 
+def list_active_side_plans_for_file(lot_no: str, setup_file_no: str) -> list:
+    """
+    同一(lot_no, setup_file_no)に属する、現在アクティブな計画（面1・面2の
+    両方、production_sideが"1"または"2"のもの）を全件返す（2026-10-08新設）。
+
+    services.production_service._build_report_rows()の「面1の実績が面2を
+    上回る」不整合判定を、計画どうしの1対1の組（find_opposite_side_plan()が
+    複数バッチから1件を選ぶ方式、曖昧な場合に誤った組を選び誤検出する問題が
+    実データで確認された）ではなく、ロットNo・ファイルNoごとの合計の比較に
+    変更するために使う。同一(lot_no, setup_file_no)に面・日付の異なる複数の
+    バッチが存在する場合でも、本関数は該当する全件を返すため、呼び出し側で
+    面1側・面2側それぞれの合計（get_app_cumulative_qty()のSUM）を計算できる
+    （_compute_lot_completion()のfile_actuals、(setup_file_no, production_side)
+    単位の合算と同じ考え方）。
+
+    find_opposite_side_plan()（1件に絞り込む、登録時の自動入力・NG入力欄の
+    相手探しで使う）とは用途が異なるため、既存の関数は変更せず新設した。
+    """
+    with get_connection() as con:
+        cur = con.cursor()
+        cur.execute("""
+            SELECT * FROM kitting_plan_items
+            WHERE COALESCE(lot_no, '') = ? AND COALESCE(setup_file_no, '') = ?
+              AND production_side IN ('1', '2') AND COALESCE(is_active, 1) = 1
+        """, (lot_no or "", setup_file_no or ""))
+        return [dict(row) for row in cur.fetchall()]
+
+
 def list_plan_batches(include_deleted: bool = False):
     """
     バッチ一覧を取得。include_deleted=False で delete_flag=1 のバッチは除外。

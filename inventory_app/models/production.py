@@ -33,7 +33,7 @@ def get_app_cumulative_qty(kitting_list_no: str, lot_no: str) -> float:
         return cur.fetchone()["total"]
 
 
-def get_app_cumulative_qty_bulk(kitting_list_no_lot_pairs, con=None) -> dict:
+def get_app_cumulative_qty_bulk(kitting_list_no_lot_pairs, con=None, cutoff_date=None) -> dict:
     """
     複数の(kitting_list_no, lot_no)の組について、アプリ入力累計（daily_qtyのSUM）を
     1回（〜数回）のクエリでまとめて取得する。
@@ -60,6 +60,17 @@ def get_app_cumulative_qty_bulk(kitting_list_no_lot_pairs, con=None) -> dict:
     con：呼び出し元が既に開いているコネクションを渡すと、それを使い回して
     新規コネクションを張らない（呼び出し元がトランザクション・クローズの責任を持つ）。
     省略時はここで新規コネクションを開いて完結させる。
+
+    cutoff_date（2026-10-09追加、日々の引落一覧の払出し日ベース化のため）：
+    "YYYY-MM-DD"を指定すると、report_dateがこの日付以前の実績だけをSUMの対象にする
+    （WHERE句にAND report_date <= ?を追加するのみ）。省略時（None）は従来通り
+    全期間のSUMを返す（SQL自体が変わらないため、省略時の結果は完全に同じ）。
+    production_dailyは「1計画＝1レコード」のため、この絞り込みは実質的に
+    「その計画の実績がcutoff_date以前に登録されたものであれば全額を含め、
+    そうでなければ0とする」という二値的な判定になる（report_dateは
+    "YYYY-MM-DD"形式に正規化済みのため文字列比較で日付の大小判定が正しく働く、
+    models.production.list_daily_production_range()等の既存の日付範囲検索と
+    同じ前提）。
     """
     unique_pairs = list(dict.fromkeys(kitting_list_no_lot_pairs))  # 重複除去・順序維持
     result = {pair: 0.0 for pair in unique_pairs}
@@ -75,16 +86,19 @@ def get_app_cumulative_qty_bulk(kitting_list_no_lot_pairs, con=None) -> dict:
     # SQLiteのホストパラメータ上限（環境によっては999）を考慮し、チャンクに分けて実行する
     CHUNK_SIZE = 500
 
+    cutoff_clause = " AND report_date <= ?" if cutoff_date is not None else ""
+
     def _run(active_con):
         for i in range(0, len(kitting_list_nos), CHUNK_SIZE):
             chunk = kitting_list_nos[i:i + CHUNK_SIZE]
             placeholders = ",".join("?" * len(chunk))
+            params = list(chunk) + ([cutoff_date] if cutoff_date is not None else [])
             cur = active_con.execute(f"""
                 SELECT kitting_list_no, lot_id, COALESCE(SUM(daily_qty), 0) AS total
                 FROM production_daily
-                WHERE kitting_list_no IN ({placeholders})
+                WHERE kitting_list_no IN ({placeholders}){cutoff_clause}
                 GROUP BY kitting_list_no, lot_id
-            """, chunk)
+            """, params)
             for row in cur.fetchall():
                 key = (row["kitting_list_no"], row["lot_id"] or "")
                 original = normalized_to_original.get(key)
@@ -286,4 +300,53 @@ def delete_daily_production(prod_log_id: int):
             DELETE FROM production_daily
             WHERE prod_log_id = ?
         """, (prod_log_id,))
+        con.commit()
+
+
+def apply_daily_production_changes(changes: list):
+    """
+    production_dailyへの複数の変更（更新・削除・追加）を**1つのトランザクション**
+    でまとめて確定する（2026-10-08新設、D-112）。
+
+    ui.kitting_production_entry.ActualCorrectionWindowで、面1・面2の実績を
+    連動させて修正・削除する際に使う。update_daily_production()・
+    delete_daily_production()・insert_daily_production()は、それぞれ単独で
+    get_connection()を開いてcommit()するため、2つの関数を連続で呼ぶだけでは
+    「片方だけ確定し、もう片方は例外で失敗する」中途半端な状態になり得る
+    （要件：片方だけが変わった状態で終わらないこと）。本関数は両方の変更を
+    同一コネクション・同一トランザクション内で実行し、途中で例外が発生すれば
+    with文により自動的にロールバックされ、どちらの変更も反映されない。
+
+    changes：[{"action": "update", "prod_log_id", "daily_qty", "report_date"},
+              {"action": "delete", "prod_log_id"},
+              {"action": "insert", "plan_item_id", "kitting_list_no", "lot_id",
+               "group_id", "report_date", "daily_qty", "worker_id"}, ...]
+    の形の辞書のリスト。空リストを渡しても何もしない（エラーにはしない）。
+    """
+    if not changes:
+        return
+    with get_connection() as con:
+        cur = con.cursor()
+        for change in changes:
+            action = change["action"]
+            if action == "update":
+                cur.execute(
+                    "UPDATE production_daily SET daily_qty = ?, report_date = ? WHERE prod_log_id = ?",
+                    (change["daily_qty"], change["report_date"], change["prod_log_id"]),
+                )
+            elif action == "delete":
+                cur.execute(
+                    "DELETE FROM production_daily WHERE prod_log_id = ?",
+                    (change["prod_log_id"],),
+                )
+            elif action == "insert":
+                cur.execute("""
+                    INSERT INTO production_daily (
+                        plan_item_id, kitting_list_no, lot_id, group_id,
+                        report_date, daily_qty, worker_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (change["plan_item_id"], change["kitting_list_no"], change["lot_id"],
+                      change["group_id"], change["report_date"], change["daily_qty"], change["worker_id"]))
+            else:
+                raise ValueError(f"未対応のaction: {action}")
         con.commit()

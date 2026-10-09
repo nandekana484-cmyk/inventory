@@ -7,6 +7,7 @@ from models.kitting_plan import (
     list_plan_items_for_all_lots,
     list_active_plan_items_by_kitting_no,
     find_opposite_side_plan,
+    list_active_side_plans_for_file,
 )
 from models.production import (
     insert_daily_production,
@@ -19,6 +20,7 @@ from models.production import (
     delete_daily_production,
     list_daily_production_today,
     list_daily_production_range,
+    apply_daily_production_changes,
 )
 from models.board_structure_master import get_board_structure
 from models.lot_status_history import record_lot_status_snapshot
@@ -371,6 +373,195 @@ def delete_daily_result(prod_log_id: int):
         _record_lot_status_snapshot_safely(row["lot_id"], "delete")
 
 
+def build_linked_correction_preview(prod_log_id: int, action: str, new_daily_qty: float = None):
+    """
+    実績の修正・削除（ui.kitting_production_entry.ActualCorrectionWindow）で、
+    両面の計画があるロットの場合に反対側の面の実績へ連動させる変更内容を
+    事前に組み立てる（2026-10-08新設、D-112。DBへの書き込みは一切行わない、
+    確認ダイアログ表示用）。
+
+    action："update"（修正）または"delete"（削除）。
+    new_daily_qty：action="update"の場合の新しい数量（必須）。"delete"の場合は
+    無視する。
+
+    相手の実績の特定方法（優先順位）：
+      a. 同じロットNo・ファイルNoの反対側の面の計画（複数バッチあり得る）の
+         実績のうち、**修正・削除前**の数量・日付が完全に一致するものが
+         ちょうど1件だけあれば、それを相手とする（複数バッチがあっても、
+         たまたま値が一致する行が複数あれば一意に決められないため除外し、
+         bへ進む）。
+      b. aで決まらない場合、登録時の自動入力（register_opposite_side_daily_
+         result()）・NG入力欄の相手探し（_setup_ng_side_ui()）と同じ方法
+         （find_opposite_side_plan()に、選択中の計画のplan_start_datetimeを
+         渡す）で相手の計画を1件に絞り込む。その計画に実績が無ければ
+         （c、後述）、実績が1件だけあればそれを相手とする。実績が2件以上
+         ある場合（「1計画=1レコード」ルールに反する想定外のデータ）は、
+         安全側に倒し連動しない（ambiguous=True、呼び出し元は反対側を
+         変更せず、その旨を確認ダイアログで示すこと）。
+      c. 相手の計画に実績が1件も無い場合：修正（update）のときは新規登録、
+         削除（delete）のときは何もしない（noop）。
+
+    戻り値：{
+      "primary": {"prod_log_id", "kitting_list_no", "lot_no", "old_daily_qty",
+                   "new_daily_qty"（deleteの場合None）, "report_date", "plan"},
+      "has_opposite_plan": bool（反対側の面の計画自体が無い＝片面のみの計画
+                   の場合False。この場合secondaryはNone、連動なしで従来通り）,
+      "secondary": None、または {
+          "method": "a"|"b", "ambiguous"（bool、Trueの場合は連動しない）,
+          "action": "update"|"insert"|"delete"|"noop",
+          "kitting_list_no", "prod_log_id"（既存行がある場合のみ）,
+          "old_daily_qty"（既存行がある場合のみ）, "new_daily_qty",
+          "report_date", "pre_existing_mismatch"（bool、method="b"で、連動前の
+          実績がprimaryの変更前の値と一致していなかった場合True。この場合、
+          呼び出し元は確認ダイアログで目立たせて示すこと）,
+      },
+    }
+    """
+    if action not in ("update", "delete"):
+        raise ValueError(f"未対応のaction: {action}")
+
+    row = get_production_daily_by_id(prod_log_id)
+    if row is None:
+        raise ValueError(f"実績（prod_log_id={prod_log_id}）が見つかりません。")
+
+    kitting_list_no = row["kitting_list_no"]
+    lot_no = row["lot_id"]
+    old_daily_qty = row["daily_qty"]
+    report_date = row["report_date"]
+
+    plan = find_plan_item_by_kitting_no(kitting_list_no, lot_no)
+    primary = {
+        "prod_log_id": prod_log_id, "kitting_list_no": kitting_list_no, "lot_no": lot_no,
+        "old_daily_qty": old_daily_qty, "new_daily_qty": new_daily_qty if action == "update" else None,
+        "report_date": report_date, "plan": plan,
+    }
+    result = {"primary": primary, "has_opposite_plan": False, "secondary": None}
+
+    if plan is None:
+        return result
+    side = str(plan.get("production_side") or "").strip()
+    if side not in ("1", "2"):
+        return result
+    setup_file_no = plan.get("setup_file_no")
+
+    opposite_side_plans = [
+        p for p in list_active_side_plans_for_file(lot_no, setup_file_no)
+        if str(p.get("production_side") or "").strip() != side
+    ]
+    if not opposite_side_plans:
+        return result  # 片面だけの計画。連動対象なし（従来どおり）
+
+    result["has_opposite_plan"] = True
+
+    # a. 修正・削除前の数量・日付が一致する反対側の実績を探す
+    candidate_records = []
+    for p in opposite_side_plans:
+        candidate_records += list_daily_production_by_kitting_no(p["kitting_list_no"], lot_no)
+    matching_a = [
+        r for r in candidate_records
+        if r["daily_qty"] == old_daily_qty and r["report_date"] == report_date
+    ]
+
+    secondary = None
+    if len(matching_a) == 1:
+        target = matching_a[0]
+        secondary = {
+            "method": "a", "ambiguous": False,
+            "kitting_list_no": target["kitting_list_no"], "prod_log_id": target["prod_log_id"],
+            "old_daily_qty": target["daily_qty"], "report_date": target["report_date"],
+            "pre_existing_mismatch": False,
+        }
+    else:
+        # b. 登録時の自動入力・NG入力欄の相手探しと同じ方法で1件に絞り込む
+        opposite_plan = find_opposite_side_plan(
+            lot_no, setup_file_no, side, current_plan_start_datetime=plan.get("plan_start_datetime"),
+        )
+        if opposite_plan is None:
+            # list_active_side_plans_for_file()では見つかったが、
+            # find_opposite_side_plan()のCOALESCE条件のわずかな差異で
+            # 見つからない等の想定外のケース。安全側に倒し連動しない。
+            result["secondary"] = {"method": "b", "ambiguous": True}
+            return result
+
+        existing = list_daily_production_by_kitting_no(opposite_plan["kitting_list_no"], lot_no)
+        if len(existing) == 0:
+            # c. 相手の計画に実績が無い
+            secondary = {
+                "method": "b", "ambiguous": False,
+                "kitting_list_no": opposite_plan["kitting_list_no"], "prod_log_id": None,
+                "old_daily_qty": None, "report_date": report_date, "pre_existing_mismatch": False,
+                "plan_item_id": opposite_plan["plan_item_id"], "board_name": opposite_plan["board_name"],
+            }
+        elif len(existing) == 1:
+            target = existing[0]
+            pre_existing_mismatch = not (
+                target["daily_qty"] == old_daily_qty and target["report_date"] == report_date
+            )
+            secondary = {
+                "method": "b", "ambiguous": False,
+                "kitting_list_no": target["kitting_list_no"], "prod_log_id": target["prod_log_id"],
+                "old_daily_qty": target["daily_qty"], "report_date": target["report_date"],
+                "pre_existing_mismatch": pre_existing_mismatch,
+            }
+        else:
+            # 「1計画=1レコード」ルールに反する想定外のデータ。安全側に倒し連動しない。
+            result["secondary"] = {"method": "b", "ambiguous": True}
+            return result
+
+    if action == "update":
+        secondary["new_daily_qty"] = new_daily_qty
+        secondary["action"] = "update" if secondary.get("prod_log_id") else "insert"
+    else:
+        secondary["action"] = "delete" if secondary.get("prod_log_id") else "noop"
+
+    result["secondary"] = secondary
+    return result
+
+
+def apply_linked_correction(preview: dict, action: str, worker_id: str, record_history: bool = True):
+    """
+    build_linked_correction_preview()の戻り値（利用者が確認ダイアログで承認した
+    内容）を、1つのトランザクションで確定する（2026-10-08新設、D-112）。
+
+    secondaryがNone、またはambiguous=Trueの場合は、primaryのみを変更する
+    （連動しない、従来どおりの単独修正・削除と同じ結果になる）。
+    """
+    primary = preview["primary"]
+    secondary = preview.get("secondary")
+
+    changes = []
+    if action == "update":
+        changes.append({
+            "action": "update", "prod_log_id": primary["prod_log_id"],
+            "daily_qty": primary["new_daily_qty"], "report_date": primary["report_date"],
+        })
+    else:
+        changes.append({"action": "delete", "prod_log_id": primary["prod_log_id"]})
+
+    if secondary and not secondary.get("ambiguous") and secondary["action"] != "noop":
+        if secondary["action"] == "update":
+            changes.append({
+                "action": "update", "prod_log_id": secondary["prod_log_id"],
+                "daily_qty": secondary["new_daily_qty"], "report_date": secondary["report_date"],
+            })
+        elif secondary["action"] == "insert":
+            changes.append({
+                "action": "insert", "plan_item_id": secondary["plan_item_id"],
+                "kitting_list_no": secondary["kitting_list_no"], "lot_id": primary["lot_no"],
+                "group_id": secondary.get("board_name"), "report_date": secondary["report_date"],
+                "daily_qty": secondary["new_daily_qty"], "worker_id": worker_id,
+            })
+        elif secondary["action"] == "delete":
+            changes.append({"action": "delete", "prod_log_id": secondary["prod_log_id"]})
+
+    apply_daily_production_changes(changes)
+
+    # lot_status_historyの更新（登録時と同じ考え方）。反対側も同一lot_noのため、
+    # 1回の記録で両面分をまとめて反映する。
+    if record_history:
+        _record_lot_status_snapshot_safely(primary["lot_no"], f"correction_{action}")
+
+
 def _build_report_rows(records):
     """
     production_daily のレコード群から、日報・月報共通の表示データを構築する。
@@ -418,13 +609,31 @@ def _build_report_rows(records):
     search_plan()の基板別実績表示と同じ考え方。面連動登録により通常は面1・面2の
     実績数量は常に一致するはずだが、面1のみを個別に表示し続ける意味が無いため）。
 
-    ただし、面1の実績数量が面2（find_opposite_side_plan()で特定した、現在の
-    アプリ内累計＝get_app_cumulative_qty()）を上回っている場合は「不整合」として
-    扱い、除外はするが黙って消さず、戻り値のinconsistency_warningsに記録する
-    （ui.kitting_production_entry.py::ActualCorrectionWindowが面連動を行わず
-    片面のみを修正・削除できるため、面1・面2の実績が食い違う状態を作れる。
-    調査により確認済み）。面2計画が存在しない（片面のみの計画）場合は、
-    比較対象が無いため除外・警告いずれも行わない。
+    ただし、面1の実績数量の合計が面2の実績数量の合計を上回っている場合は
+    「不整合」として扱い、除外はするが黙って消さず、戻り値のinconsistency_
+    warningsに記録する（ui.kitting_production_entry.py::ActualCorrection
+    Windowが面連動を行わず片面のみを修正・削除できるため、面1・面2の実績が
+    食い違う状態を作れる。調査により確認済み。2026-10-08、D-111でこの片面の
+    み修正・削除する経路自体に両面連動を追加したが、連動前の既存データ・
+    連動対象を特定できない例外的なケースのため、本警告自体は残す）。
+    面2計画が存在しない（片面のみの計画）場合は、比較対象が無いため
+    除外・警告いずれも行わない。
+
+    判定単位について（2026-10-08改訂、D-111）：以前は面1の実績1レコードごとに
+    find_opposite_side_plan()で「相手の面2計画」を1件に絞り込み、その1件との
+    数量比較で判定していた。find_opposite_side_plan()は、同一(lot_no,
+    setup_file_no)に複数の面2バッチ（日付違い・実装ライン違い）がアクティブな
+    場合、plan_start_datetimeが最も近い（本関数の呼び出しではヒント自体を
+    渡していなかったため、実際には最も古い）1件を選ぶ仕組みのため、本来の
+    対応する組ではない別バッチどうしを比較してしまい、実データで104件
+    全件が誤検出となっていたことが調査で判明した（詳細は調査記録参照）。
+    この判定を、計画どうしの1対1の対応づけを経由しない方式に変更した：
+    list_active_side_plans_for_file()で(lot_no, setup_file_no)に属する
+    現在アクティブな面1・面2の計画を全件取得し、それぞれの
+    get_app_cumulative_qty()の**合計**（_compute_lot_completion()の
+    file_actuals、(setup_file_no, production_side)単位の合算と同じ考え方）を
+    比較する。1対1の組を特定する必要が無いため、複数バッチがあっても
+    誤検出しない。
 
     構成基板数チェック・引落ルール（2026-09-28、_evaluate_lot_status()へ
     判定ロジックを集約）：以前は本関数が独自にget_board_structure()を呼んで
@@ -506,8 +715,11 @@ def _build_report_rows(records):
                     そのまま保持。「未確定」仮想行は元レコードが無いためNone）}, ...]
                     （面1省略・構成基板数チェックの仮想行追加後、seqは
                     表示される行のみで1から振り直す）
-      inconsistency_warnings：[{"lot_no", "setup_file_no", "side1_kitting_list_no",
-                                 "side1_qty", "side2_kitting_list_no", "side2_qty"}, ...]
+      inconsistency_warnings（2026-10-08改訂、D-111。ロットNo・ファイルNo単位の
+      合計比較に変更）：[{"lot_no", "setup_file_no", "side1_total", "side2_total",
+                        "diff"（side1_total - side2_total）,
+                        "side1_kitting_list_nos"（該当する面1の計画No一覧）,
+                        "side2_kitting_list_nos"（該当する面2の計画No一覧）}, ...]
       order_qty_inconsistency_warnings：[{"lot_no", "order_qty_values"}, ...]
       unregistered_board_warnings：[{"lot_no", "board_name", "file_nos"}, ...]
                                     （file_nosはロット全体・面1省略後のdistinct
@@ -540,8 +752,13 @@ def _build_report_rows(records):
             "report_date": rec["report_date"],
         })
 
+    # 面1省略：D-8の既存ルールのまま、計画どうしの1対1の対応づけは経由せず
+    # 「面2がアクティブな計画として存在するか」だけで判定する
+    # （find_opposite_side_plan()は複数バッチがある場合に1件へ絞り込む関数の
+    # ため、除外の判定自体にも使うと誤った絞り込みに引き込まれる。2026-10-08
+    # 改訂、D-111）。
     excluded_indices = set()
-    inconsistency_warnings = []
+    file_keys_with_opposite = set()
     for idx, item in enumerate(enriched):
         plan = item["plan"]
         if plan is None:
@@ -556,21 +773,30 @@ def _build_report_rows(records):
         if opposite is None:
             continue  # 面2計画が無い（片面のみの計画）→ 除外しない
 
-        opposite_kitting_list_no = opposite["kitting_list_no"]
-        side1_qty = item["daily_qty"]
-        side2_qty = get_app_cumulative_qty(opposite_kitting_list_no, lot_no)
+        excluded_indices.add(idx)
+        file_keys_with_opposite.add((lot_no, setup_file_no))
 
-        if side1_qty > side2_qty:
+    # 不整合判定：ロットNo・ファイルNoごとの面1合計／面2合計の比較
+    # （2026-10-08改訂、D-111。計画どうしの1対1の対応づけを経由しないため、
+    # 複数バッチがあっても誤検出しない。本関数のdocstring参照）。
+    inconsistency_warnings = []
+    for lot_no, setup_file_no in sorted(file_keys_with_opposite):
+        side_plans = list_active_side_plans_for_file(lot_no, setup_file_no)
+        side1_plans = [p for p in side_plans if str(p.get("production_side") or "").strip() == "1"]
+        side2_plans = [p for p in side_plans if str(p.get("production_side") or "").strip() == "2"]
+        side1_total = sum(get_app_cumulative_qty(p["kitting_list_no"], lot_no) for p in side1_plans)
+        side2_total = sum(get_app_cumulative_qty(p["kitting_list_no"], lot_no) for p in side2_plans)
+
+        if side1_total > side2_total:
             inconsistency_warnings.append({
                 "lot_no": lot_no,
                 "setup_file_no": setup_file_no,
-                "side1_kitting_list_no": item["kitting_list_no"],
-                "side1_qty": side1_qty,
-                "side2_kitting_list_no": opposite_kitting_list_no,
-                "side2_qty": side2_qty,
+                "side1_total": side1_total,
+                "side2_total": side2_total,
+                "diff": side1_total - side2_total,
+                "side1_kitting_list_nos": [p["kitting_list_no"] for p in side1_plans],
+                "side2_kitting_list_nos": [p["kitting_list_no"] for p in side2_plans],
             })
-
-        excluded_indices.add(idx)
 
     # NG（仕損）の有無の事前一括取得（2026-10-01追加、ui.unified_report_window.py
     # の「NGの有無」絞り込み用）。(kitting_list_no, lot_no, production_side)を
@@ -772,7 +998,8 @@ def build_monthly_report(from_date: str, to_date: str):
     return _build_report_rows(records)
 
 
-def _compute_lot_completion(lot_no: str, plan_items: list, cumulative_by_pair: dict) -> dict:
+def _compute_lot_completion(lot_no: str, plan_items: list, cumulative_by_pair: dict,
+                              cutoff_date: str = None) -> dict:
     """
     calculate_lot_completion()・list_incomplete_lots()の共通ロジック。
 
@@ -782,6 +1009,16 @@ def _compute_lot_completion(lot_no: str, plan_items: list, cumulative_by_pair: d
     calculate_lot_completion()は対象lot_no1件分のみ、list_incomplete_lots()は
     全lot_no分をまとめて1回のバルク取得で済ませており、取得方法自体は
     呼び出し元ごとに異なるためこの関数の責務には含めない）。
+
+    cutoff_date（2026-10-09追加、日々の引落一覧の払出し日ベース化のため。
+    D-115/D-29改訂参照）：本関数自体は日付の絞り込みを一切行わない
+    （plan_items・cumulative_by_pairをそのまま使う、従来と同じ計算）。
+    呼び出し元が「その日付までの実績だけを反映したcumulative_by_pair」
+    （get_app_cumulative_qty_bulk(..., cutoff_date=cutoff_date)で取得したもの）を
+    渡した場合に、その条件を戻り値にそのまま記録しておくための受け渡し専用の
+    引数（呼び出し元がどの条件で計算したかを追跡できるようにする）。
+    省略時（None）は従来と完全に同じ動作・結果になる（cumulative_by_pair自体が
+    絞り込まれていない限り、本関数の計算内容は何も変わらないため）。
 
     完成数は、同一lot_noに属する各setup_file_no × production_side（面）
     単位で実績累計（daily_qtyのSUM）を合算した値のうち、最小値とする。
@@ -822,6 +1059,7 @@ def _compute_lot_completion(lot_no: str, plan_items: list, cumulative_by_pair: d
         "completed_quantity": completed,
         "remaining_quantity": remaining,
         "file_actuals": file_actuals,
+        "cutoff_date": cutoff_date,
     }
 
 
@@ -929,13 +1167,44 @@ def _lot_status_color_category(status: str, unregistered_board_names: list):
     return None
 
 
-def _evaluate_lot_status(lot_no: str, plan_items: list, cumulative_by_pair: dict) -> dict:
+def _evaluate_lot_status(lot_no: str, plan_items: list, cumulative_by_pair: dict,
+                           cutoff_date: str = None, board_structure_cache: dict = None) -> dict:
     """
     構成基板数チェック（一致/不足/超過/未登録/board_count不一致）とロット
     進捗（引落・仕掛・未生産）を1ロット分まとめて評価する、日報・月報
     （_build_report_rows()）・仕掛数量抽出（build_wip_extraction_rows()）・
     ロット進捗チェック（check_lot_progress()）で共通利用する唯一の実装
     （2026-09-28、3機能に分散していた構成基板数判定・引落0判定を集約）。
+
+    cutoff_date（2026-10-09追加）：_compute_lot_completion()へそのまま渡す
+    だけの受け渡し専用の引数（本関数自体は日付の絞り込みを行わない。
+    呼び出し元がcumulative_by_pairを事前に日付で絞り込んでおくこと）。
+    日々の引落一覧（services.lot_status_history.get_daily_drawdown()）が、
+    対象日・前日それぞれで本関数を呼び分けるために使う。省略時（None）は
+    従来と完全に同じ動作・結果になる。既存の呼び出し元（_build_report_rows()・
+    build_wip_extraction_rows()・check_lot_progress()）はいずれもこの引数を
+    渡さないため、挙動は変わらない。
+
+    board_structure_cache（2026-10-09追加）：{board_name: get_board_structure()の
+    戻り値, ...}の辞書を渡すと、get_board_structure()の代わりにこの辞書を
+    読み書きして使う（同一board_nameの再検索を避ける、呼び出し元が複数ロット・
+    複数回にわたって使い回すための任意のメモ化キャッシュ）。省略時（None）は
+    従来通り毎回get_board_structure()を呼ぶ（既存の呼び出し元はいずれもこの
+    引数を渡さないため挙動は変わらない）。evaluate_all_lot_status()・
+    services.lot_status_history.get_daily_drawdown()が、1回の表示の中で
+    構成基板数マスタの検索結果を使い回すために使う（実データで1057ロットに
+    対し素のget_board_structure()呼び出しのみでは1回の表示に5〜10秒かかって
+    いたことが判明したため、1秒程度に収める目的で追加した）。
+
+    経緯：以前は_build_report_rows()とcheck_lot_progress()がそれぞれ独立に
+    構成基板数チェック（get_board_structure()呼び出し・shortfall/excess/
+    unregistered判定）を実装しており、build_wip_extraction_rows()は構成
+    基板数を一切考慮していなかった。この結果、同一ロット（例：lot_no=260079、
+    構成基板数2に対し実file_no数1のshortfall）について、check_lot_progress()
+    は引落0・仕掛800と判定する一方、日報・月報は引落800・仕掛0のまま、
+    仕掛数量抽出は対象行自体が0件（wip_qty<=0で除外）という、3機能間で
+    食い違う結果になっていた（2026-09-28の調査報告参照）。本関数へ判定
+    ロジックを一本化することでこの食い違いを解消する。
 
     経緯：以前は_build_report_rows()とcheck_lot_progress()がそれぞれ独立に
     構成基板数チェック（get_board_structure()呼び出し・shortfall/excess/
@@ -1019,7 +1288,7 @@ def _evaluate_lot_status(lot_no: str, plan_items: list, cumulative_by_pair: dict
                       二重計算を避けられる）,
     }
     """
-    lot_info = _compute_lot_completion(lot_no, plan_items, cumulative_by_pair)
+    lot_info = _compute_lot_completion(lot_no, plan_items, cumulative_by_pair, cutoff_date=cutoff_date)
 
     second_side_setup_files = {
         it["setup_file_no"] for it in plan_items if str(it["production_side"]).strip() == "2"
@@ -1034,7 +1303,12 @@ def _evaluate_lot_status(lot_no: str, plan_items: list, cumulative_by_pair: dict
     registered_counts = {}
     unregistered_board_names = []
     for board_name in board_names:
-        board_structure = get_board_structure(board_name) if board_name else None
+        if board_structure_cache is not None:
+            if board_name not in board_structure_cache:
+                board_structure_cache[board_name] = get_board_structure(board_name) if board_name else None
+            board_structure = board_structure_cache[board_name]
+        else:
+            board_structure = get_board_structure(board_name) if board_name else None
         if board_structure is None or board_structure.get("board_count") is None:
             unregistered_board_names.append(board_name)
         else:
@@ -1132,10 +1406,11 @@ def _evaluate_lot_status(lot_no: str, plan_items: list, cumulative_by_pair: dict
         "file_actuals": lot_info["file_actuals"],
         "order_qty_inconsistent": lot_info["order_qty_inconsistent"],
         "order_qty_values": lot_info["order_qty_values"],
+        "cutoff_date": cutoff_date,
     }
 
 
-def evaluate_lot_status(lot_no: str) -> dict:
+def evaluate_lot_status(lot_no: str, cutoff_date: str = None) -> dict:
     """
     _evaluate_lot_status()の単一ロット版（calculate_lot_completion()と
     calculate_lot_completion()/_compute_lot_completion()の関係と同じ）。
@@ -1145,15 +1420,24 @@ def evaluate_lot_status(lot_no: str) -> dict:
     ようにlist_plan_items_for_all_lots()＋get_app_cumulative_qty_bulk()の
     一括取得パターンを使うこと（本関数をlot_no件数分ループ呼び出しすると
     calculate_lot_completion()のループ呼び出しと同様のN+1になる）。
+
+    cutoff_date（2026-10-09追加）："YYYY-MM-DD"を指定すると、report_dateが
+    この日付以前の実績だけを使って完成数・状態を評価する
+    （get_app_cumulative_qty_bulk(..., cutoff_date=cutoff_date)で絞り込んだ
+    cumulative_by_pairを組み立て、_evaluate_lot_status()へそのまま渡す。
+    plan_items・構成基板数マスタ参照は現在の値をそのまま使う＝日付では
+    絞り込めない、D-115/D-29改訂の調査で確認済みの制約）。省略時（None）は
+    従来と完全に同じ動作・結果になる（get_app_cumulative_qty_bulk()が
+    cutoff_date省略時と同じSQLを発行するため）。
     """
     plan_items = list_plan_items_by_lot(lot_no)
     if not plan_items:
         raise ValueError(f"ロットNo. {lot_no} の計画が見つかりません。")
 
     kitting_list_no_lot_pairs = [(item["kitting_list_no"], lot_no) for item in plan_items]
-    cumulative_by_pair = get_app_cumulative_qty_bulk(kitting_list_no_lot_pairs)
+    cumulative_by_pair = get_app_cumulative_qty_bulk(kitting_list_no_lot_pairs, cutoff_date=cutoff_date)
 
-    return _evaluate_lot_status(lot_no, plan_items, cumulative_by_pair)
+    return _evaluate_lot_status(lot_no, plan_items, cumulative_by_pair, cutoff_date=cutoff_date)
 
 
 def list_incomplete_lots():
@@ -1297,6 +1581,58 @@ def check_lot_progress():
 
     results = [
         _evaluate_lot_status(lot_no, items, cumulative_by_pair)
+        for lot_no, items in items_by_lot.items()
+    ]
+
+    results.sort(key=lambda r: r["lot_no"])
+    return results
+
+
+def evaluate_all_lot_status(cutoff_date: str = None, board_structure_cache: dict = None) -> list:
+    """
+    check_lot_progress()と同じ一括取得パターン（list_plan_items_for_all_lots()＋
+    get_app_cumulative_qty_bulk()、全ロット分を1回のクエリでまとめて取得）で、
+    現在アクティブな全ロットについて_evaluate_lot_status()を呼ぶ、cutoff_date
+    対応版（2026-10-09追加、日々の引落一覧の払出し日ベース化（D-115/D-29改訂）の
+    ため）。
+
+    check_lot_progress()自体は変更していない（既存の呼び出し元・挙動に影響を
+    与えないよう、新規関数として追加した）。本関数はcutoff_date（省略可）を
+    get_app_cumulative_qty_bulk()へそのまま渡す点のみがcheck_lot_progress()との
+    違いで、それ以外のロジックは完全に同一。cutoff_date省略時（None）は
+    check_lot_progress()と完全に同じ結果を返す。
+
+    board_structure_cache（2026-10-09追加）：_evaluate_lot_status()へそのまま
+    渡すメモ化キャッシュ（省略可）。services.lot_status_history.
+    get_daily_drawdown()が、対象日・前日の2回の呼び出しをまたいで構成基板数
+    マスタの検索結果を使い回すために、呼び出し元であらかじめ用意した1つの
+    辞書を渡す（1057ロット規模の実データで、キャッシュ無しでは1回の表示に
+    5〜10秒かかっていたのが、1回の表示（今回・前日の2回の本関数呼び出し）
+    全体でキャッシュを共有することで1秒未満に収まることを確認済み）。
+    省略時（None）は毎回get_board_structure()を呼ぶ従来通りの動作になる。
+
+    呼び出し元：services.lot_status_history.get_daily_drawdown()
+    （対象日・前日のそれぞれでcutoff_dateを指定して本関数を1回ずつ呼び、
+    lot_noごとのlot_completedを比較する）。
+
+    戻り値：_evaluate_lot_status()の戻り値のリスト（lot_no昇順）。
+    """
+    plan_items = list_plan_items_for_all_lots()
+
+    items_by_lot = {}
+    for item in plan_items:
+        items_by_lot.setdefault(item["lot_no"], []).append(item)
+
+    kitting_list_no_lot_pairs = [
+        (item["kitting_list_no"], item["lot_no"]) for item in plan_items
+    ]
+    cumulative_by_pair = get_app_cumulative_qty_bulk(kitting_list_no_lot_pairs, cutoff_date=cutoff_date)
+
+    results = [
+        _evaluate_lot_status(
+            lot_no, items, cumulative_by_pair,
+            cutoff_date=cutoff_date, board_structure_cache=board_structure_cache,
+        )
         for lot_no, items in items_by_lot.items()
     ]
 

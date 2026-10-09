@@ -217,6 +217,39 @@ def _date_only_diff_days(report_date, plan_start_datetime):
     return abs((dt.date() - reference.date()).days)
 
 
+def _is_qty_mismatch(planned_qty, daily_qty) -> bool:
+    """
+    計画数（候補のplanned_qty）とCSVの実績数（daily_qty）が一致するかどうかの
+    判定（2026-10-08、画面修正タスクで抽出。以前はevaluate_auto_register_
+    eligibility()内に直接書かれていたインライン判定だったが、候補一覧の
+    右クリック即時登録禁止（「数量が違う候補」の判定）でも全く同じ基準を
+    使う必要があったため、共通関数として切り出した。比較不能な場合は
+    安全側（不一致）に倒す、既存のis_already_registered()等と同じ考え方）。
+    """
+    try:
+        return float(planned_qty) != float(daily_qty)
+    except (TypeError, ValueError):
+        return True
+
+
+def _is_candidate_already_registered(candidate, lot_no) -> bool:
+    """
+    候補（find_matching_plan_items()の候補、kitting_plan_items 1行分）に、
+    既にproduction_dailyの実績が1件以上あるかどうかの判定（2026-10-08、
+    候補一覧の「登録済み」表示・右クリック禁止で使う）。
+    evaluate_auto_register_eligibility()のREASON_EXISTING判定
+    （list_daily_production_by_kitting_no()の結果が非空）と全く同じ基準。
+
+    「完了済み」（実績が発注数に達している）とは異なる概念である点に注意：
+    候補自体は、呼び出し元（_load_staged_rows_from_db()→find_matching_
+    plan_items()→group_active_plan_items_by_lot()→list_active_plan_items()）
+    の時点で完了済み計画（実績 >= 発注数）が既に除外されているため、ここに
+    来る候補は「完了していないが、既に一部または完全に同額の実績が登録済み」
+    というケースのみを指す。
+    """
+    return bool(list_daily_production_by_kitting_no(candidate["kitting_list_no"], lot_no))
+
+
 def is_auto_confirmable(lot_no, product_name, planned_qty, daily_qty, plan_start_datetime, report_date,
                          max_date_diff_days=AUTO_REGISTER_MAX_DAYS_SHIFT_S):
     """
@@ -366,11 +399,7 @@ def evaluate_auto_register_eligibility(row, candidates, matched, plan_key_counts
     if classification == SIDE1_ONLY_CLASS_UNREGISTERED:
         return AUTO_REGISTER_INELIGIBLE, REASON_SIDE_MASTER_UNREGISTERED, candidate, None
 
-    try:
-        qty_mismatch = float(candidate.get("planned_qty")) != float(row.get("daily_qty"))
-    except (TypeError, ValueError):
-        qty_mismatch = True
-    if qty_mismatch:
+    if _is_qty_mismatch(candidate.get("planned_qty"), row.get("daily_qty")):
         return AUTO_REGISTER_INELIGIBLE, REASON_QTY_MISMATCH, candidate, None
 
     date_diff = _date_only_diff_days(row.get("report_date"), candidate.get("plan_start_datetime"))
@@ -682,6 +711,14 @@ class ProductionImportStagingWindow(tk.Toplevel):
         # ui/highlight_colors.MISMATCH_RED）を再利用し、新しい色は定義しない。
         # 他の全タグより優先して割り当てる（_populate_candidates()参照）。
         self.tree_candidates.tag_configure("product_name_mismatch", background=MISMATCH_RED)
+        # 登録済みの候補（2026-10-08追加）：既にproduction_dailyの実績がある
+        # 候補の行を、グレーの文字で表示する。背景色の各タグ（上記）とは
+        # 別軸（文字色のみ）のプロパティのため、他の背景色タグと併用して
+        # 同時に適用できる（例：製品名不一致＝赤背景＋登録済み＝グレー文字、
+        # という組み合わせも技術的に競合しない）。優先順位の考え方：背景色
+        # 同士の優先順位（上記の判定順）はそのまま変更せず、「登録済み」の
+        # 文字色は常に追加で重ねる（_populate_candidates()参照）。
+        self.tree_candidates.tag_configure("already_registered", foreground="gray")
 
         # スクロールバーをTreeviewより先にpackする（右ペインと同じ順序）。
         vsb = ttk.Scrollbar(tree_frame, orient="vertical")
@@ -1030,6 +1067,11 @@ class ProductionImportStagingWindow(tk.Toplevel):
                 tags = ("large_date_diff",)
             else:
                 tags = ()
+            # 登録済み（2026-10-08追加）：背景色の優先順位（上記のif/elif連鎖）
+            # とは独立に、常に追加で重ねる（文字色のみのタグのため、どの
+            # 背景色タグとも競合しない）。
+            if _is_candidate_already_registered(candidate, row.get("lot_no")):
+                tags = tags + ("already_registered",)
             iid = self.tree_candidates.insert("", tk.END, tags=tags, values=(
                 candidate.get("lot_no") or "",
                 candidate.get("board_name") or "",
@@ -1054,13 +1096,52 @@ class ProductionImportStagingWindow(tk.Toplevel):
         self.lbl_candidate_hint.config(text="右の登録待ち一覧から行を選択してください。")
 
     def _on_candidate_double_click(self, event):
+        """
+        登録済みの候補（2026-10-08追加）をダブルクリックした場合は、通常の
+        登録の流れ（_confirm_candidate()、親の実績記入欄への転記）には進まず、
+        その計画の実績修正画面（ui.kitting_production_entry.ActualCorrection
+        Window）を開く。クリックして選択しただけ（選択イベント、tree_
+        candidatesの<<TreeviewSelect>>等）では開かない：本メソッドは
+        <Double-1>のバインドのみから呼ばれるため、単純な選択では発火しない。
+        """
         iid = self.tree_candidates.identify_row(event.y)
         if not iid:
             return
         candidate = self._candidates_by_iid.get(iid)
         if candidate is None:
             return
+        row = self._current_staging_row
+        if row is not None and _is_candidate_already_registered(candidate, row.get("lot_no")):
+            self._open_correction_window_for_candidate(candidate, row.get("lot_no"))
+            return
         self._confirm_candidate(candidate)
+
+    def _open_correction_window_for_candidate(self, candidate, lot_no):
+        """
+        登録済みの候補から実績修正画面を開く（2026-10-08追加）。開いている間
+        は登録待ち一覧側の操作をブロックしない（モーダルではない、
+        ActualCorrectionWindow自体も既存のまま非モーダルのtk.Toplevel）が、
+        本メソッドはself.wait_window()で画面が閉じるまで待ち、閉じた直後に
+        登録待ち一覧ウインドウを前面へ戻す（_refocus_staging_window()、
+        D-98と同じ考え方）。保留行（self._row_by_iid）は一切変更しない
+        （remove_callbackを設定しない＝修正画面での操作が何であっても、
+        登録待ち一覧からこの保留行が消えることは無い。保留行をどうするかは
+        利用者が判断するという要件のため）。面の連動・確認（D-112）は
+        ActualCorrectionWindow自体にそのまま実装されているため、ここでは
+        何も特別な処理をしない。
+        """
+        from ui.kitting_production_entry import ActualCorrectionWindow
+
+        correction_win = ActualCorrectionWindow(
+            self, kitting_list_no=candidate["kitting_list_no"], lot_no=lot_no,
+            current_worker=getattr(self._parent, "current_worker", None),
+        )
+        self.wait_window(correction_win)
+        # 修正内容を候補一覧の表示（登録済み判定・差分表記等）に反映する。
+        row = self._current_staging_row
+        if row is not None:
+            self._populate_candidates(row)
+        self._refocus_staging_window()
 
     def _make_remove_callback(self, staging_iid):
         """
@@ -1158,6 +1239,20 @@ class ProductionImportStagingWindow(tk.Toplevel):
         右クリックされた候補について、確認ダイアログを経由せず即座に登録する
         （右クリック＝即時登録、ダブルクリック＝従来の一直線フローへの転記、
         という使い分け）。
+
+        以下の2条件では即時登録を禁止する（2026-10-08追加。確認ダイアログを
+        経由しない右クリックは、誤った上書き・数量の合わない登録を未然に
+        防ぐ手段が無いため）。メニューという形は採らず、右クリックの既存の
+        挙動（即座に処理する）を維持したまま、該当する場合は理由を表示して
+        何もしない形にした（本画面には右クリックで出すメニュー自体が
+        元々存在しないため、新設するより既存の構造に沿う判断）：
+          - 登録済み（既に実績がある）候補：誤って既存の実績を上書き登録
+            してしまうことを防ぐ。ダブルクリックで実績修正画面を開けば
+            確認・連動を経て修正できる。
+          - 数量が違う候補：Shift+S・Shift+Qと同じ基準（_is_qty_mismatch()）
+            で、計画数とCSVの実績数が一致しない候補への即時登録を防ぐ。
+            ダブルクリックからの通常の登録確認フローでは、要件通り従来どおり
+            登録できる。
         """
         iid = self.tree_candidates.identify_row(event.y)
         if not iid:
@@ -1170,6 +1265,24 @@ class ProductionImportStagingWindow(tk.Toplevel):
         staging_iid = self._current_staging_iid
         if row is None or staging_iid is None:
             return
+
+        if _is_candidate_already_registered(candidate, row.get("lot_no")):
+            messagebox.showinfo(
+                "即時登録できません",
+                "この計画には既に実績が登録されているため、右クリックでの即時登録は行えません。\n"
+                "ダブルクリックすると、実績修正画面を開けます。",
+                parent=self.winfo_toplevel(),
+            )
+            return
+        if _is_qty_mismatch(candidate.get("planned_qty"), row.get("daily_qty")):
+            messagebox.showinfo(
+                "即時登録できません",
+                "計画数とCSVの実績数が一致しないため、右クリックでの即時登録は行えません。\n"
+                "ダブルクリックすると、通常の登録確認画面から登録できます。",
+                parent=self.winfo_toplevel(),
+            )
+            return
+
         self._register_candidate_immediately(row, staging_iid, candidate)
 
     def _register_candidate_immediately(self, row, staging_iid, candidate, record_history=True):

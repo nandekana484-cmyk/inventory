@@ -9,7 +9,7 @@ from tkinter import ttk, messagebox, filedialog
 
 from tkcalendar import DateEntry
 
-from services.lot_status_history import get_daily_drawdown
+from services.lot_status_history import get_daily_drawdown, get_drawdown_date_range
 from ui.window_utils import center_window
 
 DRAWDOWN_HEADERS = [
@@ -38,24 +38,30 @@ def _drawdown_row_to_values(row):
 
 class DailyDrawdownWindow(tk.Toplevel):
     """
-    日々の引落一覧：指定日に、models.lot_status_history（実績の登録・修正の
-    たびに記録されるロット状態の履歴）上でロット・ファイルNo単位の引落
-    （lot_completed）が前日以前と比べて増えた行だけを一覧表示する
-    （services.lot_status_history.get_daily_drawdown()参照）。
+    日々の引落一覧：指定日（対象日）までの実績（production_daily.report_date、
+    CSV由来の実績は払出し日、手入力の実績は入力した日）だけを使って計算した
+    ロットの完成数が、対象日の前日までの完成数と比べて増えた行だけを一覧表示
+    する（services.lot_status_history.get_daily_drawdown()参照）。
 
-    日報・月報とは異なり、production_daily.report_date（ユーザーが指定する
-    任意の日付、後から過去日付として登録し直すこともできる）ではなく、
-    lot_status_history.recorded_at（実際に書き込まれた壁時計時刻、後から
-    遡って変わらない）を基準にする点が異なる（services/lot_status_history.py
-    モジュールdocstring参照）。
+    2026-10-09、以前の方式（models.lot_status_history、実績の登録・修正の
+    たびに記録される壁時計時刻recorded_atを基準に前日以前と比較する方式）
+    から、本方式（report_dateを基準に、対象日・前日それぞれの時点の完成数を
+    都度再計算する方式）へ変更した（D-115での評価、D-116・D-29改訂参照）。
+    対象日は「アプリに登録した日」ではなく「実績の日付（払出し日・入力日）」
+    になった。もとの実績・構成基板数マスタ・計画のいずれかが変われば、
+    過去の対象日の結果も再計算のたびに変わりうる（もとのデータに変更が無い
+    限り、同じ対象日の結果は何度計算しても変わらない）。
     """
     def __init__(self, parent):
         super().__init__(parent)
-        self.target_date = datetime.now().strftime("%Y-%m-%d")
         self.report_rows = []
 
+        first_date, last_date = get_drawdown_date_range()
+        initial_date = last_date or datetime.now().strftime("%Y-%m-%d")
+        self.target_date = initial_date
+
         self.title("日々の引落一覧")
-        self.geometry("900x520")
+        self.geometry("900x560")
         center_window(self, parent)
 
         date_frame = ttk.Frame(self, padding=10)
@@ -64,11 +70,47 @@ class DailyDrawdownWindow(tk.Toplevel):
         ttk.Label(date_frame, text="対象日：").pack(side=tk.LEFT, padx=5)
         self.date_entry = DateEntry(date_frame, date_pattern="yyyy-mm-dd", width=12, locale="ja_JP")
         self.date_entry.pack(side=tk.LEFT, padx=5)
+        # 初期値を「引落のある最後の日付」にする（2026-10-09追加、D-116）。
+        # 以前の実装は、DateEntry自身の既定値（今日の日付）のまま特に上書き
+        # していなかった（self.target_date = datetime.now()...は設定していた
+        # ものの、on_aggregate()内でself.date_entry.get()の値（今日の日付）に
+        # 即座に上書きされており、実際には使われていなかった）。
+        try:
+            self.date_entry.set_date(datetime.strptime(initial_date, "%Y-%m-%d").date())
+        except (ValueError, TypeError):
+            pass
 
         ttk.Button(date_frame, text="集計", command=self.on_aggregate).pack(side=tk.LEFT, padx=10)
 
         self.lbl_count = ttk.Label(date_frame, text="")
         self.lbl_count.pack(side=tk.LEFT, padx=10)
+
+        # 対象日の意味の説明（2026-10-09追加、D-116）。
+        explanation_frame = ttk.Frame(self, padding=(10, 0))
+        explanation_frame.pack(fill=tk.X)
+        ttk.Label(
+            explanation_frame,
+            text="対象日は実績の日付（CSV由来の実績は払出し日、手入力の実績は入力した日）です。",
+            foreground="gray",
+        ).pack(side=tk.LEFT, padx=5)
+
+        # 引落のあるデータの日付範囲（対象日選択の手がかり、2026-10-09追加、D-116）。
+        range_frame = ttk.Frame(self, padding=(10, 0, 10, 5))
+        range_frame.pack(fill=tk.X)
+        if first_date and last_date:
+            range_text = f"データの日付範囲：{first_date} 〜 {last_date}"
+        else:
+            range_text = "データの日付範囲：（実績が登録されていません）"
+        ttk.Label(range_frame, text=range_text, foreground="gray").pack(side=tk.LEFT, padx=5)
+
+        # --- 下部に配置するボタン行を先にpackし、領域を確保する（2026-10-08
+        # 追加、スクロールバー新設に伴う既知のpack順序の対策。
+        # ui/production_import_staging_window.py等の既存の対策と同じ理由：
+        # Treeview（expand=True, fill=BOTH）を先にpackすると、後からpackする
+        # スクロールバー・ボタン行の領域が残らない）。
+        btn_frame = ttk.Frame(self, padding=10)
+        btn_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Button(btn_frame, text="CSV出力", command=self.on_export_csv).pack(side=tk.LEFT, padx=5)
 
         tree_frame = ttk.Frame(self, padding=10)
         tree_frame.pack(expand=True, fill=tk.BOTH)
@@ -85,12 +127,24 @@ class DailyDrawdownWindow(tk.Toplevel):
         self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings")
         for c in cols:
             self.tree.heading(c, text=headers[c])
-            self.tree.column(c, width=widths[c], anchor=tk.W if c in left_aligned else tk.E)
-        self.tree.pack(expand=True, fill=tk.BOTH)
+            # stretch=False（2026-10-08追加）：既定のstretch=Trueのままだと
+            # 列幅が表示領域に合わせて自動伸縮し、横スクロールバーを追加しても
+            # 実質動かせる余地が生まれない（画面修正5項目§5・D-99と同じ理由）。
+            self.tree.column(c, width=widths[c], anchor=tk.W if c in left_aligned else tk.E, stretch=False)
 
-        btn_frame = ttk.Frame(self, padding=10)
-        btn_frame.pack(fill=tk.X)
-        ttk.Button(btn_frame, text="CSV出力", command=self.on_export_csv).pack(side=tk.LEFT, padx=5)
+        # 縦・横スクロールバー（2026-10-08追加）。スクロールバーをTreeviewより
+        # 先にpackする（既存の他一覧と同じ順序、同じ理由：同じtree_frame内の
+        # 兄弟同士でも、Treeview（expand=True, fill=BOTH）を先にpackすると
+        # スクロールバー分の領域が残らない）。
+        hsb = ttk.Scrollbar(tree_frame, orient="horizontal")
+        hsb.pack(side=tk.BOTTOM, fill=tk.X)
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical")
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.tree.pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
+        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        vsb.configure(command=self.tree.yview)
+        hsb.configure(command=self.tree.xview)
 
         self.on_aggregate()
 
