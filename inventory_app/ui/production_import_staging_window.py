@@ -1,47 +1,8 @@
-# ui/production_import_staging_window.py
 """
-実績CSV取込のステージング一覧（「確認・選択・転記」方式）。
-
-左右2ペイン構成（ui.ng_input_window.NgInputWindow・ui.wip_expansion_window.
-WipExpansionWindowと同じ配置規則：左＝操作・詳細、右＝一覧）：
-  - 右ペイン：models.production_import_staging.pending_csv_import_rows
-    （DBへは未登録のCSV行一覧、_load_staged_rows_from_db()参照）を表示する。
-    行を選択（<<TreeviewSelect>>）すると、その行の候補を左ペインへ表示する。
-  - 左ペイン：models.kitting_plan.find_matching_plan_items()で再照合した候補
-    一覧を表示する（ソート・ハイライトはui.plan_candidate_dialogの既存ロジック
-    をそのまま再利用、後述）。候補をダブルクリックすると、親（parent、通常は
-    ui.kitting_production_entry.KittingProductionEntryWindowのインスタンス）の
-    search_plan()・entry_daily_qty・_pending_csv_row_removal・
-    _pending_csv_report_dateへ直接転記・登録準備を行う。
-
-以前は候補選択にui.plan_candidate_dialog.select_plan_candidate_by_lot()
-（モーダルダイアログ、on_row_confirmedコールバック経由でparentに処理を
-委譲）を使っていたが、本ウインドウが独立したTkinterのToplevelのまま
-parentへの参照（self._parent、__init__()のparent引数）を既に保持していた
-ため、モーダルダイアログを経由せず「親の同じメソッド・属性を直接呼ぶ」形に
-書き換えることができた（parent.search_plan()等はウインドウの前面・
-フォーカス状態に依存しないため、この直接呼び出しに支障は無い）。
-select_plan_candidate_by_lot()自体・ui.plan_candidate_dialogモジュール自体は
-変更していない（同モジュールの_show_candidate_list_dialog()・
-select_plan_candidate()はui.ng_input_window.NgInputWindowが引き続き使用する
-ため）。ソート・ハイライトロジック（_sort_candidates_by_closeness()・
-_is_large_qty_diff()等）は、ロジックを重複させないためui.plan_candidate_dialog
-から直接importして再利用する（下線始まりの非公開名だが、意図的な再利用）。
-
-登録完了の検知：以前は呼び出し元が渡すremove_callbackコールバック経由
-だったが、候補確定処理自体が本ウインドウ内で完結するようになったため、
-_confirm_candidate()内で定義したremove_callbackをparent._pending_csv_
-row_removalへ直接セットし、parent._perform_registration()の登録成功時に
-それが直接呼ばれる形になった（本ウインドウ側からDBの状態を能動的に
-ポーリングしない、という設計自体は変わらない）。
-
-ステージングデータの永続化（models.production_import_staging）：CSVの生の
-行データ（lot_no・product_name・daily_qty・report_date・worker_id）をDB
-（pending_csv_import_rows）へ永続化する。候補（candidates/matched）自体は
-DBに保存せず、_load_staged_rows_from_db()・_populate_candidates()が表示の
-たびにmodels.kitting_plan.find_matching_plan_items()で再照合する（計画の
-変更に追随できるよう、常に最新のDB状態を反映するため）。登録・除外が確定した
-行はdelete_pending_csv_import_row()で即座に物理削除し、履歴としては残さない。
+実績CSV取込のステージング一覧（「確認・選択・転記」方式）。右＝登録待ちの保留行、左＝選択した行の候補。
+候補をダブルクリックすると、親（KittingProductionEntryWindow）の search_plan()・entry_daily_qty・
+_pending_csv_row_removal・_pending_csv_report_date へ直接転記する。候補は DB に保存せず、表示のたびに再照合する。
+設計と経緯は docs/domain/production_import_staging.md。
 """
 import csv
 import logging
@@ -69,12 +30,7 @@ from models.production_import_staging import (
 from models.lot_status_history import record_lot_status_snapshot
 
 logger = logging.getLogger(__name__)
-# ui.plan_candidate_dialog（モーダルダイアログ用の実装）から、候補の並べ替え・
-# ハイライト判定・表示フォーマットのロジックのみをそのまま再利用する。
-# ui.plan_candidate_dialog自体はui.ng_input_window.NgInputWindowが引き続き
-# 使うモーダルダイアログ（select_plan_candidate()・_show_candidate_list_
-# dialog()）のため変更しない。下線始まりの非公開名だが、ロジックを重複させて
-# 二重管理になることを避けるため、あえて直接importする。
+# ui.plan_candidate_dialog の並べ替え・ハイライト判定を、重複させないためにそのまま使う（_ 始まりだが意図的な再利用）。
 from ui.plan_candidate_dialog import (
     _sort_candidates_by_closeness,
     _is_large_qty_diff,
@@ -91,17 +47,10 @@ from ui.plan_candidate_dialog import (
 from ui.window_utils import center_window
 from ui.highlight_colors import MISMATCH_RED
 
-# "候補なし"（find_matching_plan_items()の候補が0件）行をCSV出力する際の理由欄。
-# services.production_import_service.import_production_csv()のunmatched理由
-# 文言と揃えている。
+# 「候補なし」行を CSV 出力するときの理由。import_production_csv() の unmatched の理由と同じ文言。
 REASON_NO_CANDIDATES = "計画が見つからない（該当lot_noの計画なし）"
 
-# 「不一致として除外」時、除外理由の入力を空欄のまま・キャンセルした場合の
-# デフォルト文言。REASON_NO_CANDIDATES（機械判定による固定理由1種類のみ）とは
-# 異なり、不一致は人間が個別に判断するため理由は行ごとに様々であり得る
-# （例：ロットNoの入力ミス、対象外の製品、二重入力等）。そのため理由入力欄は
-# 任意入力（自由記述）とし、何も入力されなかった場合のみこのデフォルト文言を
-# 使う方針とした。
+# 「不一致として除外」で理由が空欄・キャンセルのときの既定の文言（理由は人が判断するので自由記述）。
 REASON_MISMATCH_DEFAULT = "不一致と判断（詳細理由未入力）"
 
 
@@ -113,17 +62,8 @@ _SIDE1_ONLY_CONFIRM_REASONS = {
 
 def _confirm_side1_only_if_applicable(parent, candidate):
     """
-    candidate（find_matching_plan_items()の候補、kitting_plan_items 1行分）が
-    面1のみの計画で、生産面マスターの分類（models.kitting_plan.
-    classify_side1_only_plan()）が「面2待ち」または「生産面マスター未登録」の
-    場合、理由を示した確認ダイアログを出す（2026-10-07新設、D-9x参照）。
-    登録そのものは禁止しない（「はい」で続行できる）。分類が"a"（片面の製品）、
-    またはNone（面2の計画自体、分類対象外）の場合は、ダイアログを出さず
-    常にTrueを返す。
-
-    「いいえ」を選んだ場合はFalseを返し、呼び出し元（_register_candidate_
-    immediately()）は検索欄への転記・登録処理のいずれも行わず即座に戻ること
-    （保留行もそのまま残る）。
+    候補が面1だけの計画で、生産面マスターの分類が「面2待ち」「未登録」なら、理由を示す確認ダイアログを出す（D-9x）。
+    登録は禁止しない。それ以外は常に True。False のとき、呼び出し元は転記も登録もせずに戻ること（保留行は残る）。
     """
     classification = classify_side1_only_plan(candidate)
     if classification not in _SIDE1_ONLY_CONFIRM_REASONS:
@@ -138,11 +78,8 @@ def _confirm_side1_only_if_applicable(parent, candidate):
     return messagebox.askyesno("面1のみの計画への登録", message, parent=parent.winfo_toplevel())
 
 
-# Shift+S・Shift+Qで許容する、payout日（report_date）と生産予定日
-# （plan_start_datetime）の差（日数、日付のみで比較）の上限。
-# 「Shift+Qを追加する。Shift+Sとの違いは日付の条件だけ」という利用者決定に
-# 基づき、両ショートカットの差は、唯一この定数の値の違いだけにする
-# （2026-10-08追加、D-101）。
+# Shift+S・Shift+Q で許容する、払い出し日と生産予定日の差（日付のみで比較）。
+# 両ショートカットの違いは、この日数の違いだけにする（利用者の決定、D-101）。
 AUTO_REGISTER_MAX_DAYS_SHIFT_S = 1
 AUTO_REGISTER_MAX_DAYS_SHIFT_Q = 4
 
@@ -150,14 +87,11 @@ AUTO_REGISTER_MAX_DAYS_SHIFT_Q = 4
 AUTO_REGISTER_ELIGIBLE = "eligible"
 AUTO_REGISTER_INELIGIBLE = "ineligible"
 
-# 一覧（登録待ち一覧）の状態表示用：候補が単一に解決でき、数量・日付の両方の
-# 条件を満たした行を、日付差でさらに2段階に分ける（2026-10-08追加、D-101）。
+# 登録できる行を、日付の差で「Shift+S で可」「Shift+Q でのみ可」の2段階に分ける（D-101）。
 STATUS_ELIGIBLE_SHIFT_S = "eligible_shift_s"
 STATUS_ELIGIBLE_SHIFT_Q = "eligible_shift_q"
 
-# evaluate_auto_register_eligibility()が返す理由コードの一覧（登録できない
-# 場合のreason）。STAGING_STATUS_LABELS（services.production_import_service）
-# のキーとしても使うため、ここで一括管理する。
+# 登録できない理由のコード。STAGING_STATUS_LABELS（production_import_service）のキーにも使う。
 REASON_NO_CANDIDATES_CODE = "no_candidates"
 REASON_PRODUCT_NAME_MISMATCH = "product_name_mismatch"
 REASON_MULTIPLE_CANDIDATES = "multiple_candidates"
@@ -169,10 +103,7 @@ REASON_QTY_MISMATCH = "qty_mismatch"
 REASON_DATE_UNPARSEABLE = "date_unparseable"
 REASON_DATE_DIFF_TOO_LARGE = "date_diff_too_large"
 
-# _on_bulk_register()・_on_bulk_register_extended()の完了メッセージで、
-# スキップ理由ごとの件数を表示する際のラベル（短い文言、2026-10-08追加）。
-# 一覧の「状態」列（STAGING_STATUS_LABELS）とは文脈が違う（完了メッセージの
-# 1行の中で使うため、より短い名詞句にしている）ため、別辞書にしている。
+# 一括登録の完了メッセージで、スキップ理由ごとの件数に付ける短いラベル（一覧の「状態」列とは別）。
 AUTO_REGISTER_SKIP_REASON_LABELS = {
     REASON_NO_CANDIDATES_CODE: "候補なし",
     REASON_PRODUCT_NAME_MISMATCH: "製品名不一致",
@@ -189,24 +120,8 @@ AUTO_REGISTER_SKIP_REASON_LABELS = {
 
 def _date_only_diff_days(report_date, plan_start_datetime):
     """
-    report_date（CSVの払い出し日）とplan_start_datetime（候補の生産予定日）の
-    差の日数（絶対値）を、日付だけで比較する（時刻は無視する、2026-10-08追加、
-    D-101）。パース不能・どちらか欠落なら比較不能としてNone。
-
-    旧ui.plan_candidate_dialog._compute_date_diff_days()は、
-    plan_start_datetimeの時刻成分まで含めた生の経過時間を
-    timedelta.daysでfloorしていたため、時刻成分が存在する場合に暦日の差と
-    ずれることがあった（実データのplan_start_datetimeは全件に0時以外の
-    時刻成分がある。例：report_date="2026-07-23"、
-    plan_start_datetime="2026/07/21 23:50:00"の場合、暦日の差は2日だが、
-    生の経過時間は1日10分のためfloorで1日と計算されてしまっていた）。
-    本関数は両方の値を日付のみ（.date()）に正規化してから差を取ることで、
-    この時刻成分によるずれを無くす。
-
-    パースロジック自体（_parse_flexible_date()・_parse_plan_start_datetime()）は
-    ui.plan_candidate_dialogのものをそのまま再利用する（日付形式の解釈を
-    1箇所に集約し、ずれが生じないようにするため。本関数が変えるのは
-    「パース後の差分計算の単位」のみ）。
+    払い出し日と生産予定日の差の日数（絶対値）を、日付だけで比較する。どちらかが解釈できなければ None。
+    時刻まで含めると暦日の差とずれる（実データの生産予定日には全件時刻がある。7/23 と 7/21 23:50 は2日だが、1日になってしまう）。
     """
     reference = _parse_flexible_date(report_date)
     if reference is None:
@@ -218,14 +133,7 @@ def _date_only_diff_days(report_date, plan_start_datetime):
 
 
 def _is_qty_mismatch(planned_qty, daily_qty) -> bool:
-    """
-    計画数（候補のplanned_qty）とCSVの実績数（daily_qty）が一致するかどうかの
-    判定（2026-10-08、画面修正タスクで抽出。以前はevaluate_auto_register_
-    eligibility()内に直接書かれていたインライン判定だったが、候補一覧の
-    右クリック即時登録禁止（「数量が違う候補」の判定）でも全く同じ基準を
-    使う必要があったため、共通関数として切り出した。比較不能な場合は
-    安全側（不一致）に倒す、既存のis_already_registered()等と同じ考え方）。
-    """
+    """計画数と CSV の実績数が一致しないか。比較できなければ不一致（安全側）とする。"""
     try:
         return float(planned_qty) != float(daily_qty)
     except (TypeError, ValueError):
@@ -234,18 +142,7 @@ def _is_qty_mismatch(planned_qty, daily_qty) -> bool:
 
 def _is_candidate_already_registered(candidate, lot_no) -> bool:
     """
-    候補（find_matching_plan_items()の候補、kitting_plan_items 1行分）に、
-    既にproduction_dailyの実績が1件以上あるかどうかの判定（2026-10-08、
-    候補一覧の「登録済み」表示・右クリック禁止で使う）。
-    evaluate_auto_register_eligibility()のREASON_EXISTING判定
-    （list_daily_production_by_kitting_no()の結果が非空）と全く同じ基準。
-
-    「完了済み」（実績が発注数に達している）とは異なる概念である点に注意：
-    候補自体は、呼び出し元（_load_staged_rows_from_db()→find_matching_
-    plan_items()→group_active_plan_items_by_lot()→list_active_plan_items()）
-    の時点で完了済み計画（実績 >= 発注数）が既に除外されているため、ここに
-    来る候補は「完了していないが、既に一部または完全に同額の実績が登録済み」
-    というケースのみを指す。
+    候補の計画に、既に実績が1件以上あるか。「完了済み」とは別の概念（完了済みの計画は、候補の時点で除外されている）。
     """
     return bool(list_daily_production_by_kitting_no(candidate["kitting_list_no"], lot_no))
 
@@ -253,55 +150,9 @@ def _is_candidate_already_registered(candidate, lot_no) -> bool:
 def is_auto_confirmable(lot_no, product_name, planned_qty, daily_qty, plan_start_datetime, report_date,
                          max_date_diff_days=AUTO_REGISTER_MAX_DAYS_SHIFT_S):
     """
-    調査（自動確定可能な実績の要件検証）で仮実装した判定を正式に実装したもの。
-
-    要件：
-      - 生産予定数（planned_qty）とCSVの実績数（daily_qty）が完全一致
-      - 生産予定日（plan_start_datetime）とCSVの払い出し日（report_date）の
-        差がmax_date_diff_days日以内（日付のみで比較し、時刻は無視する）
-
-    lot_no・product_nameは本関数自体の判定には使わない（呼び出し元
-    （_populate_candidates()）が既にfind_matching_plan_items()でlot_no・
-    製品名の一致を確認した上で得た個々の候補について、追加の数量・日付条件を
-    判定する用途のため）。is_already_registered(lot_no, product_name,
-    daily_qty)と引数の並びを揃え、関連する判定関数群として一貫させるために
-    残している。
-
-    配置場所について：調査時の指示は「services/production_import_service.py
-    （または適切な場所）」だったが、日数差の計算にui.plan_candidate_dialog.
-    _parse_flexible_date()・_parse_plan_start_datetime()を使う必要があり、
-    services層がui層のモジュールに依存する形になってしまう（このコードベースの
-    他の箇所はすべてui→services→modelsの一方向依存）。呼び出し元がui.
-    production_import_staging_window（本ファイル）のみであることも踏まえ、
-    あえてservices/production_import_service.pyには置かず、本ファイルに
-    配置した。
-
-    max_date_diff_days（2026-10-08追加、D-101・Shift+Q新設に伴う判定の
-    共通化）：既定値はShift+Sの許容日数（1日）のため、この引数を追加した前後で
-    既存の呼び出し元（_populate_candidates()、常に既定値のまま呼ぶ）の動作は
-    変わらない。evaluate_auto_register_eligibility()がShift+Q
-    （AUTO_REGISTER_MAX_DAYS_SHIFT_Q=4）を判定する際に、本関数へこの値を
-    明示的に渡す。
-
-    日数差の計算方式について（2026-10-08修正、D-101）：以前は
-    ui.plan_candidate_dialog._compute_date_diff_days()
-    （plan_start_datetimeの時刻成分まで含めた生の経過時間をfloor）を使って
-    いたが、_date_only_diff_days()（日付のみで比較、時刻は無視）に差し替えた。
-    実データのplan_start_datetimeは全件に0時以外の時刻成分があり、旧方式では
-    暦日の差が本来より少なく計算される境界ケースが起こりうることが判明した
-    ため（詳細は_date_only_diff_days()のdocstring参照）。この修正により、
-    是正された日数差が許容日数を超えることで対象から外れる行が実データで
-    存在し得る（Shift+Sの判定結果への影響は、検証で実測した件数を参照）。
-
-    以前の制約（修正済み）：調査時点の実データ（pending_csv_import_rows
-    95件）では、report_dateの実運用値が"YYYY/M/D"形式（例："2026/3/18"、
-    月日がゼロ埋めされていない）だったが、_parse_flexible_date()が
-    対応する前の旧_parse_report_date()は"%Y-%m-%d"のみにしか対応しておらず、
-    実データでは本関数が常にFalse（日付比較不能）を返していた。現在は
-    "%Y-%m-%d"・"%Y/%m/%d"（ゼロ埋めの有無を問わない）の両方に対応済みのため、
-    実データでも正しく判定できる。日付・数量いずれも比較不能な場合はFalse
-    （安全側）に倒す設計はis_already_registered()と同じ考え方のまま変えて
-    いない。
+    数量が完全一致し、払い出し日と生産予定日の差が max_date_diff_days 日以内（日付のみで比較）なら True。
+    比較できない場合は False（安全側）。lot_no・product_name は判定に使わない（呼び出し元で一致を確認済み）。
+    services/ ではなくここに置くのは、日付の解釈に ui.plan_candidate_dialog を使うため（services から ui への依存を避けた）。
     """
     try:
         if float(planned_qty) != float(daily_qty):
@@ -318,61 +169,14 @@ def is_auto_confirmable(lot_no, product_name, planned_qty, daily_qty, plan_start
 
 def evaluate_auto_register_eligibility(row, candidates, matched, plan_key_counts, max_date_diff_days):
     """
-    1件の保留行（row）について、自動登録（Shift+S／Shift+Q）できるかどうかを、
-    1か所にまとめて判定する（2026-10-08新設、D-101。Shift+Qの追加に伴い、
-    一覧の状態表示（_load_staged_rows_from_db()）・Shift+S（_on_bulk_register()）・
-    Shift+Q（_on_bulk_register_extended()）の3箇所がそれぞれ独自に持っていた
-    判定ロジックを1つの関数に統合した）。
-
-    判定順序（優先順位、既存のShift+S・一覧の状態表示の優先順位をそのまま
-    踏襲）：
-      1. 候補なし（lot_noが一致する計画が1件も無い）
-      2. 製品名の不一致（lot_noは一致するが、製品名が一致する候補が無い。
-         以前は「候補あり（要選択）」に一括で含まれていたが、原因を区別
-         できるよう分離した）
-      3. 候補が複数（製品名まで一致する候補が2件以上。どの計画かは人が選ぶ）
-      4. 既に実績あり（その計画（kitting_list_no, lot_no）に既に
-         production_daily行が1件以上ある。黙って上書きしないため対象外）
-      5. 同じ計画への重複（同じ計画を候補とする保留行が、他にも一覧に存在する。
-         どちらを登録すべきかは人が判断する）
-      6. 面2待ち／生産面マスター未登録（候補の計画が面1のみで、生産面マスターの
-         分類が「面2待ち」または「生産面マスター未登録」）
-      7. 数量の不一致（計画数とCSVの実績数が完全一致しない）
-      8. 日付を解釈できない（払い出し日・生産予定日のいずれかがパース不能。
-         安全側に倒し、登録できない側とする）
-      9. 日付の差が許容（max_date_diff_days）を超える
-      10.（いずれにも該当しない）登録可能。日付の差が1日以内ならShift+Sで
-         登録可、2日以上max_date_diff_days以下ならShift+Qでのみ登録可。
-
-    日付の差は、日付だけで比較する（時刻は無視する、_date_only_diff_days()
-    参照）。
-
-    引数：
-      row：{"lot_no", "product_name", "daily_qty", "report_date"}を持つ辞書
-           （_load_staged_rows_from_db()が組み立てる保留行、または同じ形の
-           辞書）。
-      candidates・matched：models.kitting_plan.find_matching_plan_items()の
-           戻り値をそのまま渡す（本関数自体はDBへの再照合を行わない。
-           呼び出し側が、最新の状態を使うか・キャッシュ済みの値を使うかを
-           決める。既存のコメント通り、一括登録系は必ず再照合した値を渡す
-           こと）。
-      plan_key_counts：{(kitting_list_no, lot_no): 件数}。現在対象にしている
-           行全体のうち、単一候補に解決できる行だけを数えた辞書。呼び出し側が
-           ループの外で1回だけ計算して渡す（既存のN+1回避パターンを維持）。
-      max_date_diff_days：AUTO_REGISTER_MAX_DAYS_SHIFT_S（1）または
-           AUTO_REGISTER_MAX_DAYS_SHIFT_Q（4）。
-
-    戻り値：(status, reason, candidate, date_diff)
-      status：AUTO_REGISTER_ELIGIBLE または AUTO_REGISTER_INELIGIBLE。
-      reason：ineligibleの場合のみ、上記いずれかの理由コード（文字列）。
-              eligibleの場合はNone。
-      candidate：単一候補に解決できた場合のみ、その候補（dict）。それ以外は
-              None（候補なし・製品名不一致・候補複数のいずれも、特定の1件に
-              絞れていないため）。
-      date_diff：日付の差（日数）を計算できた場合はその値（max_date_diff_days
-              を超えて不合格になった場合も含む）。候補未解決・計算不能なら
-              None。呼び出し側が、1日以内かどうかでShift+S/Shift+Qの表示を
-              分けるために使う。
+    1件の保留行が自動登録（Shift+S／Shift+Q）できるかを判定する。一覧の状態表示・Shift+S・Shift+Q の共通の判定（D-101）。
+    判定の優先順位:
+      1. 候補なし  2. 製品名の不一致  3. 候補が複数  4. 既に実績あり  5. 同じ計画への重複
+      6. 面2待ち／生産面マスター未登録  7. 数量の不一致  8. 日付を解釈できない  9. 日付の差が許容を超える
+      10. 登録可（差が1日以内なら Shift+S、2日以上なら Shift+Q のみ）
+    candidates・matched は find_matching_plan_items() の戻り値。一括登録では必ず再照合した値を渡すこと。
+    plan_key_counts は {(kitting_list_no, lot_no): 単一候補に解決できる行の数}（ループの外で1回だけ計算する）。
+    戻り値は (status, reason, candidate, date_diff)。各理由の意味は docs/domain/production_import_staging.md。
     """
     if not candidates:
         return AUTO_REGISTER_INELIGIBLE, REASON_NO_CANDIDATES_CODE, None, None
@@ -413,30 +217,9 @@ def evaluate_auto_register_eligibility(row, candidates, matched, plan_key_counts
 
 def _load_staged_rows_from_db():
     """
-    models.production_import_staging.list_pending_csv_import_rows()で未処理行を
-    DBから取得し、各行についてmodels.kitting_plan.find_matching_plan_items()で
-    候補（candidates/matched）を再照合した上で、evaluate_auto_register_
-    eligibility()で状態（status）を判定し、従来と同じ形の辞書リスト
-    （{"pending_row_id", "row", "lot_no", "product_name", "daily_qty",
-    "report_date", "worker_id", "candidates", "matched", "status"}）を組み立てる。
-
-    候補をDBに保存せず必ず再照合する理由はmodels.production_import_stagingの
-    docstring参照。plan_items_by_lot（services.production_import_service.
-    group_active_plan_items_by_lot()）は本関数内で1回だけ取得し、未処理行数分の
-    find_matching_plan_items()呼び出しで使い回す（CSV取込時と同じN+1回避）。
-
-    status（2026-10-08、D-101で判定ロジックを統合）：evaluate_auto_register_
-    eligibility()を、Shift+Qの許容日数（AUTO_REGISTER_MAX_DAYS_SHIFT_Q=4日）で
-    評価する。4日以内という最も広い範囲で評価することで、合格した行については
-    実際の日付差（date_diff）を使ってShift+S（1日以内）・Shift+Qのみ（2〜4日）の
-    どちらに該当するかをここでさらに判定できる（4日を超えて不合格になった行は
-    "date_diff_too_large"のまま、Shift+S・Shift+Qどちらでも対象外になる）。
-    不合格の場合はevaluate_auto_register_eligibility()が返す理由コードを
-    statusにそのまま使う（STAGING_STATUS_LABELSで表示ラベルに変換する）。
-
-    "no_candidates"のみ、_unregistrable_rows（登録不可リストのCSV出力対象）の
-    判定に使われているため、文字列自体は変更していない（旧実装からの既存の
-    依存）。
+    未処理の保留行を DB から読み、候補を再照合して状態を判定した辞書のリストを作る。plan_items_by_lot は1回だけ取得して使い回す。
+    状態は最も広い Shift+Q の許容日数（4日）で判定し、合格した行を日付の差で「Shift+S で可」「Shift+Q でのみ可」に分ける。
+    "no_candidates" は登録不可リストの CSV 出力の判定に使うので、文字列を変えないこと。
     """
     pending_rows = list_pending_csv_import_rows()
     if not pending_rows:
@@ -462,9 +245,7 @@ def _load_staged_rows_from_db():
             "matched": matched,
         })
 
-    # 重複判定用：単一候補に解決できる行だけを対象に、同じ(kitting_list_no,
-    # lot_no)を候補とする行数を数える（D-6の一意キーはこのペアであり、
-    # kitting_list_noだけではない。2026-10-06確認・修正の経緯を維持）。
+    # 単一候補に解決できる行について、同じ (kitting_list_no, lot_no) を候補とする行数を数える（D-6 の一意キーはこのペア）。
     plan_key_counts = {}
     for item in resolved:
         if len(item["matched"]) == 1:
@@ -491,25 +272,8 @@ def _load_staged_rows_from_db():
 
 def open_or_notify(parent, already_registered_rows=None):
     """
-    未処理の保留行（pending_csv_import_rows）が1件でもあれば、または
-    already_registered_rows（直前のCSV取込で「登録済み」と判定された行、
-    parse_production_csv_for_staging()の戻り値）が1件でもあれば
-    ProductionImportStagingWindowを開き、どちらも無ければ案内メッセージ
-    のみ表示する（新規CSV取込直後・「実績CSV取込状況」ボタンからの再開、
-    両方の入口から使う共通のエントリーポイント）。
-
-    already_registered_rowsも判定条件に含める理由：CSVの全行が「登録済み」
-    だった場合（pending_csv_import_rows側は0件）でも、登録済みリストだけは
-    ユーザーに見せる価値がある（本当に想定通りの重複だったか確認できる）
-    ため、この場合も「未処理の取込データはありません」で終わらせず
-    ウインドウを開く。
-
-    parent：ui.kitting_production_entry.KittingProductionEntryWindowの
-    インスタンスを想定（search_plan()・entry_daily_qty・_pending_csv_row_
-    removal・_pending_csv_report_dateを直接呼び出す/参照するため）。
-
-    戻り値：開いたProductionImportStagingWindow、またはどちらも無く
-    開かなかった場合はNone。
+    未処理の保留行か、直前の取込の「登録済み」行が1件でもあれば一覧を開き、どちらも無ければ案内だけ出す。
+    全行が「登録済み」でも、想定どおりの重複か確認できるよう開く。開かなかったら None を返す。
     """
     staged_rows = _load_staged_rows_from_db()
     if not staged_rows and not already_registered_rows:
@@ -519,32 +283,13 @@ def open_or_notify(parent, already_registered_rows=None):
 
 
 class ProductionImportStagingWindow(tk.Toplevel):
-    # 右ペイン（登録待ち一覧）の選択（<<TreeviewSelect>>、矢印キーでも発火）の
-    # たびに毎回find_matching_plan_items()（DBアクセスを伴う）を実行しないよう
-    # デバウンスする。ui.kitting_production_entry.KittingProductionEntryWindow.
-    # PLAN_SELECT_DEBOUNCE_MSと同じ値・同じ考え方。
+    # 選択のたびに DB を伴う候補の再照合をしないよう、デバウンスする（生産実績入力画面と同じ値）。
     CANDIDATE_SELECT_DEBOUNCE_MS = 200
 
     def __init__(self, parent, staged_rows, already_registered_rows=None):
         """
-        parent：ui.kitting_production_entry.KittingProductionEntryWindowの
-        インスタンス。左ペインの候補をダブルクリックした際、parent.
-        search_plan()・parent.entry_daily_qty・parent._pending_csv_row_removal・
-        parent._pending_csv_report_dateへ直接アクセスする（_confirm_candidate()
-        参照）。
-
-        staged_rows：_load_staged_rows_from_db()が組み立てる辞書のリスト
-        （各要素は"pending_row_id"/"row"/"lot_no"/"product_name"/"daily_qty"/
-        "report_date"/"worker_id"/"candidates"/"matched"/"status"を持つ）。
-        本クラス自体はopen_or_notify()経由で呼ばれる想定で、直接staged_rowsを
-        組み立てて渡すのは主にテスト用途。
-
-        already_registered_rows：services.production_import_service.
-        parse_production_csv_for_staging()の戻り値"already_registered_rows"
-        （直前のCSV取込で「登録済み」と判定され、pending_csv_import_rowsへは
-        保存されなかった行の詳細）。省略時（None）は空リストとして扱う
-        （「実績CSV取込状況」ボタン経由など、直近のCSV取込を伴わずに開いた
-        場合はこの情報自体が存在しないため）。
+        parent: KittingProductionEntryWindow。候補を確定するとき、その search_plan() などに直接転記する。
+        already_registered_rows: 直前の取込で「登録済み」と判定された行（DB に保存されない）。None なら空。
         """
         super().__init__(parent)
         self._parent = parent
@@ -553,32 +298,16 @@ class ProductionImportStagingWindow(tk.Toplevel):
         center_window(self, parent)
 
         self._row_by_iid = {}
-        # "no_candidates"（候補なし＝登録不可）と判定された行を、一覧から消えても
-        # 参照できるよう別途保持しておく（CSV出力ボタン用）。一覧本体
-        # （self._row_by_iid）は登録完了のたびに行が消えていくが、こちらは
-        # ウインドウを閉じるまで消さない。
+        # 「候補なし」の行。一覧から消えても CSV 出力できるよう、ウインドウを閉じるまで保持する。
         self._unregistrable_rows = [
             row for row in staged_rows if row.get("status") == "no_candidates"
         ]
-        # 「不一致として除外」（右クリックメニュー）で個別に人間が判断した行を
-        # 保持する別リスト。self._unregistrable_rows（機械判定の"no_candidates"
-        # 分はCSV出力時にまとめて削除、人間判断で"候補なしとする"を選んだ分は
-        # _apply_no_candidates()の時点で即座に削除、2026-09-23修正）と同様、
-        # こちらも除外を選んだ時点で即座にpending_csv_import_rowsから削除する
-        # （_mark_as_mismatched()参照）。
+        # 「不一致として除外」で人が除外した行。除外した時点で pending_csv_import_rows から削除する（_mark_as_mismatched()）。
         self._mismatched_rows = []
 
-        # 「登録済みリスト」：is_already_registered()が既にproduction_dailyへ
-        # 同じ数量で登録済みと判定し、pending_csv_import_rowsへは一度も
-        # 保存されなかった行（parse_production_csv_for_staging()の戻り値
-        # "already_registered_rows"）。self._unregistrable_rows・
-        # self._mismatched_rowsと異なり、対応するDB行自体がそもそも存在しない
-        # （最初から永続化されていない）ため、CSV出力しても・行を削除しても
-        # DB側で何かを消す操作は発生しない（あくまでメモリ上の一覧表示用）。
+        # 「登録済みリスト」。DB に保存されていない行なので、CSV 出力や削除をしても DB 側は何も変わらない。
         self._already_registered_rows = list(already_registered_rows or [])
-        # 「登録済みリスト」の詳細表示ウインドウ（on_show_already_registered_
-        # list()で開く、別Toplevel）。一度開いたら使い回し、多重に開かない
-        # （既存の他の一覧画面と同じ多重表示防止の考え方）。
+        # 「登録済みリスト」の詳細ウインドウ。多重に開かない。
         self._already_registered_window = None
         self._already_registered_tree = None
         self._already_registered_by_iid = {}
@@ -591,9 +320,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
         self._candidate_select_debounce_id = None
         self._pending_candidate_select_iid = None
 
-        # 右ペイン（登録待ち一覧）の列ソート状態：col -> 次にクリックした時に
-        # 昇順にするかどうか（既存のNG一覧・仕掛一覧のsort_ng_list()/
-        # sort_wip_list()と同じ、列ごとに独立したトグル方式）。
+        # 列ソートの状態（col -> 次に昇順にするか）。
         self._staging_sort_states = {}
 
         self._create_widgets(staged_rows)
@@ -602,19 +329,12 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        # ウインドウを開いた直後、キーボードフォーカスを登録待ち一覧へ置く
-        # （2026-10-06追加、Shift+Sが効かなくなる不具合の修正の一環。何も
-        # 明示的にfocus_set()しないと、開いた直後はどのウィジェットにも
-        # Tkのキーボードフォーカスが無い状態になりうる）。
+        # 開いた直後にキーボードフォーカスを一覧に置く（置かないとどこにもフォーカスが無く、Shift+S が効かない）。
         self.tree.focus_set()
 
     def _create_widgets(self, staged_rows):
         """
-        左右2ペイン構成（container→left_frame（候補一覧）/right_frame
-        （登録待ち一覧））。ui.ng_input_window.NgInputWindow・ui.wip_expansion_
-        window.WipExpansionWindowと同じ配置規則（左：操作・詳細、右：一覧）に
-        倣う：右ペインの登録待ち一覧が主たる一覧（選択の起点）、左ペインは
-        その選択に反応して候補を表示する詳細ペイン、という位置付けのため。
+        左右2ペイン。右の登録待ち一覧が選択の起点で、左はその選択に応じて候補を表示する（NG入力・仕掛展開画面と同じ配置）。
         """
         container = ttk.Frame(self, padding=10)
         container.pack(expand=True, fill=tk.BOTH)
@@ -634,22 +354,8 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
     def _create_candidate_widgets(self, left_frame):
         """
-        左ペイン（候補一覧）。列構成・書式（_format_side()・_format_qty()）・
-        列幅の考え方は、以前ui.plan_candidate_dialog.select_plan_candidate_
-        by_lot()がモーダルダイアログとして表示していたものと同一
-        （_CANDIDATE_COLS・_CANDIDATE_HEADERS・_CANDIDATE_RIGHT_ALIGNEDを
-        そのままimportして使う）。
-
-        pack順序について：右ペイン（_create_staging_widgets()）で発見した
-        「pack順序でTkのcavityが消費される」既知のバグパターンと同じ構造が
-        ここにも存在していたため、同じ対策を適用した。下部のヒントラベルを
-        先に`side=tk.BOTTOM`でpackして領域を確保してから、Treeview＋
-        スクロールバーのフレームを`expand=True, fill=tk.BOTH`で最後にpackする
-        （`lbl_candidate_hint`は元々`tree_frame`より先・`side=tk.TOP`（既定）で
-        packされており、こちらは問題なし：非拡張ウィジェットを拡張ウィジェット
-        より先にTOP側でpackする分には、後続のpack呼び出しで正しく領域が
-        再計算されるため）。`tree_frame`内でも、スクロールバーをTreeviewより
-        先にpackする（同じ理由）。
+        左ペイン（候補一覧）。列構成と書式は ui.plan_candidate_dialog のものをそのまま使う。
+        pack 順の罠: 下部のヒントを先に side=BOTTOM で pack し、Treeview とスクロールバーは最後に pack する。
         """
         self.lbl_candidate_hint = ttk.Label(
             left_frame, foreground="gray", wraplength=420, justify=tk.LEFT,
@@ -675,49 +381,23 @@ class ProductionImportStagingWindow(tk.Toplevel):
         )
         for col in _CANDIDATE_COLS:
             self.tree_candidates.heading(col, text=_CANDIDATE_HEADERS[col])
-            # 計画数（planned_qty）は_format_planned_qty_cell()で差分表記
-            # （例："450（差-50）"）が付くことがあるため、他列より幅を広めに取る
-            # （ui.plan_candidate_dialog._show_candidate_list_dialog()と同じ幅）。
+            # 計画数のセルには差分表記（例: "450（差-50）"）が付くので、幅を広めに取る。
             width = 160 if col == "planned_qty" else 100
             self.tree_candidates.column(
                 col, width=width, anchor=tk.E if col in _CANDIDATE_RIGHT_ALIGNED else tk.W,
             )
-        # 数量差・日付差が大きい候補の背景色を変える
-        # （ui.plan_candidate_dialog._is_large_qty_diff()・_is_large_date_diff()
-        # と同じ閾値・同じ配色。両方に該当する場合は"large_diff_both"を単独で
-        # 割り当てる。3タグ併用によるTkinterの優先順位の曖昧さを避けるため。
-        # 詳細はui.plan_candidate_dialog._show_candidate_list_dialog()の
-        # docstring参照）。
-        #
-        # "auto_confirmable"（is_auto_confirmable()、緑系）は、上記の
-        # large_diff系（黄・オレンジ・赤）とは数学的に排他（同時に該当し得ない）：
-        # auto_confirmableは「数量差=0（完全一致）かつ日付差<=1日」を要求するが、
-        # large_diffは「数量差が実績数の20%超」、large_date_diffは「日付差が
-        # 3日以上」を要求するため、閾値の範囲が重ならない
-        # （0は20%超になり得ず、1日以下は3日以上になり得ない）。そのため
-        # 実際には両方に該当するケースは発生しないが、念のためauto_confirmable
-        # を最優先で判定し、単独タグとして割り当てる（3タグ併用はしない）。
+        # 数量差・日付差が大きい候補の背景色（閾値と配色は ui.plan_candidate_dialog と同じ）。両方に該当すれば large_diff_both だけを付ける。
+        # auto_confirmable（緑）は large_diff 系と閾値が重ならず同時には該当しないが、念のため最優先で判定する。
         self.tree_candidates.tag_configure("large_diff", background="#fff3cd")
         self.tree_candidates.tag_configure("large_date_diff", background="#ffd9a0")
         self.tree_candidates.tag_configure("large_diff_both", background=MISMATCH_RED)
         self.tree_candidates.tag_configure("auto_confirmable", background="#c8f7c5")
-        # 生産面マスターによる分類（2026-10-07新設、D-9x参照）。既存のタグとは
-        # 異なる色にし、優先順位は_populate_candidates()側で最優先に判定する。
+        # 生産面マスターの分類（D-9x）。既存のタグと別の色にし、_populate_candidates() で最優先に判定する。
         self.tree_candidates.tag_configure("needs_side2_wait", background="#cfe2ff")
         self.tree_candidates.tag_configure("side_master_unregistered", background="#e2e3e5")
-        # 製品名不一致（2026-10-08追加）：ロットNoは一致するが製品名が一致する
-        # 候補が無い場合（_populate_candidates()のusing_fallback）に表示する
-        # 候補全件に付ける。既存の赤系ハイライト（"large_diff_both"と同じ値、
-        # ui/highlight_colors.MISMATCH_RED）を再利用し、新しい色は定義しない。
-        # 他の全タグより優先して割り当てる（_populate_candidates()参照）。
+        # 製品名不一致（ロットNoは一致するが、製品名が一致する候補が無い）。既存の赤（MISMATCH_RED）を使い、ほかのタグより優先する。
         self.tree_candidates.tag_configure("product_name_mismatch", background=MISMATCH_RED)
-        # 登録済みの候補（2026-10-08追加）：既にproduction_dailyの実績がある
-        # 候補の行を、グレーの文字で表示する。背景色の各タグ（上記）とは
-        # 別軸（文字色のみ）のプロパティのため、他の背景色タグと併用して
-        # 同時に適用できる（例：製品名不一致＝赤背景＋登録済み＝グレー文字、
-        # という組み合わせも技術的に競合しない）。優先順位の考え方：背景色
-        # 同士の優先順位（上記の判定順）はそのまま変更せず、「登録済み」の
-        # 文字色は常に追加で重ねる（_populate_candidates()参照）。
+        # 登録済みの候補は文字色をグレーにする。文字色だけなので、背景色のタグと重ねて付けられる。
         self.tree_candidates.tag_configure("already_registered", foreground="gray")
 
         # スクロールバーをTreeviewより先にpackする（右ペインと同じ順序）。
@@ -733,22 +413,9 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
     def _create_staging_widgets(self, right_frame, staged_rows):
         """
-        右ペイン（登録待ち一覧）。以前の単一ペイン版のTreeview・件数表示・CSV出力ボタンをそのまま移設。
-
-        pack順序について（重要）：Tkの`pack()`はpackを呼んだ順にcavity（配置可能領域）を
-        消費するため、`expand=True, fill=tk.BOTH`のTreeviewを他の兄弟ウィジェットより先に
-        packすると、Treeviewが領域を先取りしてしまい、後からpackする縦スクロールバー・
-        下部のラベル/ボタン類に割り当てる余地が残らなくなる（ラベル・ボタン自体は表示される
-        場合もあるが、狭い右ペインではスクロールバーが1×1に潰れ`winfo_ismapped()`が
-        Falseになる形で顕在化した）。`ui/kitting_production_entry.py`の計画一覧
-        （`bottom_btn_frame`→`hsb_plan`→`vsb_plan`→`tree_plan_list`の順）・
-        `ui/ng_input_window.py`のNG一覧と同じ対策として、下部に配置するウィジェット
-        （ヒントラベル・件数ラベル・ボタン行）を先に`side=tk.BOTTOM`でpackして
-        その分の領域を確保してから、Treeview＋スクロールバーのフレームを
-        `expand=True, fill=tk.BOTH`で最後にpackする順序に変更した。
-        `side=tk.BOTTOM`は「後から呼んだものほど内側（上）に積まれる」ため、
-        最終的な見た目の並び順（Treeview→ヒント→件数→ボタン、上から下へ）を
-        維持するには、下部要素は見た目と逆順（ボタン→件数→ヒントの順）でpackする。
+        右ペイン（登録待ち一覧）。
+        pack 順の罠: pack は呼んだ順に領域を取る。Treeview を先に pack すると、狭いペインでスクロールバーが 1x1 に潰れる。
+        下部の要素を先に pack し、Treeview は最後にする。side=BOTTOM は後のものほど上に積まれるので、見た目と逆順（ボタン→件数→ヒント）で pack する。
         """
         cols = ("lot_no", "product_name", "report_date", "worker_id", "daily_qty", "status")
 
@@ -764,13 +431,8 @@ class ProductionImportStagingWindow(tk.Toplevel):
         ttk.Button(action_frame, text="登録済みリストを表示", command=self.on_show_already_registered_list).pack(
             side=tk.LEFT,
         )
-        # 「自動確定可能な行を一括登録（Shift+S）」ボタンは2026-10-07削除した
-        # （画面修正5項目§2）。Shift+Sのショートカットの案内は、下の
-        # ヒントラベルに小さく表示して残す。
 
-        # 登録不可（machine判定）・不一致（人間の判断で除外）、それぞれの件数を
-        # 分かりやすく常時表示する。件数が変わるたび_update_status_label()で
-        # 更新する。
+        # 登録不可・不一致などの件数を常に表示する（_update_status_label() で更新）。
         self.lbl_status = ttk.Label(right_frame, foreground="gray")
         self.lbl_status.pack(side=tk.BOTTOM, anchor=tk.W, pady=(2, 5))
 
@@ -789,27 +451,15 @@ class ProductionImportStagingWindow(tk.Toplevel):
         tree_frame = ttk.Frame(right_frame)
         tree_frame.pack(expand=True, fill=tk.BOTH)
 
-        # selectmode="extended"：Ctrl+クリック・Shift+クリックでの複数選択に対応する
-        # （ttk.Treeviewのデフォルトも"extended"だが、複数選択対応であることを
-        # 明示するため明記する）。一括登録（Shift+S）・一括不一致マーク
-        # （複数選択時の右クリック）で使う。
+        # 複数選択（Ctrl/Shift+クリック）を使う。一括登録と、一括の不一致マークで必要。
         self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings", selectmode="extended")
-        # 列ヘッダークリックでのソート：既存のNG一覧（sort_ng_list()）・仕掛一覧
-        # （sort_wip_list()）と同じ、command=lambda c=...: self.sort_staging_list(c)
-        # というパターンをそのまま踏襲する。
         self.tree.heading("lot_no", text="ロットNo", command=lambda c="lot_no": self.sort_staging_list(c))
         self.tree.heading("product_name", text="製品名", command=lambda c="product_name": self.sort_staging_list(c))
         self.tree.heading("report_date", text="払い出し日（参考）", command=lambda c="report_date": self.sort_staging_list(c))
         self.tree.heading("worker_id", text="作業者", command=lambda c="worker_id": self.sort_staging_list(c))
         self.tree.heading("daily_qty", text="実績数", command=lambda c="daily_qty": self.sort_staging_list(c))
         self.tree.heading("status", text="状態", command=lambda c="status": self.sort_staging_list(c))
-        # stretch=False（2026-10-07追加、画面修正5項目§5）：既定のstretch=True
-        # のままだと、列の合計幅が表示領域より狭い／広い場合にTkが自動的に
-        # 列幅を伸縮して表示領域に収めてしまい、本来欲しい「列の合計幅が表示
-        # 領域を超えたら横スクロールで見る」という動作にならない（伸縮で
-        # 常に収まってしまうため、水平スクロールバーがあっても実質動かせる
-        # 余地が生まれない）。列幅をここで指定した値に固定し、収まらない分は
-        # 横スクロールバー（hsb）で見る方式にする。
+        # stretch=False: 伸縮させると列が常に表示幅に収まり、横スクロールが効かなくなる。列幅を固定し、はみ出した分は横スクロールで見る。
         self.tree.column("lot_no", width=100, anchor=tk.W, stretch=False)
         self.tree.column("product_name", width=180, anchor=tk.W, stretch=False)
         self.tree.column("report_date", width=120, anchor=tk.CENTER, stretch=False)
@@ -817,25 +467,14 @@ class ProductionImportStagingWindow(tk.Toplevel):
         self.tree.column("daily_qty", width=70, anchor=tk.E, stretch=False)
         self.tree.column("status", width=160, anchor=tk.W, stretch=False)
 
-        # 製品名不一致の行を赤系ハイライトで表示する（2026-10-08追加）。
-        # アプリ内で既に「警告・不一致・要注意」の意味で使われている赤系
-        # ハイライト（ui/plan_candidate_dialog.py・本ファイルの
-        # "large_diff_both"〈数量差・日付差の両方が大きい候補〉、
-        # ui/pdf_ocr_import_window.pyの"low_confidence"、
-        # ui/production_side_master_window.pyの削除予定行と同じ値、
-        # ui/highlight_colors.MISMATCH_RED）をそのまま採用した。新しい色は
-        # 定義しない。タグの割り当ては_insert_staging_row()参照。
+        # 製品名不一致の行を赤で示す（アプリ共通の「警告・不一致」の色 MISMATCH_RED。新しい色は作らない）。
         self.tree.tag_configure("product_name_mismatch", background=MISMATCH_RED)
 
-        # 横スクロールバー（2026-10-07追加、画面修正5項目§5）。縦スクロール
-        # バー（vsb）と同じ理由で、Treeview（expand=True, fill=BOTH）より先に
-        # packする必要がある（下部の領域を先に確保する）。
+        # 横スクロールバーも Treeview より先に pack する（下部の領域を先に取るため）。
         hsb = ttk.Scrollbar(tree_frame, orient="horizontal")
         hsb.pack(side=tk.BOTTOM, fill=tk.X)
 
-        # スクロールバーをTreeviewより先にpackする（vsb_plan→tree_plan_listと同じ
-        # 順序）。同じtree_frame内の兄弟同士でも、Treeview（expand=True, fill=BOTH）を
-        # 先にpackするとスクロールバー分の領域が残らないため、この順序が必須。
+        # スクロールバーを Treeview より先に pack する（後にすると、スクロールバーの領域が残らない）。
         vsb = ttk.Scrollbar(tree_frame, orient="vertical")
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
 
@@ -849,44 +488,18 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
         self.tree.bind("<<TreeviewSelect>>", self._on_staging_select)
         self.tree.bind("<Button-3>", self._on_right_click)
-        # self.tree単体ではなく、ウインドウ全体（self）にbindする
-        # （2026-10-06修正、Shift+Sが効かなくなる不具合の原因の1つ）。
-        # self.tree.bind(...)だと、tree自身がTkのキーボードフォーカスを
-        # 持っている時にしか発火しない。本ウインドウ内にテキスト入力欄は
-        # 無いため、ウインドウ全体にbindしても「入力中の文字入力を妨げる」
-        # 副作用は無く、ボタン等にフォーカスがあっても確実に発火する
-        # （Tkのbindtagsにより、子ウィジェットの既定バインドタグには所属する
-        # トップレベルの名前が含まれ、子ウィジェット自身に同じイベントの
-        # バインドが無ければ、ここで登録したウインドウレベルの束縛まで
-        # イベントが伝播してくる）。self.tree固有のバインドは残さない
-        # （同じキー入力で二重に発火するのを避けるため）。
+        # tree ではなくウインドウ全体に bind する。tree に bind すると、tree にフォーカスがあるときしか発火せず、Shift+S が効かないことがあった。
+        # この画面にテキスト入力欄は無いので、文字入力を妨げる副作用は無い。tree には bind しない（二重に発火するため）。
         self.bind("<Shift-S>", self._on_bulk_register)
-        # Shift+Q（2026-10-08新設、D-101）：対象は選択中の行のみ（Shift+Sと
-        # 同じ）で、日付の差の許容日数だけを緩める一括登録。以前
-        # （2026-10-07）に実装した「選択・絞り込みに関係なく一覧の全行を
-        # 対象にする」版のShift+Qは同日中に取り消した経緯がある（D-100参照。
-        # 利用者の意図は対象行の広さではなく照合条件の厳しさの緩和であり、
-        # 選択範囲を無視して登録できる動作は危険と判断されたため）。今回の
-        # Shift+Qはその教訓を踏まえ、対象を選択中の行のみに限定している。
-        # <Shift-Q>（CapsLockオフ時にShiftキーが生成するkeysym）・
-        # <Shift-q>（CapsLockオン時に生成するkeysym、Shiftとの打ち消し合いで
-        # 小文字になる）の両方をbindし、CapsLockの状態に左右されないようにする
-        # （D-97で確認済みの同じ対策）。
+        # Shift+Q（D-101）: 対象は選択中の行だけで、日付の許容日数だけを緩める（全行を対象にした版は危険なため取り消した、D-100）。
+        # CapsLock の状態で keysym が変わるので、<Shift-Q> と <Shift-q> の両方を bind する（D-97）。
         self.bind("<Shift-Q>", self._on_bulk_register_extended)
         self.bind("<Shift-q>", self._on_bulk_register_extended)
 
     def _insert_staging_row(self, row):
         """
-        右ペイン（登録待ち一覧）へ1行挿入する共通処理。_create_staging_
-        widgets()の初期表示・_revert_already_registered_rows()（登録済み
-        リストから戻す訂正操作）の両方から呼ぶ（挿入ロジックの複製を避ける）。
-
-        製品名不一致（status=="product_name_mismatch"）の行に赤系ハイライト
-        （"product_name_mismatch"タグ、_create_staging_widgets()のtag_configure
-        参照）を付ける（2026-10-08追加）。列ソート（sort_staging_list()、
-        tree.move()のみで行自体は作り直さない）・再読込（load_staged_rows()等
-        での全件再構築、本関数を再度呼ぶ）・登録後の一覧更新のいずれでも、
-        本関数を経由して挿入された行は常にこのタグを保持する。
+        右ペインに1行挿入する共通処理（初期表示と、登録済みリストから戻す操作の両方で使う）。
+        製品名不一致の行には赤のタグを付ける。ソートは move() だけなので、タグは保たれる。
         """
         status = row.get("status")
         tags = ("product_name_mismatch",) if status == REASON_PRODUCT_NAME_MISMATCH else ()
@@ -902,14 +515,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
         return iid
 
     def _update_status_label(self):
-        """
-        表示中（登録待ち一覧に現在残っている件数）・登録不可・不一致・
-        登録済み、それぞれの件数表示を最新化する。「表示中」は既存の他一覧
-        （例：ui.kitting_plan_import.KittingPlanImportWindow.lbl_status）と
-        同じ「〜件」形式で、self.treeから都度実カウントする（絞り込み機能が
-        本画面には無いため、常に「現在一覧に残っている件数」＝登録・除外で
-        減っていく件数と一致する）。
-        """
+        """表示中・登録不可・不一致・登録済みの件数表示を更新する。表示中の件数は tree から数える（この画面に絞り込みは無い）。"""
         self.lbl_status.config(
             text=(
                 f"表示中：{len(self.tree.get_children())}件　"
@@ -920,13 +526,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
         )
 
     def sort_staging_list(self, col):
-        """
-        右ペイン（登録待ち一覧）の列ヘッダークリックによる昇順/降順ソート。
-        既存のNG一覧（ui.ng_input_window.NgInputWindow.sort_ng_list()）・
-        仕掛一覧（ui.wip_expansion_window.WipExpansionWindow.sort_wip_list()）
-        と全く同じパターン（列ごとの昇順/降順トグル、Treeview.move()での
-        並べ替え）をそのまま踏襲する。
-        """
+        """列ヘッダーのクリックで昇順/降順を切り替える（NG一覧・仕掛一覧と同じ方式）。"""
         numeric_cols = {"daily_qty"}
 
         def sort_key(value):
@@ -955,12 +555,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
     # ------------------------------------------------------------------
 
     def _on_staging_select(self, event=None):
-        """
-        右ペイン（登録待ち一覧）の選択イベント。DBアクセスを伴う候補再照合
-        （_populate_candidates()）は矢印キー連打中に毎回実行しないよう
-        デバウンスする（ui.kitting_production_entry.KittingProductionEntryWindow.
-        on_select_plan_list()と同じパターン）。
-        """
+        """登録待ち一覧の選択。DB を伴う候補の再照合はデバウンスする。"""
         sel = self.tree.selection()
         if not sel:
             self._clear_candidate_pane()
@@ -987,28 +582,9 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
     def _populate_candidates(self, row):
         """
-        右ペインで選択された保留行(row)の候補を左ペインへ表示する。以前
-        ui.plan_candidate_dialog.select_plan_candidate_by_lot()が担っていた
-        判定・整形ロジックをそのまま踏襲する：
-          - matched（製品名まで一致した候補）を優先表示し、0件の場合のみ
-            candidates（lot_no一致の全件）へフォールバックする。
-          - _sort_candidates_by_closeness()で、日数差・数量差の複合スコアで
-            並べ替える。
-          - _is_large_qty_diff()で数量差の大きい候補、_is_large_date_diff()で
-            払い出し日と生産予定日の差が大きい候補をハイライトする（一覧からは
-            除外しない）。両方に該当する場合の色の組み合わせ方はui.plan_
-            candidate_dialog._show_candidate_list_dialog()のdocstring参照。
-          - is_auto_confirmable()で、計画数と実績数が完全一致し、かつ生産予定日
-            と払い出し日の差が24時間以内の候補を緑系でハイライトする
-            （"auto_confirmable"、_create_candidate_widgets()のtag_configure
-            コメント参照：数量差・日付差ハイライトとは数学的に排他のため優先順位の
-            衝突は実質発生しないが、念のため最優先で判定する）。
-          - _format_planned_qty_cell()で、計画数（planned_qty）セルに実績数との
-            差分を併記する（例："450（差-50）"）。行全体のlarge_diffタグ
-            （20%超のみ発火）とは独立に、差があれば常に表示する、より細かい
-            粒度の指標。Tkinterの標準Treeviewはセル単位の背景色指定に対応して
-            いないため、色ではなくテキストへの差分埋め込みで実現している
-            （詳細はui.plan_candidate_dialog._format_planned_qty_cell()参照）。
+        選択された保留行の候補を左ペインに表示する。製品名まで一致した候補（matched）を優先し、0件なら lot_no が一致する全件を出す。
+        近い順（日数差・数量差）に並べ、差の大きい候補と自動確定できる候補に色を付ける。
+        計画数のセルには実績数との差を書き添える（Treeview はセル単位の背景色に対応しないため）。
         """
         for item in self.tree_candidates.get_children():
             self.tree_candidates.delete(item)
@@ -1046,12 +622,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
             date_flag = _is_large_date_diff(report_date, candidate.get("plan_start_datetime"))
             side1_only_classification = classify_side1_only_plan(candidate)
             if using_fallback:
-                # 製品名不一致（2026-10-08追加）：この分岐で表示されている
-                # 候補は、ロットNoは一致するが製品名が一致する候補が無い
-                # （row["matched"]が空）ために表示されているフォールバック
-                # 候補であり、全件が製品名不一致である。他の全条件より優先して
-                # 割り当てる（要求「同じ行に複数の表示条件が当てはまる場合は、
-                # 製品名不一致のハイライトを優先する」に対応）。
+                # この分岐の候補はすべて製品名不一致（matched が空のフォールバック）。ほかのどの条件よりも優先する。
                 tags = ("product_name_mismatch",)
             elif side1_only_classification == SIDE1_ONLY_CLASS_WAITING_SIDE2:
                 tags = ("needs_side2_wait",)
@@ -1067,9 +638,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
                 tags = ("large_date_diff",)
             else:
                 tags = ()
-            # 登録済み（2026-10-08追加）：背景色の優先順位（上記のif/elif連鎖）
-            # とは独立に、常に追加で重ねる（文字色のみのタグのため、どの
-            # 背景色タグとも競合しない）。
+            # 登録済みは文字色だけのタグなので、背景色の判定とは別に常に重ねる。
             if _is_candidate_already_registered(candidate, row.get("lot_no")):
                 tags = tags + ("already_registered",)
             iid = self.tree_candidates.insert("", tk.END, tags=tags, values=(
@@ -1084,10 +653,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
             self._candidates_by_iid[iid] = candidate
 
     def _clear_candidate_pane(self):
-        """
-        左ペインを空にする（右ペインで選択が無い・選択中の行が削除された
-        場合）。
-        """
+        """左ペインを空にする（選択が無いとき、または選択中の行が削除されたとき）。"""
         for item in self.tree_candidates.get_children():
             self.tree_candidates.delete(item)
         self._candidates_by_iid = {}
@@ -1096,14 +662,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
         self.lbl_candidate_hint.config(text="右の登録待ち一覧から行を選択してください。")
 
     def _on_candidate_double_click(self, event):
-        """
-        登録済みの候補（2026-10-08追加）をダブルクリックした場合は、通常の
-        登録の流れ（_confirm_candidate()、親の実績記入欄への転記）には進まず、
-        その計画の実績修正画面（ui.kitting_production_entry.ActualCorrection
-        Window）を開く。クリックして選択しただけ（選択イベント、tree_
-        candidatesの<<TreeviewSelect>>等）では開かない：本メソッドは
-        <Double-1>のバインドのみから呼ばれるため、単純な選択では発火しない。
-        """
+        """登録済みの候補なら、通常の転記ではなく実績修正画面を開く（ダブルクリックだけで開き、選択では開かない）。"""
         iid = self.tree_candidates.identify_row(event.y)
         if not iid:
             return
@@ -1118,17 +677,8 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
     def _open_correction_window_for_candidate(self, candidate, lot_no):
         """
-        登録済みの候補から実績修正画面を開く（2026-10-08追加）。開いている間
-        は登録待ち一覧側の操作をブロックしない（モーダルではない、
-        ActualCorrectionWindow自体も既存のまま非モーダルのtk.Toplevel）が、
-        本メソッドはself.wait_window()で画面が閉じるまで待ち、閉じた直後に
-        登録待ち一覧ウインドウを前面へ戻す（_refocus_staging_window()、
-        D-98と同じ考え方）。保留行（self._row_by_iid）は一切変更しない
-        （remove_callbackを設定しない＝修正画面での操作が何であっても、
-        登録待ち一覧からこの保留行が消えることは無い。保留行をどうするかは
-        利用者が判断するという要件のため）。面の連動・確認（D-112）は
-        ActualCorrectionWindow自体にそのまま実装されているため、ここでは
-        何も特別な処理をしない。
+        登録済みの候補から実績修正画面を開き、閉じるまで待ってから一覧を前面に戻す（D-98）。
+        保留行には触れない（どうするかは利用者が判断する）。面の連動（D-112）は修正画面側で行う。
         """
         from ui.kitting_production_entry import ActualCorrectionWindow
 
@@ -1145,29 +695,10 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
     def _make_remove_callback(self, staging_iid):
         """
-        _confirm_candidate()（ダブルクリック）・_register_candidate_immediately()
-        （右クリック、Shift+Sの一括登録もここ経由）の両方で使う
-        remove_callbackを組み立てる（登録成功時にparent._perform_registration()
-        から呼ばれ、右ペイン・DBから該当行を消す）。staging_iidをクロージャで
-        捕まえておくことで、確定操作の時点で選択されていた行を、その後別の行が
-        選択されても正しく指し続ける。
-
-        次の行の自動選択（2026-10-07追加、画面修正5項目§4）：ダブルクリック・
-        右クリック・Shift+Sのいずれで登録しても、ここで共通に処理する
-        ことで戻り方を統一する（以前は右クリック経路（_register_candidate_
-        immediately()）だけが個別に次の行を計算していたため、ダブルクリック
-        からの登録では次の行が選択されないという抜けがあった）。
-        「現在の並び順・絞り込みで表示されている順」＝self.tree.next()/prev()が
-        そのまま対応する（ソート・絞り込みの結果はTreeviewの行の並び順に
-        反映されているため）。削除前のうちに次の行を記録しておく（削除後に
-        next()を呼んでも、既に消えたiidを起点にはできない）。
-        次の行が無い（登録した行が最後の行だった）場合はprev()にフォールバック
-        することで、新しい最後の行を選択する。両方とも無い（一覧がこの1行のみ
-        だった）場合はtree.selection_set(())で選択を空にする
-        （一覧が空になった場合は何も選択しない、という要件に対応）。
-        一括登録（Shift+S）では、この呼び出しごとの選択は後続の
-        呼び出し・バッチ末尾の選択処理で上書きされるため、最終的な選択状態は
-        バッチ単位の方針（_on_bulk_register()参照）の通りになる。
+        登録成功時に親の _perform_registration() から呼ばれ、一覧と DB から該当行を消すコールバックを作る。
+        staging_iid はクロージャで捕まえるので、後で別の行が選ばれても正しい行を指す。
+        消した後は次の行を選ぶ（無ければ前の行、どちらも無ければ選択なし）。消す前に次の行を控えること（消した後は next() できない）。
+        一括登録では、バッチの最後の選択処理で上書きされる。
         """
         def remove_callback():
             if staging_iid in self._row_by_iid:
@@ -1175,18 +706,13 @@ class ProductionImportStagingWindow(tk.Toplevel):
                 next_iid = self.tree.next(staging_iid) or self.tree.prev(staging_iid)
                 self.tree.delete(staging_iid)
                 del self._row_by_iid[staging_iid]
-                # 登録済みになった行は履歴として残さず、pending_csv_import_rowsから
-                # 即座に物理削除する（models.production_import_stagingの方針）。
+                # 登録済みの行は履歴に残さず、即座に物理削除する。
                 if pending_row_id is not None:
                     delete_pending_csv_import_row(pending_row_id)
-                # 削除された行が左ペインの候補表示元だった場合、候補表示をクリアする
-                # （存在しなくなった行の候補を表示し続けないため）。
+                # 削除した行の候補を表示し続けないよう、左ペインをクリアする。
                 if self._current_staging_iid == staging_iid:
                     self._clear_candidate_pane()
-                # 登録により一覧から1行減るため、件数表示（「表示中：N件」）を
-                # 最新化する（単一登録・一括登録（Shift+S）いずれも
-                # このremove_callback経由で行が消えるため、ここ1箇所への
-                # 追加で全て反映される）。
+                # 単一登録も一括登録もこのコールバックを通るので、件数表示の更新はここだけでよい。
                 self._update_status_label()
 
                 if next_iid and self.tree.exists(next_iid):
@@ -1199,28 +725,9 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
     def _confirm_candidate(self, candidate):
         """
-        左ペインの候補をダブルクリックで確定した際の処理。以前ui.kitting_
-        production_entry.KittingProductionEntryWindow._on_csv_staging_row_
-        confirmed()が担っていた処理のうち、候補選択（select_plan_candidate_
-        by_lot()モーダルダイアログの呼び出しと戻り値の受け取り）より後の部分
-        （転記・登録準備）を、本ウインドウのメソッドとして移植したもの。
-        select_plan_candidate_by_lot()自体はこの経路では呼ばない（左ペイン
-        での選択が既にその代替のため）。
-
-        self._parentはui.kitting_production_entry.KittingProductionEntry
-        Windowのインスタンスであり、そのsearch_plan()・entry_daily_qty・
-        _pending_csv_row_removal・_pending_csv_report_dateを直接呼び出す/
-        書き換える。これらはウインドウの前面・フォーカス状態に依存しない
-        （前回の調査で確認済み）ため、本ウインドウを閉じずに実行できる。
-        parent側は最後にentry_daily_qty.focus_set()を呼ぶことで（Windows上の
-        本Tk環境では既に確認済みの通り）実質的に前面へ上がってくるため、
-        ユーザーはそのまま生産実績入力画面で入力を続けられる。
-
-        従来通り、実際の登録（_start_registration()→_perform_registration()）は
-        呼ばない。あくまで転記のみで、ユーザーがNG面1/面2を確認した上で
-        「登録」ボタンまたはEnterで確定する一直線フローに乗せる
-        （即時登録したい場合は右クリック→_register_candidate_immediately()を
-        使う）。
+        左ペインの候補をダブルクリックで確定したとき、親の画面に転記する。登録はしない。
+        利用者が NG を確かめたうえで、親の画面の「登録」または Enter で確定する（即時登録は右クリック）。
+        親の search_plan() などはウインドウの前面やフォーカスに依存しないので、この画面を閉じずに呼べる。
         """
         row = self._current_staging_row
         staging_iid = self._current_staging_iid
@@ -1236,23 +743,9 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
     def _on_candidate_right_click(self, event):
         """
-        右クリックされた候補について、確認ダイアログを経由せず即座に登録する
-        （右クリック＝即時登録、ダブルクリック＝従来の一直線フローへの転記、
-        という使い分け）。
-
-        以下の2条件では即時登録を禁止する（2026-10-08追加。確認ダイアログを
-        経由しない右クリックは、誤った上書き・数量の合わない登録を未然に
-        防ぐ手段が無いため）。メニューという形は採らず、右クリックの既存の
-        挙動（即座に処理する）を維持したまま、該当する場合は理由を表示して
-        何もしない形にした（本画面には右クリックで出すメニュー自体が
-        元々存在しないため、新設するより既存の構造に沿う判断）：
-          - 登録済み（既に実績がある）候補：誤って既存の実績を上書き登録
-            してしまうことを防ぐ。ダブルクリックで実績修正画面を開けば
-            確認・連動を経て修正できる。
-          - 数量が違う候補：Shift+S・Shift+Qと同じ基準（_is_qty_mismatch()）
-            で、計画数とCSVの実績数が一致しない候補への即時登録を防ぐ。
-            ダブルクリックからの通常の登録確認フローでは、要件通り従来どおり
-            登録できる。
+        右クリックした候補を、確認ダイアログなしで即座に登録する（ダブルクリックは転記だけ）。
+        次の候補では理由を表示して何もしない: 登録済みの候補（上書きを防ぐ。修正はダブルクリックから）、
+        数量が違う候補（_is_qty_mismatch()。ダブルクリックからの通常の登録はできる）。
         """
         iid = self.tree_candidates.identify_row(event.y)
         if not iid:
@@ -1287,65 +780,12 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
     def _register_candidate_immediately(self, row, staging_iid, candidate, record_history=True):
         """
-        右クリックでの即時登録。_confirm_candidate()と同じ転記処理を行った上で、
-        続けてparent._perform_registration()を直接呼び、確認ダイアログ
-        （parent._show_registration_confirm_dialog()）を経由せず即座に登録を
-        完了させる。
-
-        record_history：Trueの場合（デフォルト）、parent._perform_registration()に
-        そのまま渡り、登録成功後に即座にlot_status_historyへ記録される
-        （右クリックでの単発即時登録は、この既定動作のまま変更しない）。
-        _on_bulk_register()（Shift+S一括登録）からFalseを渡された場合は、
-        この記録をスキップし、_on_bulk_register()側がバッチ処理の最後に
-        distinctなlot_no単位でまとめて記録する（2026-09-30追加）。
-
-        row・staging_iidを引数として明示的に受け取る（self._current_staging_
-        row/iidを暗黙に参照しない）理由：_on_bulk_register()（Shift+S一括登録）
-        から、右ペインで複数選択された各行に対して順番に呼び出すため。左ペイン
-        の「現在表示中の候補」の選択状態（self._current_staging_row/iid）と、
-        一括登録でこれから処理する行は必ずしも一致しない（一括登録は右ペインの
-        複数選択に基づき、左ペインの表示は特定の1行のみを指すため）。
-
-        確認ダイアログの回避方法について（検討結果）：parent._perform_
-        registration(daily_qty, preview) 自体には確認ダイアログは含まれて
-        いない。確認は、その手前の一直線フローの入口であるparent._start_
-        registration()が、NG入力欄の検証（_validate_ng_inputs()）→preview
-        の組み立て（_build_registration_preview()）→確認ダイアログ
-        （_show_registration_confirm_dialog()）→承認されたら_perform_
-        registration()、という順で行っている。したがって_perform_
-        registration()自体には一切手を加えず、_start_registration()を
-        経由しない（_build_registration_preview()を直接呼んでpreviewを
-        組み立て、_perform_registration()へ直接渡す）ことで、確認ダイアログを
-        自然にスキップできる。
-
-        登録後の数量差チェック（2026-09-24追加）：右クリック即時登録は
-        is_auto_confirmable()のような数量完全一致要件を課さないため（要件を
-        満たさない候補でも即座に登録できる、AB-7参照）、実績数（daily_qty）と
-        計画数（candidate["planned_qty"]）が異なる登録が発生しうる。この場合、
-        従来の完了メッセージ（messagebox.showinfo）をそのまま出さず、完了内容に
-        「数量を修正しますか？」という選択肢を追加したaskyesnoに差し替える。
-        「はい」を選ぶと該当計画を再度開き、登録済みの実績数を実績記入欄へ
-        転記してフォーカスを移す（そこから訂正して通常の一直線Enterフローで
-        再登録すればoverwrite_daily_result()により上書きされる）。数量が一致
-        していた場合、または「いいえ」を選んだ場合は、従来通りの完了メッセージ
-        （元のmessagebox.showinfo()の内容をそのまま流用）のみ表示する。
-        一括登録（Shift+S、_on_bulk_register()）はis_auto_confirmable()で
-        数量完全一致の候補のみを対象にするため、この経路でここに到達する
-        candidateは常にplanned_qty == daily_qtyであり、この分岐が発火する
-        ことはない。
-
-        NG面1・面2は対象にしない（save_qty_by_side={}で登録する）。
-        is_auto_confirmable()の自動確定要件はNG数量を考慮しない実績数量・
-        日付のみの判定であり、即時登録もその範囲（実績数量の登録のみ）に
-        留めるのが安全なため（NG入力欄に他の計画から持ち越された値が
-        誤って使われるリスクも避けられる。search_plan()が呼ぶ_setup_ng_
-        side_ui()により、NG入力欄自体は新しい計画の状態に更新されるが、
-        その値を今回のNG申告として使うかどうかは別問題であり、ここでは
-        意図的に使わない）。
-
-        面連動（反対側の面への自動登録）：_perform_registration()内部の
-        _register_opposite_side_daily_result()呼び出しがそのまま働くため、
-        通常の登録フローと同じく自動的に行われる。
+        右クリックでの即時登録。転記したうえで、親の _perform_registration() を直接呼ぶ。
+        確認ダイアログは _start_registration() 側にあるので、そこを通らずに preview を組み立てて渡すことで省く。
+        row・staging_iid を引数で受け取るのは、一括登録が複数選択の各行について呼ぶため（左ペインに表示中の行とは限らない）。
+        record_history=False は一括登録用（最後にロット単位でまとめて記録する）。
+        NG は登録しない（save_qty_by_side={}。自動確定の要件は実績数量と日付だけで、NG 欄の値を誤って使わないため）。
+        計画数と実績数が違うときは、完了メッセージの代わりに「数量を修正しますか？」と尋ねる。
         """
         parent = self._parent
         daily_qty = row["daily_qty"]
@@ -1353,20 +793,11 @@ class ProductionImportStagingWindow(tk.Toplevel):
         lot_no = candidate["lot_no"]
         planned_qty = candidate.get("planned_qty")
 
-        # 既にこの計画に実績が登録されている場合、黙って上書きせず確認
-        # ダイアログを出す（2026-10-06追加）。一括登録（_on_bulk_register()）は
-        # この条件に該当する行を事前に除外しているため、通常は一括登録経由で
-        # ここに到達することはないが、念のため経路を問わず常にこの確認を行う。
-        # 「いいえ」の場合は何も変更せず（検索欄の転記も行わず）即座に戻る。
-        # 保留行（staging_iid）もそのまま残る。
+        # 既に実績があれば、黙って上書きせず確認する。一括登録では事前に除外済みだが、経路を問わず確認する。
         if not parent.confirm_overwrite_if_existing(kitting_list_no, lot_no, daily_qty, row.get("report_date")):
             return
 
-        # 候補の計画が面1のみで、生産面マスターの分類が「面2待ち」または
-        # 「生産面マスター未登録」の場合、理由を示した確認ダイアログを出す
-        # （2026-10-07新設、D-9x参照。登録そのものは禁止しない。一括登録は
-        # この条件に該当する行を事前に除外しているため、通常は一括登録経由で
-        # ここに到達することはないが、念のため経路を問わず常にこの確認を行う）。
+        # 面1だけの計画で「面2待ち」「未登録」なら、理由を示して確認する（D-9x）。一括登録では事前に除外済みだが、経路を問わず確認する。
         if not _confirm_side1_only_if_applicable(parent, candidate):
             return
 
@@ -1378,15 +809,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
         preview = parent._build_registration_preview(daily_qty, {})
 
-        # _perform_registration()は登録完了のたびにmessagebox.showinfo()で
-        # 完了メッセージ（アプリ入力累計・反対側連動・NG申告・エラー等を含む）
-        # を表示するが、数量差があった場合はこれをそのまま出さず、修正への
-        # 選択肢を追加したダイアログに差し替えたい。そのため、_on_bulk_
-        # register()と同じ手法（messagebox.showinfo()の一時的な無効化、
-        # try/finallyで必ず復元）で、いったん元の完了メッセージの内容だけを
-        # 捕捉し、実際の表示は本メソッド側で行う（内容そのものは捨てず、
-        # 数量が一致していた場合はそのまま流用する＝「従来通りの完了メッセージ
-        # のみ表示」という要件を満たす）。
+        # 数量差があれば完了メッセージを差し替えるため、showinfo() を一時的に無効にして内容だけを捕まえる（try/finally で必ず戻す）。
         captured = []
         original_showinfo = messagebox.showinfo
         messagebox.showinfo = lambda title, message, **kw: captured.append((title, message))
@@ -1398,8 +821,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
         if captured:
             completion_title, completion_message = captured[0]
         else:
-            # _perform_registration()がエラー等でmessagebox.showinfo()に
-            # 到達しなかった場合（実績登録自体に失敗した場合）のフォールバック。
+            # 実績の登録自体に失敗して showinfo() まで届かなかったときの既定値。
             completion_title, completion_message = "登録完了", f"実績を登録しました（実績数：{daily_qty:g}）。"
 
         try:
@@ -1407,17 +829,8 @@ class ProductionImportStagingWindow(tk.Toplevel):
         except (TypeError, ValueError):
             mismatch = False
 
-        # 完了・数量差ダイアログのparentについて（2026-10-07修正、画面修正
-        # 5項目§4）：以前はparent.winfo_toplevel()（生産実績入力画面）を
-        # parentにしていたため、このダイアログを閉じると（モーダルダイアログは
-        # 閉じた際にそのparentへフォーカス・前面を戻すOS/Tkの挙動のため）
-        # 生産実績入力画面が前面に戻ってしまい、直前にparent._perform_
-        # registration()内で行っていた登録待ち一覧への前面復帰・フォーカス
-        # 復帰（from_csv_staging分岐、D-84）を上書きしてしまっていた
-        # （ダブルクリックからの登録は、完了ダイアログの表示がparent._perform_
-        # registration()内部でこの前面復帰より先に行われるため、この問題が
-        # 起きなかった）。self.winfo_toplevel()（本ウインドウ自身）をparentに
-        # 変更することで、ダイアログを閉じた後も本ウインドウが前面に残る。
+        # ダイアログの parent は本ウインドウにする。生産実績入力画面にすると、閉じたときにそちらが前面に戻り、
+        # 一覧への前面復帰とフォーカス（D-84）が上書きされる。
         fix_in_entry_window = False
         if not mismatch:
             messagebox.showinfo(completion_title, completion_message, parent=self.winfo_toplevel())
@@ -1429,34 +842,22 @@ class ProductionImportStagingWindow(tk.Toplevel):
                 "数量を修正しますか？"
             )
             if messagebox.askyesno(completion_title, message, parent=self.winfo_toplevel()):
-                # 該当計画を再度開き、登録済みの実績数（daily_qty）を実績記入欄へ
-                # 転記した上でフォーカスを移す。ユーザーがここから値を訂正し、
-                # 通常の一直線Enterフロー（Enter→確認ダイアログ→登録）で
-                # 再登録すればoverwrite_daily_result()により上書きされる。
-                # この場合のみ、ユーザーが明示的に選んだ行き先（生産実績入力
-                # 画面）へフォーカスを渡したままにする（下のfix_in_entry_window
-                # ガードで、登録待ち一覧への復帰処理をスキップする）。
+                # 該当計画を開き直して記入欄に実績数を入れ、フォーカスを渡す。訂正して通常の Enter フローで再登録すると上書きされる。
+                # この場合だけ、一覧への復帰をしない（fix_in_entry_window）。
                 parent.search_plan(kitting_list_no, lot_no=lot_no)
                 parent.entry_daily_qty.delete(0, tk.END)
                 parent.entry_daily_qty.insert(0, f"{daily_qty:g}")
                 parent.entry_daily_qty.focus_set()
                 fix_in_entry_window = True
 
-        # ダブルクリック・Shift+Sと同じ戻り方に揃えるため、ここでも
-        # 登録待ち一覧ウインドウを前面に戻し、キーボードフォーカスも一覧へ
-        # 渡す（2026-10-07追加、画面修正5項目§4）。次の行の選択自体は
-        # remove_callback（_make_remove_callback()）側で既に行われている。
+        # ダブルクリック・Shift+S と同じく、一覧を前面に戻してフォーカスも渡す（次の行の選択は remove_callback で済んでいる）。
         if not fix_in_entry_window:
             self._refocus_staging_window()
 
     def _refocus_staging_window(self):
         """
-        登録待ち一覧ウインドウ（本ウインドウ）を前面に戻し、キーボード
-        フォーカスも一覧（self.tree）へ渡す。lift()だけではTkのキーボード
-        フォーカスは移動しない（D-84と同じ注意点）ため、focus_force()・
-        tree.focus_set()を併用する。最小化（アイコン化）されていた場合は
-        先にdeiconify()する（ui.kitting_production_entry.KittingProduction
-        EntryWindow._perform_registration()のiconic対策と同じ考え方）。
+        本ウインドウを前面に戻し、キーボードフォーカスも一覧へ渡す。lift() だけではフォーカスが移らない（D-84）。
+        最小化されていれば先に deiconify() する。
         """
         if self.state() == "iconic":
             self.deiconify()
@@ -1465,18 +866,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
         self.tree.focus_set()
 
     def _on_bulk_register(self, event=None):
-        """
-        Shift+Sショートカット：右ペイン（登録待ち一覧）で選択中の行のうち、
-        evaluate_auto_register_eligibility()をAUTO_REGISTER_MAX_DAYS_SHIFT_S
-        （1日以内）で判定して合格したものだけを一括で即時登録する。
-
-        条件自体は従来から変更していない（候補が1件、製品名一致、数量が
-        完全一致、日付の差が1日以内、既存実績・重複候補・面2待ち／生産面
-        マスター未登録に当たらない。選択した行のみ対象）。本体の処理は
-        _execute_bulk_register()に共通化した（2026-10-08、D-101。Shift+Qの
-        追加に伴い、Shift+S・Shift+Qの一括登録ロジックの違いを「許容日数・
-        事前確認の有無」だけに絞るため）。
-        """
+        """Shift+S: 選択中の行のうち、許容日数1日で判定して合格した行だけを一括で即時登録する（D-101）。"""
         self._execute_bulk_register(
             max_date_diff_days=AUTO_REGISTER_MAX_DAYS_SHIFT_S,
             shortcut_label="Shift+S",
@@ -1486,21 +876,8 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
     def _on_bulk_register_extended(self, event=None):
         """
-        Shift+Qショートカット（2026-10-08新設、D-101）：Shift+Sと同じ対象
-        （右ペインで選択中の行のみ）・同じ条件だが、日付の差の許容日数だけを
-        4日以内に緩める。それ以外の条件（候補が1件、製品名一致、数量が完全
-        一致、既存実績・重複候補・面2待ち／生産面マスター未登録に当たらない）
-        はShift+Sと完全に同一（evaluate_auto_register_eligibility()を
-        共通で通るため）。
-
-        利用者の決定により、選択に関係なく一覧の全行を対象にする動作は
-        採用しない（以前Shift+Qの初期実装でこの動作を試みたが、同日中に
-        取り消した経緯がある。D-100参照）。
-
-        Shift+Sと異なり、実行前に対象件数（選択行数・登録される行数・その
-        うち日付の差が2〜4日の行数＝Shift+Sでは登録されない行）を示す確認
-        ダイアログを出す（require_confirm=True、_execute_bulk_register()
-        参照）。
+        Shift+Q（D-101）: 対象と条件は Shift+S と同じで、日付の差の許容日数だけを4日に緩める。
+        対象は選択中の行だけ（全行を対象にする版は取り消した、D-100）。実行前に件数を示す確認ダイアログを出す。
         """
         self._execute_bulk_register(
             max_date_diff_days=AUTO_REGISTER_MAX_DAYS_SHIFT_Q,
@@ -1511,70 +888,19 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
     def _execute_bulk_register(self, max_date_diff_days, shortcut_label, require_confirm, trigger_source):
         """
-        Shift+S・Shift+Qの共通本体（2026-10-08新設、D-101）。右ペイン
-        （登録待ち一覧）で選択中の行のうち、evaluate_auto_register_
-        eligibility()をmax_date_diff_daysで判定して合格したものだけを
-        一括で即時登録する。対象は選択中の行のみ（選択が無い場合は何もしない。
-        Shift+S・Shift+Qいずれも同じ方針）。
-
-        各対象行についてfind_matching_plan_items()で候補を都度再照合する
-        （選択・表示時点でキャッシュされたrow["candidates"]/row["matched"]は
-        古くなっている可能性があるため使わない。_load_staged_rows_from_db()の
-        docstring参照）。group_active_plan_items_by_lot()は選択件数分の
-        N+1を避けるためループの前に1回だけ取得する（CSV取込時と同じ考え方）。
-
-        require_confirm：Trueの場合（Shift+Q）、実際に登録する前に対象件数
-        （選択行数・登録される行数・そのうち日付の差が2日以上の行数＝
-        AUTO_REGISTER_MAX_DAYS_SHIFT_S（1日）を超える、Shift+Sでは登録され
-        ない行）を示す確認ダイアログを出し、「いいえ」の場合は何も変更せず
-        終了する（この時点ではまだ候補の解決・判定のみで、登録・削除は一切
-        行っていない）。Shift+S（require_confirm=False）はこの確認を出さず、
-        従来通り即座に登録する。
-
-        要件を満たさない行は理由ごとに件数を記録してスキップする（削除・
-        除外等の副作用は一切与えない。ステージング一覧にそのまま残り続ける）。
-        完了時にこの理由ごとの件数を表示する（2026-10-08追加、D-101。以前は
-        Shift+Sの完了メッセージに理由の内訳が無く、「要件を満たさない」の
-        合計件数しか分からなかった）。
-
-        非同期化について（検討結果、Shift+S実装時から変更なし）：1件あたりの
-        登録処理はDB書き込み数件程度で、選択件数が数十〜百件程度までは体感
-        できる遅延にはならないと判断し、LoadingWindowによる非同期化は行わ
-        なかった。
-
-        完了通知の抑制について：_perform_registration()は登録成功のたびに
-        messagebox.showinfo("登録完了", ...)を表示するが、複数件の一括操作で
-        逐一クリックさせるのは一括操作の趣旨に反するため、本メソッドの実行中
-        のみ一時的にmessagebox.showinfo()を無効化し、最後に1回だけ件数
-        サマリを表示する（try/finallyで必ず元に戻す）。エラーダイアログ
-        （messagebox.showerror）は抑制しない（個別の失敗は稀であり、必ず
-        ユーザーの目に入るようにするため）。
-
-        登録成功の判定：_perform_registration()自体は成功/失敗を戻り値で
-        知らせないため、呼び出し後にiidがself._row_by_iidから消えているか
-        （remove_callbackが実行されたか）で判定する。
-
-        完了後の自動選択（2026-09-24追加）：複数行が同時に削除されるため、
-        「対象行のうちTreeview上で最後だった行の次の行（対象行以外で最初に
-        来る後続行）」を選択する方針を採用した（対象行が最初に選択されていた
-        中の生き残りではなく、常に「一括処理した範囲の直後」を選ぶ方が、
-        次にどこから作業を再開すべきかが分かりやすいと判断したため）。
-        対象行はremove_callback（_make_remove_callback()）呼び出しのたびに
-        個別の「次の行」選択も行うが、本メソッドの末尾で改めてselection_set()
-        により上書きするため、最終的な選択状態はこの方針の通りになる。
+        Shift+S・Shift+Q の共通本体（D-101）。選択中の行のうち、判定に合格した行だけを一括で即時登録する。
+        - 候補は行ごとに再照合する（表示時点のキャッシュは古い可能性がある）。plan_items_by_lot はループの前に1回だけ取得する
+        - require_confirm=True（Shift+Q）は、登録の前に件数を示す確認ダイアログを出す。「いいえ」なら何も変えない
+        - 合格しない行は理由ごとに数えるだけで、一覧に残す
+        - 実行中は showinfo() を無効にし、最後に1回だけ件数を出す（try/finally で戻す）。showerror() は止めない
+        - 登録の成否は、iid が _row_by_iid から消えたか（remove_callback が呼ばれたか）で判定する
+        - 終わったら、処理した範囲の直後の行を選ぶ
         """
         selected_iids = list(self.tree.selection())
         if not selected_iids:
             return
 
-        # 削除が始まる前に、対象行のうちTreeview上で最後の位置にある行を
-        # 特定し、その直後（対象行を除く）を「一括処理後に選ぶべき行」として
-        # 記録しておく（削除が進むとtree.next()等で辿れなくなるため）。
-        # 対象範囲の直後に（対象以外の）行が無い場合＝対象行が一覧の末尾まで
-        # 含んでいた場合は、単一行登録時の「最後の行だった場合は新しい最後の
-        # 行を選択する」という方針に合わせ、対象範囲より前にある直近の
-        # 非対象行（＝削除後の新しい最後の行）にフォールバックする
-        # （2026-10-07追加、画面修正5項目§4）。
+        # 削除が始まる前に、処理範囲の直後の行（無ければ直前の行）を控えておく（削除が進むと next() で辿れない）。
         ordered_all = list(self.tree.get_children())
         selected_set = set(selected_iids)
         indices = [ordered_all.index(iid) for iid in selected_iids if iid in ordered_all]
@@ -1594,13 +920,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
         plan_items_by_lot = group_active_plan_items_by_lot()
 
-        # 重複判定の事前集計：現在一覧に残っている全行（選択中かどうかを
-        # 問わない）について、候補が1件に定まるものだけを対象に、同じ
-        # (kitting_list_no, lot_no)を候補とする行が複数あるかを数える
-        # （画面表示用の判定（_load_staged_rows_from_db()）とは独立に、
-        # ここでも都度最新の状態で再判定する。find_matching_plan_items()の
-        # キャッシュ結果（row["matched"]）は選択・表示時点のものなので使わず、
-        # このブロックでも都度再照合する）。
+        # 重複判定のため、一覧に残っている全行（選択の有無を問わない）を最新の状態で再照合して数える。
         plan_key_counts = {}
         for other_iid, other_row in self._row_by_iid.items():
             other_normalized = normalize_product_name(other_row["product_name"])
@@ -1611,8 +931,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
                 plan_key = (other_matched[0]["kitting_list_no"], other_row["lot_no"])
                 plan_key_counts[plan_key] = plan_key_counts.get(plan_key, 0) + 1
 
-        # 対象行ごとに判定する（登録はまだ行わない。require_confirm=Trueの
-        # 場合、この時点の結果で確認ダイアログの件数を組み立てる）。
+        # 行ごとに判定する（まだ登録しない。Shift+Q の確認ダイアログの件数はこの結果から作る）。
         evaluated = []
         for iid in selected_iids:
             row = self._row_by_iid.get(iid)
@@ -1630,9 +949,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
         eligible_items = [e for e in evaluated if e[2] == AUTO_REGISTER_ELIGIBLE]
 
         if require_confirm:
-            # Shift+Sでは登録されない行＝日付の差がAUTO_REGISTER_MAX_DAYS_
-            # SHIFT_S（1日）を超える行（他の条件は全てShift+Sと同一のため、
-            # 合格した行の中でこの差だけがShift+Sとの違いになる）。
+            # Shift+S では登録されない行＝日付の差が1日を超える行（ほかの条件は同じ）。
             shift_s_extra_count = sum(
                 1 for e in eligible_items
                 if e[5] is not None and e[5] > AUTO_REGISTER_MAX_DAYS_SHIFT_S
@@ -1649,10 +966,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
         registered_count = 0
         failed_count = 0
         skip_reason_counts = {}
-        # 登録に成功した行のlot_noを集める（重複除去、set）。反対面連動
-        # （_perform_registration()内部）で影響するlot_noも常に同一lot_noの
-        # ため、この集合に別途追加する必要はない（2026-09-30追加、
-        # バッチ末尾でのlot_status_historyまとめ記録に使う）。
+        # 登録できた行の lot_no（反対側の面も同じ lot_no なので追加は不要）。最後にまとめて履歴を記録する。
         affected_lot_nos = set()
 
         original_showinfo = messagebox.showinfo
@@ -1663,11 +977,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
                     skip_reason_counts[reason] = skip_reason_counts.get(reason, 0) + 1
                     continue
 
-                # record_history=False：一括登録では行ごとの即時記録を抑制し、
-                # バッチ処理の最後にdistinctなlot_no単位でまとめて記録する
-                # （2026-09-30追加。行ごとに記録すると1件あたり数十msの
-                # DB書き込みコストが積み重なり、100件規模で数秒の遅延になる
-                # ことが判明したための対応）。
+                # 行ごとに履歴を記録すると100件規模で数秒かかるため、最後にロット単位でまとめて記録する。
                 self._register_candidate_immediately(row, iid, candidate, record_history=False)
                 if iid not in self._row_by_iid:
                     registered_count += 1
@@ -1677,12 +987,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
         finally:
             messagebox.showinfo = original_showinfo
 
-        # バッチ処理全体の最後に、影響を受けたdistinctなlot_noそれぞれについて
-        # 1回だけlot_status_historyへ記録する（2026-09-30追加）。1件の記録
-        # 失敗が他のlot_noの記録・一括登録の完了通知自体を妨げないよう、
-        # lot_noごとに個別にtry/exceptで捕捉する
-        # （services.production_service._record_lot_status_snapshot_safely()と
-        # 同じ方針だが、呼び出し元がUI層のため同じ形をここで実装する）。
+        # 影響したロットごとに1回だけ履歴を記録する。1件の失敗がほかを止めないよう、ロットごとに try/except する。
         for lot_no in affected_lot_nos:
             try:
                 record_lot_status_snapshot(lot_no, trigger_source)
@@ -1705,21 +1010,14 @@ class ProductionImportStagingWindow(tk.Toplevel):
             message += f"\n{failed_count}件は登録中にエラーが発生しました（詳細は個別のエラーダイアログを参照）。"
         messagebox.showinfo(f"{shortcut_label}一括登録完了", message, parent=self)
 
-        # 事前に記録しておいた「一括処理範囲の直後の行」を選択する。存在しない
-        # （末尾の行まで含む一括登録だった等）場合は選択状態を空にする。
+        # 控えておいた「処理範囲の直後の行」を選ぶ。無ければ選択を空にする。
         if next_after_batch_iid and self.tree.exists(next_after_batch_iid):
             self.tree.selection_set(next_after_batch_iid)
             self.tree.see(next_after_batch_iid)
         else:
             self.tree.selection_set(())
 
-        # 一括登録の完了後、登録待ち一覧ウインドウを前面に戻し、キーボード
-        # フォーカスも一覧へ戻す（2026-10-06追加・2026-10-07
-        # _refocus_staging_window()に統合、Shift+Sが効かなくなる不具合の
-        # 修正の一環。_perform_registration()が登録のたびにparent.entry_
-        # daily_qty.focus_set()を呼ぶため、ここで明示的に戻さないと、次に
-        # ショートカットを押した際にフォーカスが残った親ウインドウの
-        # 実績数入力欄へ文字が入力されてしまう）。
+        # 一覧を前面に戻してフォーカスも渡す。戻さないと親の記入欄にフォーカスが残り、次の Shift+S が文字入力になる。
         self._refocus_staging_window()
 
     # ------------------------------------------------------------------
@@ -1728,37 +1026,11 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
     def _on_close(self):
         """
-        ウインドウを閉じる前に、失われると困るデータが残っていないか順番に
-        確認する。
-
-        1. 不一致リスト（self._mismatched_rows）：「不一致として除外」した
-           際に入力した理由（自由記述）を含むデータで、対応する
-           pending_csv_import_rowsの行は_apply_mismatch()の時点で既に
-           DBから物理削除済みのため、**このウインドウのメモリ上にしか
-           存在しない**。CSV出力せずに閉じると完全に失われる。そのため、
-           1件以上残っている場合はブロッキングの確認ダイアログ（askyesno）
-           で出力を促す（_confirm_and_export_mismatched_before_close()）。
-           「いいえ」を選んだ場合はテキストの通りデータが失われる前提で
-           閉じる操作を続行する。ファイル選択自体をキャンセルした場合は
-           「出力を促したのに何も出力されないまま閉じる」事故になるため、
-           閉じる操作自体を中止する（ダイアログを閉じずに残す）。
-
-        2. 未登録行（self._row_by_iid、pending_csv_import_rows）：以前は
-           これも確認ダイアログだったが、ステージングデータの永続化により
-           閉じても失われなくなった（メインメニューの「実績CSV取込状況」
-           からいつでも再開できる）ため、確認ゲート自体は不要と判断済み
-           （既存の非ブロッキングな案内のみ、_show_closing_notice()参照）。
-           不一致リストの確認（ブロッキング、ウインドウを閉じる**前**に
-           完結させる必要がある）→ウインドウを閉じる→未登録行の案内
-           （非ブロッキング、閉じた**後**に表示）という順序になる。
-
-        登録不可リスト（self._unregistrable_rows）については、同様の確認は
-        追加しない：不一致リストと異なり、対応するpending_csv_import_rowsの
-        行はCSV出力するまでDBに残ったまま（削除されるのはon_export_
-        unregistrable_csv()の実行時のみ）であり、ウインドウを閉じても実データ
-        は失われず、再度開けば同じ内容（"no_candidates"の行）が再構築される
-        （reasonも人間の自由記述ではなく固定文言REASON_NO_CANDIDATESのため、
-        再現不能な情報が失われる心配も無い）。
+        閉じる前に、失われるデータが無いか確認する。
+        1. 不一致リスト: DB からは削除済みで、このウインドウのメモリにしか無い。残っていれば CSV 出力を促す。
+           ファイル選択をキャンセルしたら閉じない（出力を促したのに何も残らないのを防ぐ）。
+        2. 未登録の保留行: DB にあるので失われない。閉じた後に、非ブロッキングの案内を出すだけ。
+        登録不可リストは DB に残っていて、再度開けば再構築されるので確認しない。
         """
         if self._mismatched_rows:
             if not self._confirm_and_export_mismatched_before_close():
@@ -1772,19 +1044,8 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
     def _confirm_and_export_mismatched_before_close(self):
         """
-        不一致リストが1件以上残っている状態で閉じようとした際に呼ばれる。
-
-        「はい」：on_export_mismatched_csv()をその場で実行する。実際に
-        CSVへ出力できた場合（戻り値True）のみ、閉じる操作を続行してよいと
-        判断する（True）。ファイル選択をキャンセルした・書き込みエラーに
-        なった場合（戻り値False）は、出力を促したのに何も出力されないまま
-        閉じてしまうことになるため、閉じる操作自体を中止する（False）。
-
-        「いいえ」：データが失われることを理解した上での選択として扱い、
-        出力せずに閉じてよい（True）。
-
-        戻り値：True＝このままウインドウを閉じてよい、False＝閉じる操作を
-        中止する（ダイアログを閉じずに残す）。
+        不一致リストが残っているときに閉じようとしたら呼ぶ。「はい」なら CSV 出力し、実際に出力できたときだけ閉じてよい（True）。
+        「いいえ」はデータが失われることを承知のうえとして、閉じてよい（True）。
         """
         count = len(self._mismatched_rows)
         if not messagebox.askyesno(
@@ -1800,16 +1061,8 @@ class ProductionImportStagingWindow(tk.Toplevel):
     @staticmethod
     def _show_closing_notice(parent, remaining_count):
         """
-        親ウインドウ（呼び出し元のui.kitting_production_entry.
-        KittingProductionEntryWindow）上に、自動的に消える非ブロッキングの
-        案内を表示する。messagebox（「OK」クリックを要求するモーダル）は
-        「閉じる操作自体を妨げない」という要件に合わないため使わず、
-        枠のみのToplevel + after()による自動destroy()で実装した
-        （実装コストが低く、閉じる処理をブロックしない方法として採用）。
-
-        親ウインドウが既に閉じられている等、表示できない場合は静かに諦める
-        （案内が出せないこと自体はエラー扱いしない。データはDBに永続化
-        済みのため、通知が出せなくても実害は無い）。
+        親ウインドウ上に、自動で消える非ブロッキングの案内を出す（messagebox は閉じる操作を妨げるので使わない）。
+        表示できなくてもエラーにしない（データは DB にある）。
         """
         try:
             if parent is None or not parent.winfo_exists():
@@ -1839,15 +1092,8 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
     def on_export_unregistrable_csv(self):
         """
-        登録不可（"no_candidates"＝該当lot_noの計画が見つからなかった）行を
-        CSV出力する。該当行が1件も無い場合は出力せずメッセージのみ表示する。
-
-        出力成功後、該当行を一覧（self.tree・self._row_by_iid）・DB
-        （pending_csv_import_rows、delete_pending_csv_import_row()）からも
-        削除する（self._unregistrable_rows自体は保持したまま：ウインドウを
-        閉じるまで参照可能にしておく従来の方針は変えない）。DBから削除しないと、
-        CSVに出力済みでも「未処理」のまま残り続け、次回ステージング一覧を
-        開いた際に再び表示されてしまうため。
+        登録不可（"no_candidates"）の行を CSV 出力する。出力後、その行を一覧と DB から削除する
+        （削除しないと、次に開いたときにまた「未処理」として表示される）。_unregistrable_rows は閉じるまで保持する。
         """
         if not self._unregistrable_rows:
             messagebox.showinfo("登録不可リスト", "登録不可の行はありません。", parent=self)
@@ -1886,9 +1132,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
             pending_row_id = self._row_by_iid[iid].get("pending_row_id")
             self.tree.delete(iid)
             del self._row_by_iid[iid]
-            # 除外済み（CSV出力で対応済みとした）行は履歴として残さず、
-            # pending_csv_import_rowsから即座に物理削除する
-            # （models.production_import_stagingの方針。__init__()参照）。
+            # 対応済みの行は履歴に残さず、即座に物理削除する。
             if pending_row_id is not None:
                 delete_pending_csv_import_row(pending_row_id)
             # 削除された行が左ペインの候補表示元だった場合、候補表示をクリアする。
@@ -1903,15 +1147,8 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
     def _on_right_click(self, event):
         """
-        右クリックされた行に対して「不一致として除外」のコンテキストメニューを
-        表示する。
-
-        複数行選択時の一括対応：右クリックされた行が、現在複数選択されている
-        行の一部であれば、選択されている全行が対象になる（一括不一致マーク、
-        _mark_multiple_as_mismatched()）。それ以外（未選択の状態でクリック、
-        または選択範囲外の行をクリック）の場合は、クリックされた行1件のみを
-        選択し直した上で対象にする（多くのアプリの右クリックの慣習と同じ
-        挙動、かつ既存の単一行動作をそのまま維持する）。
+        右クリックした行に「不一致として除外」などのメニューを出す。
+        右クリックした行が複数選択の一部なら選択中の全行が対象。そうでなければ、その行だけを選び直して対象にする。
         """
         clicked_iid = self.tree.identify_row(event.y)
         if not clicked_iid:
@@ -1950,15 +1187,8 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
     def _apply_mismatch(self, iid, reason):
         """
-        1行を「不一致として除外」する共通処理（理由の入力は含まない）。
-        一覧（self.tree・self._row_by_iid）・DB（pending_csv_import_rows）から
-        即座に削除し、self._mismatched_rows（不一致リストCSV出力用、ウインドウを
-        閉じるまで保持）へ追加する。self._unregistrable_rows（機械判定の
-        "no_candidates"分はCSV出力時にまとめて削除、人間判断"候補なしとする"分は
-        _apply_no_candidates()の時点で即座に削除）とは別枠で管理する
-        （__init__()のコメント参照。既存の登録不可リストと混同しないため）。
-        _mark_as_mismatched()（単一行）・_mark_multiple_as_mismatched()
-        （複数行一括）の両方から、理由決定後に呼ばれる。
+        1行を「不一致として除外」する共通処理。一覧と DB から即座に削除し、_mismatched_rows（閉じるまで保持）へ移す。
+        登録不可リスト（_unregistrable_rows）とは別に管理する。
         """
         row = self._row_by_iid.get(iid)
         if row is None:
@@ -1977,11 +1207,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
     def _mark_as_mismatched(self, iid):
         """
-        人間が「この行に一致する計画は無い／違う」と判断した場合の、単一行の
-        除外操作。除外理由：人間の個別判断のため理由は様々であり得る
-        （ロットNoの入力ミス・対象外の製品・二重入力等）。REASON_NO_CANDIDATES
-        （機械判定による固定文言1種類）とは異なり、任意入力（自由記述）の
-        ダイアログで尋ね、空欄・キャンセル時はREASON_MISMATCH_DEFAULTを使う。
+        人が「この行に一致する計画は無い」と判断した1行を除外する。理由は自由記述で尋ね、空欄・キャンセルなら既定の文言を使う。
         """
         row = self._row_by_iid.get(iid)
         if row is None:
@@ -1999,12 +1225,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
         self._update_status_label()
 
     def _mark_multiple_as_mismatched(self, iids):
-        """
-        複数選択された行を一括で「不一致として除外」する（右ペインを複数選択
-        状態で右クリックした場合）。理由は全行共通で1回だけ尋ね
-        （simpledialog.askstring()、_mark_as_mismatched()と同じ任意入力・
-        デフォルトフォールバック方式）、全行に同じ理由を適用する。
-        """
+        """複数選択した行を一括で「不一致として除外」する。理由は1回だけ尋ね、全行に同じ理由を使う。"""
         valid_iids = [iid for iid in iids if iid in self._row_by_iid]
         if not valid_iids:
             return
@@ -2026,32 +1247,9 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
     def _apply_no_candidates(self, iid):
         """
-        1行を人間判断で「候補なしとする」（登録不可リストへ移動）共通処理。
-
-        既存の機械判定によるself._unregistrable_rows（"no_candidates"、
-        find_matching_plan_items()の候補が実際に0件だった行）と**同じ
-        リストにそのまま統合する**。CSV出力時（on_export_unregistrable_csv()）の
-        理由欄は、機械判定・人間判断のいずれもREASON_NO_CANDIDATESという同じ
-        固定文言になる（両者を区別する専用の理由文言は導入しなかった。
-        _unregistrable_rowsは元々「reasonは1種類の固定文言のみ」という前提の
-        設計（_apply_mismatch()のdocstring参照）で、区別を導入するには
-        行ごとに理由を保持する形へ拡張する必要があり実装コストが上がるため、
-        今回は既存のREASON_NO_CANDIDATESをそのまま流用する方を選んだ）。
-
-        対応するpending_csv_import_rowsのDB行は、_apply_mismatch()と同様に
-        ここで即座に物理削除する（2026-09-23修正：以前は「CSV出力時にのみ
-        削除」としていたが、ウインドウを閉じて再度開くと、この関数で一覧
-        （self._row_by_iid）からは消したのにDB行は残ったままだったため、
-        find_matching_plan_items()の再照合で通常の登録待ち一覧へ復活して
-        しまう不具合があった。機械判定の"no_candidates"（このメソッドを
-        経由しない、_load_staged_rows_from_db()がstatus="no_candidates"と
-        判定した行）は元々候補が無いため再照合しても復活せず、CSV出力時に
-        削除する従来方針のままで問題ないが、こちらの人間判断による除外は
-        候補が実在する行にも適用され得るため、即座に削除しないと復活する
-        リスクがあった）。CSV出力（on_export_unregistrable_csv()）側は
-        まだ一覧に残っている（＝機械判定分の）行だけをDBから削除する処理の
-        ままのため、ここで既に削除済みの行に対して重複して削除を試みる
-        ことはない（該当行は既にself._row_by_iidに存在しないため対象外）。
+        1行を人の判断で「候補なしとする」（登録不可リストへ移す）。CSV の理由欄は、機械判定と同じ固定の文言になる。
+        DB の行はここで即座に削除する。削除しないと、再度開いたときに再照合で候補が見つかり、登録待ち一覧に復活する
+        （機械判定の行は候補が無いので復活せず、CSV 出力時の削除でよい）。
         """
         row = self._row_by_iid.get(iid)
         if row is None:
@@ -2070,12 +1268,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
     def _mark_as_no_candidates(self, iid):
         """
-        人間が「この行には対応する計画が無いものとして扱ってよい」と判断
-        した場合の、単一行の登録不可リストへの移動。理由は固定文言
-        （REASON_NO_CANDIDATES）のため自由記述の入力は求めないが、
-        誤クリックによる意図しない移動を避けるため確認ダイアログを挟む
-        （_mark_as_mismatched()が自由記述の入力自体を実質的な確認として
-        機能させているのと同じ考え方）。
+        人が「対応する計画は無い」と判断した1行を登録不可リストへ移す。理由は固定の文言なので、誤クリック防止のため確認だけ挟む。
         """
         row = self._row_by_iid.get(iid)
         if row is None:
@@ -2092,11 +1285,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
         self._update_status_label()
 
     def _mark_multiple_as_no_candidates(self, iids):
-        """
-        複数選択された行を一括で「候補なしとする」（登録不可リストへ移動）。
-        _mark_multiple_as_mismatched()と同様、複数選択中の右クリックから
-        呼ばれる。理由の自由記述は無いため1回の確認ダイアログのみで済ませる。
-        """
+        """複数選択した行を一括で「候補なしとする」。確認ダイアログは1回だけ。"""
         valid_iids = [iid for iid in iids if iid in self._row_by_iid]
         if not valid_iids:
             return
@@ -2118,22 +1307,8 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
     def on_export_mismatched_csv(self):
         """
-        「不一致として除外」された行（self._mismatched_rows）をCSV出力する。
-        on_export_unregistrable_csv()と同じ形式（utf-8-sig、列構成：lot_no・
-        product_name・daily_qty・report_date・reason）だが、reason列は行ごとに
-        個別入力された除外理由をそのまま使う（REASON_NO_CANDIDATESのような
-        固定文言1種類ではない）。
-
-        既にpending_csv_import_rowsからの削除・一覧からの除去は
-        _mark_as_mismatched()の時点で完了済みのため、ここではCSVへの書き出しの
-        みを行う（on_export_unregistrable_csv()と異なり、削除処理は無い）。
-
-        戻り値：実際にCSVへの書き出しが完了した場合True、それ以外
-        （出力対象が無い・ファイル選択をキャンセルした・書き込みエラー）は
-        False。ボタン押下（既存の呼び出し方）では戻り値は使われないが、
-        _on_close()（ウインドウを閉じる前に未出力の不一致リストがあれば
-        出力を促す、_confirm_and_export_mismatched_before_close()参照）が
-        「実際に出力できたか」を判定するために利用する。
+        「不一致として除外」した行を CSV 出力する（理由は行ごとの入力値）。DB からは除外時に削除済みなので、ここでは書き出すだけ。
+        実際に書き出せたら True。_on_close() が「出力できたか」の判定に使う。
         """
         if not self._mismatched_rows:
             messagebox.showinfo("不一致リスト", "不一致として除外した行はありません。", parent=self)
@@ -2173,13 +1348,8 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
     def add_already_registered_rows(self, rows):
         """
-        新たなCSV取込で見つかった「登録済み」行を、既存のself._already_
-        registered_rowsへ追記する。ui.kitting_production_entry.
-        KittingProductionEntryWindow.open_pending_csv_staging_window()が、
-        本ウインドウが既に開いている状態でもう一度CSV取込された場合に呼ぶ
-        （lift()するだけでは今回の判定結果が失われてしまうため）。
-
-        件数表示・詳細一覧ウインドウ（開いていれば）の両方を最新化する。
+        新しい取込で見つかった「登録済み」行を追記する。既に開いている一覧に、もう一度取り込んだときに呼ぶ
+        （lift() だけでは今回の判定結果が失われる）。件数表示と詳細ウインドウも更新する。
         """
         if not rows:
             return
@@ -2189,11 +1359,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
             self._populate_already_registered_tree()
 
     def on_show_already_registered_list(self):
-        """
-        「登録済みリストを表示」ボタン。既に開いていれば前面に出すだけ
-        （多重に開かない、既存の他画面と同じ考え方）。1度目はここで
-        Toplevel・Treeview・CSV出力ボタン・右クリックメニューを構築する。
-        """
+        """「登録済みリストを表示」ボタン。開いていれば前面に出すだけで、多重に開かない。"""
         if self._already_registered_window is not None and self._already_registered_window.winfo_exists():
             self._already_registered_window.lift()
             return
@@ -2203,9 +1369,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
         window.geometry("980x400")
         center_window(window, self)
         window.transient(self)
-        # 親（本ウインドウ）が最小化状態だとtransientウインドウが実際には
-        # 表示されない既知の問題（UI_WORKFLOW_FIXES_NOTES.mdグループO参照）
-        # への対策。
+        # 親が最小化中だと transient のウインドウが表示されないので、先に元に戻す（UI_WORKFLOW_FIXES_NOTES.md グループO）。
         if self.state() == "iconic":
             self.deiconify()
 
@@ -2260,11 +1424,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
         self._populate_already_registered_tree()
 
     def _populate_already_registered_tree(self):
-        """
-        self._already_registered_rowsの内容で、登録済みリスト詳細ウインドウの
-        Treeviewを作り直す（全件クリア→再挿入）。add_already_registered_
-        rows()・_revert_already_registered_rows()（戻す操作）の後に呼ぶ。
-        """
+        """登録済みリストの詳細ウインドウの Treeview を作り直す（追記・戻す操作の後に呼ぶ）。"""
         tree = self._already_registered_tree
         for item in tree.get_children():
             tree.delete(item)
@@ -2284,19 +1444,8 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
     def _on_already_registered_right_click(self, event):
         """
-        登録済みリスト詳細ウインドウの右クリックメニュー。「通常の一覧に
-        戻す（訂正する）」の1操作のみを提供する（ui.production_import_
-        staging_window.ProductionImportStagingWindow._on_right_click()と
-        同じ、複数選択時は選択中の全行が対象になる判定ロジック）。
-
-        「候補なしとする」「不一致として除外」相当の操作について：ユーザー
-        指示では両方の名称が挙がっていたが、実際にこの一覧の行に必要なのは
-        「この判定は違う、通常の一覧に戻して確認・訂正させてほしい」という
-        単一の操作であり、戻した後は通常のステージング一覧側の既存機能
-        （右クリックの「不一致として除外」「候補なしとする」）でそのまま
-        対応できる。そのため、この一覧専用の別々の2操作としては実装せず、
-        「通常の一覧に戻す」1操作に統一した（判定しやすい方を選んだ、との
-        指示に基づく判断）。
+        登録済みリスト詳細ウインドウの右クリックメニュー。「通常の一覧に戻す」の1操作だけを出す
+        （戻した後は、通常の一覧の「不一致として除外」「候補なしとする」で対応できるため）。複数選択時の扱いは _on_right_click() と同じ。
         """
         tree = self._already_registered_tree
         clicked_iid = tree.identify_row(event.y)
@@ -2322,14 +1471,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
     def _revert_already_registered_rows(self, iids):
         """
-        登録済みリストの行を、通常のpending_csv_import_rows（候補未確定の
-        状態）へ再度INSERTし、右ペイン（登録待ち一覧）へ戻す。
-
-        実装方法（判定しやすい方を選択）：対象行ごとにupsert_pending_csv_
-        import_row()を呼んでDBへ書き戻した上で、右ペインは全件を_load_
-        staged_rows_from_db()で読み直す（対象行だけを個別にTreeviewへ
-        差し込むより、既存の全件再読み込みロジックをそのまま再利用する方が
-        単純で、本操作の頻度（稀な訂正操作）であれば性能上の懸念も無いため）。
+        登録済みリストの行を保留行として DB に書き戻し、登録待ち一覧を全件読み直す（まれな訂正操作なので、個別に差し込まない）。
         """
         entries = [self._already_registered_by_iid[iid] for iid in iids if iid in self._already_registered_by_iid]
         if not entries:
@@ -2358,9 +1500,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
             }, import_batch_id=entry.get("import_batch_id"))
             self._already_registered_rows.remove(entry)
 
-        # 右ペイン（登録待ち一覧）を全件読み直す（戻した行を候補付きで表示
-        # するには、他の保留行と同じくfind_matching_plan_items()での
-        # 再照合が必要なため、_load_staged_rows_from_db()をそのまま使う）。
+        # 戻した行を候補付きで表示するには再照合が必要なので、_load_staged_rows_from_db() で全件読み直す。
         for item in self.tree.get_children():
             self.tree.delete(item)
         self._row_by_iid = {}
@@ -2372,12 +1512,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
     def on_export_already_registered_csv(self):
         """
-        登録済みリスト（self._already_registered_rows）をCSV出力する。
-        on_export_unregistrable_csv()・on_export_mismatched_csv()と同じ形式
-        （utf-8-sig）だが、対応するpending_csv_import_rowsの行がそもそも
-        存在しない（最初から永続化されていない）ため、出力後に一覧・DBから
-        何かを削除する処理は無い（あくまでスナップショットの保存であり、
-        出力後も一覧から消えず、必要なら引き続き「戻す」操作が行える）。
+        登録済みリストを CSV 出力する。DB に対応する行が無いので、出力後に一覧や DB から消すものは無い（出力後も「戻す」ができる）。
         """
         if not self._already_registered_rows:
             messagebox.showinfo("対象外一覧", "対象外と判定された行はありません。", parent=self._already_registered_window)
