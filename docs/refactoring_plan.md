@@ -24,6 +24,18 @@
   - `_build_registration_preview()` の分類のコメント（b・c なら確認ダイアログで理由を示す）
 - ほかにも同じ仮番号がある（2026-10-09 時点、計34か所）: `models/kitting_plan.py`（8）、`models/production_side_master.py`（7）、`ui/production_side_master_window.py`（6）、`ui/kitting_plan_import.py`（3）、`ui/production_import_staging_window.py`（3）、`ui/main_window.py`（2）、`services/master_merge_service.py`（1）、`services/production_import_service.py`（1）
 
+### D-5x・D-8x の仮番号
+
+D-9x と同じく、D番号が決まる前に書かれた仮番号。どれに当たるかは未確認（2026-10-09 時点、計11か所）。
+
+- D-5x（9か所）: 既定DB（未選択）と在庫値出力済みの警告に関するもの。内容から D-56〜D-59 のどれかと思われる
+  - `ui/main_window.py`: `__init__()`（2か所）、`_set_menu_enabled()`、`_confirm_proceed_despite_exported_db()`、`_update_current_db_label()`（2か所）、`_refresh_inventory_diff_export_warning()`
+  - `models/operation_log.py`: `list_operation_log()` 付近（1か所）
+  - 上の main_window.py の数は、前回の一覧（D-5x 7か所）と同じ箇所を関数名で数え直したもの
+- D-8x（3か所）: 内容から D-81〜D-85 のどれかと思われる
+  - `ui/main_window.py`: `__init__()` の PDF読み取りボタンを常に無効にするコメント（CHANGELOG では D-85）
+  - `services/production_import_service.py`: `is_already_registered()`（2か所。CHANGELOG では D-83 の内容）
+
 ## 既知の違反
 
 2026-10-09 時点（HEAD c08a88a）。どれも既存コード。新しく増やさず、そのファイルを触るときに直す（CLAUDE.md「層のルール」）。
