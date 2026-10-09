@@ -28,10 +28,9 @@
 
 D-9x と同じく、D番号が決まる前に書かれた仮番号。どれに当たるかは未確認（2026-10-09 時点、計11か所）。
 
-- D-5x（9か所）: 既定DB（未選択）と在庫値出力済みの警告に関するもの。内容から D-56〜D-59 のどれかと思われる
+- D-5x（8か所）: 既定DB（未選択）と在庫値出力済みの警告に関するもの。内容から D-56〜D-59 のどれかと思われる
   - `ui/main_window.py`: `__init__()`（2か所）、`_set_menu_enabled()`、`_confirm_proceed_despite_exported_db()`、`_update_current_db_label()`（2か所）、`_refresh_inventory_diff_export_warning()`
   - `models/operation_log.py`: `list_operation_log()` 付近（1か所）
-  - 上の main_window.py の数は、前回の一覧（D-5x 7か所）と同じ箇所を関数名で数え直したもの
 - D-8x（3か所）: 内容から D-81〜D-85 のどれかと思われる
   - `ui/main_window.py`: `__init__()` の PDF読み取りボタンを常に無効にするコメント（CHANGELOG では D-85）
   - `services/production_import_service.py`: `is_already_registered()`（2か所。CHANGELOG では D-83 の内容）
