@@ -37,7 +37,7 @@
 - 実績CSVステージング一覧から転記した行は、**実績の登録が成功したら**一覧から消す。`_perform_registration()` が `register_actual_and_ng()` の戻り値（`actual_registered`）を見て `_pending_csv_row_removal` を呼ぶ
 - NG 申告・反対側連動の成否は問わない（CSV 行が表すのは実績数量だけで、NG は別枠のため）
 - 書き込みの順序: 実績 → 操作履歴 → 反対側の面 → NG（ここまで `register_actual_and_ng()`）→ 保留行の削除（画面側）。段階3a（2026-10-13）で、保留行の削除を最後にした。以前は操作履歴の直後で、反対側と NG より前だった
-- `search_plan()` は `_pending_csv_row_removal`・`_pending_csv_report_date` をクリアする。CSV を経ずに別の計画へ切り替えたとき、古い CSV 行の情報が無関係な登録に使われないようにするため。CSV 経由のときは、ステージング一覧（`_confirm_candidate()`）が `search_plan()` の直後に改めてセットする
+- `search_plan()` は `_pending_csv_row_removal`・`_pending_csv_report_date` をクリアする。CSV を経ずに別の計画へ切り替えたとき、古い CSV 行の情報が無関係な登録に使われないようにするため。CSV 経由のときは、ステージング一覧から呼ばれる `load_staged_row()` が `search_plan()` の直後に改めてセットする
 
 ### 反対側の面の実績
 
@@ -83,7 +83,7 @@
 
 ### 実績CSVステージング一覧との連携
 
-- ステージング一覧（`ProductionImportStagingWindow`）は、本画面の `search_plan()`・`entry_daily_qty`・`_pending_csv_row_removal`・`_pending_csv_report_date` を直接使う（以前は候補選択ダイアログ `select_plan_candidate_by_lot()` とコールバック経由だった）。そのため「実績CSV取込状況」ボタンはメインメニューから本画面へ移した
+- ステージング一覧（`ProductionImportStagingWindow`）は、本画面の公開メソッド `load_staged_row()`（転記）・`refresh_after_external_registration()`（外部で登録した後の画面更新）・`confirm_overwrite_if_existing()` を使う（段階3b。以前は `search_plan()`・`entry_daily_qty`・`_pending_csv_row_removal` などを直接使い、さらに前は候補選択ダイアログ `select_plan_candidate_by_lot()` とコールバック経由だった）。そのため「実績CSV取込状況」ボタンはメインメニューから本画面へ移した
 - 登録後のフォーカス（D-84、2026-10-06）: lift() は重ね順を変えるだけで、キーボードフォーカスは移らない。以前は登録後に実績記入欄へフォーカスを戻していたため、一覧が手前に見えても一覧で押した Shift+S が記入欄への「s」の入力になっていた。登録完了時に一覧を lift()・focus_force() し、一覧の Treeview にフォーカスを渡す。常に最前面（topmost）は、後に開くダイアログを隠すので使わない。最小化されていれば deiconify() してから戻す
 - 一覧を開くとき、既に開いていれば多重に開かない。直前の取込の「登録済み」行は `add_already_registered_rows()` で追記する
 

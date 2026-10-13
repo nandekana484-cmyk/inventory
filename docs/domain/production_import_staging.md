@@ -6,9 +6,10 @@
 ## 画面の構成と連携
 
 - 右ペイン＝登録待ちの保留行（`pending_csv_import_rows`）、左ペイン＝右で選んだ行の候補（`find_matching_plan_items()` で再照合）。NG入力・仕掛展開画面と同じ配置規則（左＝操作・詳細、右＝一覧）
-- 候補をダブルクリックすると、親（`KittingProductionEntryWindow`）の `search_plan()`・`entry_daily_qty`・`_pending_csv_row_removal`・`_pending_csv_report_date` に直接転記する。以前は `ui.plan_candidate_dialog.select_plan_candidate_by_lot()`（モーダルダイアログ＋コールバック）を使っていたが、親への参照を持っていたので直接呼ぶ形にした。親の `search_plan()` などはウインドウの前面やフォーカスに依存しない
+- 候補をダブルクリックすると、親（`KittingProductionEntryWindow`）の `load_staged_row()` で記入欄に転記する。以前は `ui.plan_candidate_dialog.select_plan_candidate_by_lot()`（モーダルダイアログ＋コールバック）を使っていたが、親への参照を持っていたので直接呼ぶ形にした。親の `load_staged_row()` はウインドウの前面やフォーカスに依存しない
+- 親の画面に触るのは公開メソッド `load_staged_row()`・`refresh_after_external_registration()`・`confirm_overwrite_if_existing()` だけ（段階3b、2026-10-13。以前は親の `_pending_csv_row_removal`・`_perform_registration()` などを直接使っていた）
 - `ui.plan_candidate_dialog` の並べ替え・ハイライト判定（`_sort_candidates_by_closeness()`・`_is_large_qty_diff()` など）は、重複させないため直接 import して使う。`plan_candidate_dialog` 自体は NG入力画面がまだ使うので変えていない
-- 登録完了の検知: `_confirm_candidate()` で作った remove_callback を親の `_pending_csv_row_removal` にセットし、親の `_perform_registration()` が登録成功時に呼ぶ。この画面から DB をポーリングはしない
+- 登録完了の検知: `_confirm_candidate()` で作った remove_callback を `load_staged_row()` で親に渡し、親の `_perform_registration()` が実績の登録成功時に呼ぶ。即時登録・一括登録では、この画面の `_register_staged_row()` が呼ぶ。この画面から DB をポーリングはしない
 - 候補は DB に保存せず、表示のたびに再照合する（計画の変更に追随するため）。登録・除外が決まった保留行は、即座に物理削除し、履歴は残さない
 
 ## 自動登録の判定（`evaluate_auto_register_eligibility()`）
@@ -57,13 +58,14 @@
 
 - 右クリック＝確認ダイアログなしで即時登録、ダブルクリック＝親の画面へ転記（通常の登録フロー）
 - 即時登録を禁止する候補（2026-10-08、D-115）: 登録済みの候補（誤った上書きを防ぐ。修正はダブルクリックで実績修正画面から）と、数量が違う候補（`_is_qty_mismatch()`）。メニューは作らず、理由を表示して何もしない（この画面にはもともと右クリックメニューが無いため）
-- 確認ダイアログの省き方: 確認は親の `_start_registration()` にあり、`_perform_registration()` 自体には無い。即時登録は `_build_registration_preview()` で preview を作って `_perform_registration()` を直接呼ぶ
+- 確認ダイアログの省き方: 確認は親の `_start_registration()` にある。即時登録・一括登録（`_register_staged_row()`）はそこを通らず、`services/production_entry_service.py` の `register_actual_and_ng()` を直接呼ぶ。完了文は戻り値から `format_registration_message()` で作る（親の画面と同じ文言）
 - NG は登録しない（`save_qty_by_side={}`）。自動確定の要件は実績数量と日付だけで、NG 欄に別の計画の値が残っていても使わないため
-- 即時登録後の数量差チェック（2026-09-24）: 右クリックは数量の一致を要求しないので、計画数と違う登録が起こりうる。その場合は完了メッセージの代わりに「数量を修正しますか？」と尋ね、「はい」なら計画を開き直して記入欄に実績数を入れる（訂正して再登録すると上書きされる）。完了メッセージの内容は、`showinfo()` を一時的に無効にして捕まえる
+- 即時登録後の数量差チェック（2026-09-24）: 右クリックは数量の一致を要求しないので、計画数と違う登録が起こりうる。その場合は完了メッセージの代わりに「数量を修正しますか？」と尋ね、「はい」なら計画を開き直して記入欄に実績数を入れる（訂正して再登録すると上書きされる）。以前は完了メッセージの内容を `showinfo()` を一時的に無効にして捕まえていたが、段階3bで戻り値から作るようにした
 - 完了・数量差ダイアログの parent はこの画面にする（2026-10-07）。生産実績入力画面にすると、閉じたときにそちらが前面に戻り、一覧への復帰が上書きされた（ダブルクリックからの登録では順序の関係で起きなかった）
 - 一括登録（`_execute_bulk_register()`）
   - 非同期にはしない。1件の登録は DB 書き込み数件で、数十〜百件なら体感できる遅延にならないと判断した
   - 行ごとに lot_status_history を記録すると1件あたり数十 ms かかり、100件で数秒になるので、最後にロット単位でまとめて記録する（2026-09-30）。1ロットの失敗がほかを止めないよう、ロットごとに try/except する
+  - 親の画面は行ごとに更新せず、最後に1回だけ更新する（段階3b）。登録したロットの計画一覧の行を更新し、最後に登録まで進んだ行の計画を表示する。行ごとの登録は親の画面の状態に依存しないので、行ごとに更新する必要は無い
   - 終わったら「処理した範囲の直後の行」を選ぶ。次にどこから作業を再開すればよいか分かりやすいため（2026-09-24）。範囲が末尾まであれば、直前の行を選ぶ
 - 登録後の選択（`_make_remove_callback()`、2026-10-07）: ダブルクリック・右クリック・Shift+S のどれで登録しても、次の行（無ければ前の行）を選ぶ。以前は右クリックだけが次の行を選んでいた
 

@@ -100,11 +100,11 @@ D-9x と同じく、D番号が決まる前に書かれた仮番号。どれに�
 
 ### 他の画面・モジュールの `_` 始まりの属性やメソッドを使っている
 
+ステージング画面が親画面（生産実績入力）の内部を直接使っていた件は、段階3b（2026-10-13）で公開メソッドに置き換えて解消した。`_parse_flexible_date` の import は段階2で削除した。
+
 | ファイル | 相手 | 使っているもの |
 |---|---|---|
-| `ui/production_import_staging_window.py` | 親画面 `ui/kitting_production_entry.py` の `KittingProductionEntryWindow` | `_perform_registration()`、`_pending_csv_row_removal`、`_pending_csv_report_date`、`_build_registration_preview()`、`_show_registration_confirm_dialog()` など |
-| `ui/production_import_staging_window.py` | `ui/plan_candidate_dialog.py` | `_sort_candidates_by_closeness`・`_is_large_qty_diff`・`_is_large_date_diff`・`_parse_flexible_date` を import |
-| `ui/kitting_production_entry.py` | `ui/plan_candidate_dialog.py` | `_parse_flexible_date` を import |
+| `ui/production_import_staging_window.py` | `ui/plan_candidate_dialog.py` | `_sort_candidates_by_closeness`・`_is_large_qty_diff`・`_is_large_date_diff` などを import |
 | `services/unprocessed_check_service.py` | `ui/ng_input_window.py`・`ui/wip_expansion_window.py` | `_fetch_ng_list_rows()`・`_fetch_wip_list_rows()` |
 
 ### 層をまたいだ同じファイル名
