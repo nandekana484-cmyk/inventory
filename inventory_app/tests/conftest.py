@@ -31,3 +31,19 @@ def isolate_real_db(monkeypatch):
         yield
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.fixture(scope="session")
+def tk_root():
+    """
+    Tk のルートは、テスト全体で1つだけ作る（画面に一瞬出る）。Tk が使えない環境では、それを使うテストをスキップする。
+    同じプロセスで Tk() を何度も作り直すと、Tk の初期化がときどき失敗する（"tcl_findLibrary" が見つからない）ため。
+    """
+    import tkinter as tk
+    try:
+        root = tk.Tk()
+    except tk.TclError as e:
+        pytest.skip(f"Tk が使えない: {e}")
+    root.geometry("+3000+3000")
+    yield root
+    root.destroy()

@@ -27,16 +27,7 @@ ROWS = [
 ]
 
 
-@pytest.fixture(scope="module")
-def tk_root():
-    """Tk のルートはモジュールで1つにする（テストごとに作り直すと、Tk の初期化がときどき失敗する）。"""
-    try:
-        r = tk.Tk()
-    except tk.TclError as e:
-        pytest.skip(f"Tk が使えない: {e}")
-    r.geometry("+3000+3000")
-    yield r
-    r.destroy()
+# tk_root はテスト全体で共通（tests/conftest.py）。
 
 
 @pytest.fixture
