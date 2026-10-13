@@ -73,18 +73,22 @@ D-9x と同じく、D番号が決まる前に書かれた仮番号。どれに�
 
 ### 残っているもの
 
-段階5（2026-10-13）で、それまでの一覧の2件（ステージング画面の `plan_candidate_dialog` の `_` 関数、`unprocessed_check_service` の `_fetch_*_list_rows()`）は公開名を付けて解消した（旧名は同じものを指す別名として残している）。
+無し（2026-10-13、段階6の後）。ui → services → models の一方向以外の import、models/ の外の SQL 実行、他のモジュールの `_` 始まりの名前の import は、どれも `ast` による機械的な検査で 0 件（re-export の行は数えていない）。
 
-同じときに、他のモジュールの `_` 始まりの名前の import を機械的に調べたところ、一覧に無かったものが8件（5種類）見つかった。どれも未対応。
+ui → models の直接呼び出し（ui/ のほぼ全画面）は「既存コードは触るときだけ直す」の対象で、この一覧には数えていない（`docs/architecture.md` の表を参照）。
 
-| 種類 | ファイル | 内容 |
+### 解消したもの（段階5・6、2026-10-13）
+
+他のモジュールの `_` 始まりの名前に公開名を付け、呼び出し側を新しい名前にした（旧名は同じものを指す別名として残している）。
+
+| 段階 | 定義しているところ | 公開名 |
 |---|---|---|
-| 他モジュールの `_` 始まりの関数 | `services/db_migration_carryover.py`・`services/production_service.py`・`services/staging_eligibility.py`・`services/production_entry_service.py` | `services/date_parsing.py` の `_parse_plan_start_datetime`・`_parse_flexible_date` を import（5か所）。段階1で ui から移したとき、名前を変えなかった |
-| 他モジュールの `_` 始まりの関数 | `ui/production_import_staging_window.py` | `services/production_entry_service.py` の `_resolve_csv_report_date` を import（段階3bで追加した） |
-| 他モジュールの `_` 始まりの関数 | `ui/production_side_master_window.py` | `services/csv_parsing_common.py` の `_open_csv_with_fallback` を import（以前から） |
-| 他モジュールの `_` 始まりの関数 | `ui/unified_report_window.py` | `ui/daily_report_window.py` の `_row_to_values` を import（以前から） |
-
-re-export の行（`# noqa: F401 （re-export）`）は数えていない。
+| 5 | `ui/plan_candidate_dialog.py` | `sort_candidates_by_closeness`・`is_large_qty_diff`・`is_large_date_diff`・`format_qty`・`format_planned_qty_cell`・`format_side`・`CANDIDATE_COLS`・`CANDIDATE_HEADERS`・`CANDIDATE_RIGHT_ALIGNED` |
+| 5 | `services/ng_list_service.py`・`services/wip_list_service.py` | `fetch_ng_list_rows`・`fetch_wip_list_rows` |
+| 6 | `services/date_parsing.py` | `parse_plan_start_datetime`・`parse_flexible_date` |
+| 6 | `services/production_entry_service.py` | `resolve_csv_report_date` |
+| 6 | `services/csv_parsing_common.py` | `open_csv_with_fallback` |
+| 6 | `ui/daily_report_window.py` | `report_row_to_values`（同じファイルで `row_to_values` が引数名に使われているので避けた） |
 
 ### 解消したもの（段階4、2026-10-13）
 

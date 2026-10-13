@@ -37,7 +37,7 @@ CLAUDE.md「壊しやすい箇所」の根拠。2026-10-09 時点（HEAD c08a88a
   - `inventory_app/ui/main_window.py`: `_try_switch_db_path()`, `on_create_database()`, `_update_current_db_label()` のコメント
 - 根拠
   - CANONICAL §10（D-19）: 開いている画面は DB パスを保持せず、操作のたびに `config.DB_PATH` を参照する。画面を開いたまま DB を切り替えると、操作対象が別の DB に変わる。**未解消**
-  - `carry_over_incomplete_lots()` は処理中に `config.DB_PATH` を旧DB→新DBへ一時的に切り替える。戻るときは必ず new_db_path にしておく、という契約がある（main_window.py `__init__()` の `_menu_widgets` と `_poll_create_db_queue()` のコメント）
+  - `carry_over_incomplete_lots()` は処理中に `config.DB_PATH` を旧DB→新DBへ一時的に切り替える。戻るときは必ず new_db_path にしておく、という契約がある（main_window.py `__init__()` の `_menu_widgets` と `_on_create_db_finished()` のコメント。段階6までは `_poll_create_db_queue()`）
   - 既定DB（未選択）は読み書きしない方針。ただし `init_*_table()`（CREATE TABLE IF NOT EXISTS）を呼ぶと、`sqlite3.connect()` で DB ファイルが作られてしまう（main_window.py `_update_current_db_label()` のコメント）。既定DBへの意図しない書き込みは、CHANGELOG 1.0.0（D-71/D-73）でも修正している
   - CANONICAL §22.6（D-75）: 既知の制約。前月引き継ぎで新規作成するとき、引き継ぎが終わる前に旧DBのロックが解放される
 

@@ -16,8 +16,10 @@ import の向きだけを見ているので、実際の呼び出し回数や呼�
 | 画面 (ui/) | service (services/) | model (models/) | 他の ui |
 |---|---|---|---|
 | actual_correction_window.py | production_service | operation_log | window_utils |
+| async_task.py | — | — | loading_window |
 | board_structure_import_window.py | — | board_structure_master, operation_log | loading_window, warnings_list_window, window_utils |
 | checkable_treeview.py | — | — | — |
+| column_filter.py | — | — | window_utils |
 | daily_drawdown_window.py | lot_status_history | — | window_utils |
 | daily_report_window.py | — | board_structure_master | window_utils |
 | db_delete_helper.py | db_delete_service | db_lifecycle_log, operation_log | — |
@@ -25,12 +27,12 @@ import の向きだけを見ているので、実際の呼び出し回数や呼�
 | inventory_diff_window.py | inventory_diff_service | operation_log | daily_report_window, window_utils |
 | inventory_input_window.py | — | inventory, operation_log | loading_window, window_utils |
 | kitting_plan_import.py | csv_format_detection, kitting_import_service | kitting_plan, operation_log | loading_window, window_utils |
-| kitting_production_entry.py | csv_format_detection, production_entry_service, production_import_service, production_service | board_structure_master, kitting_plan, ng_declarations, production, production_import_staging | actual_correction_window, daily_drawdown_window, loading_window, lot_progress_window, production_import_staging_window, unified_report_window, window_utils |
+| kitting_production_entry.py | csv_format_detection, production_entry_service, production_import_service, production_service | board_structure_master, kitting_plan, ng_declarations, production, production_import_staging | actual_correction_window, column_filter, daily_drawdown_window, loading_window, lot_progress_window, production_import_staging_window, unified_report_window, window_utils |
 | loading_window.py | — | — | window_utils |
 | login_window.py | — | workers | main_window, window_utils, worker_registration_window |
 | lot_progress_window.py | production_service | — | daily_report_window, loading_window, window_utils |
-| main_window.py | app_settings_service, backup_service, db_lock_service, db_migration_carryover, master_merge_service, unprocessed_check_service | db_lifecycle_log, kitting_plan, operation_log | board_structure_import_window, db_delete_helper, inventory_diff_window, inventory_input_window, kitting_plan_import, kitting_production_entry, loading_window, login_window※, ng_input_window, operation_log_window, parts_attributes_import_window, pdf_ocr_import_window※, production_side_master_window, theoretical_inventory_import_window, window_utils, wip_expansion_window, worker_management_window, worker_registration_window |
-| ng_input_window.py | bom_service, ng_list_service, production_service | ng_declarations, ng_exclusion_list, operation_log, scrap_records | checkable_treeview, loading_window, parts_ng_report_window※, plan_candidate_dialog※, product_ng_report_window※, scrap_correction_window, window_utils |
+| main_window.py | app_settings_service, backup_service, db_lock_service, db_migration_carryover, master_merge_service, unprocessed_check_service | db_lifecycle_log, kitting_plan, operation_log | async_task, board_structure_import_window, db_delete_helper, inventory_diff_window, inventory_input_window, kitting_plan_import, kitting_production_entry, login_window※, ng_input_window, operation_log_window, parts_attributes_import_window, pdf_ocr_import_window※, production_side_master_window, theoretical_inventory_import_window, window_utils, wip_expansion_window, worker_management_window, worker_registration_window |
+| ng_input_window.py | bom_service, ng_list_service, production_service | ng_declarations, ng_exclusion_list, operation_log, scrap_records | checkable_treeview, column_filter, loading_window, parts_ng_report_window※, plan_candidate_dialog※, product_ng_report_window※, scrap_correction_window, window_utils |
 | operation_log_window.py | — | db_lifecycle_log, operation_log | window_utils |
 | parts_attributes_import_window.py | — | operation_log, parts_attributes | loading_window, warnings_list_window, window_utils |
 | parts_ng_report_window.py | — | scrap_records | daily_report_window, window_utils |
@@ -45,7 +47,7 @@ import の向きだけを見ているので、実際の呼び出し回数や呼�
 | unmatched_production_window.py | — | — | window_utils |
 | warnings_list_window.py | — | — | window_utils |
 | window_utils.py | — | — | — |
-| wip_expansion_window.py | bom_service, wip_list_service | operation_log, wip_board_snapshot, wip_exclusion_list, wip_scrap_records | checkable_treeview, loading_window, window_utils, wip_parts_report_window※, wip_product_report_window※, wip_scrap_correction_window |
+| wip_expansion_window.py | bom_service, wip_list_service | operation_log, wip_board_snapshot, wip_exclusion_list, wip_scrap_records | checkable_treeview, column_filter, loading_window, window_utils, wip_parts_report_window※, wip_product_report_window※, wip_scrap_correction_window |
 | wip_parts_report_window.py | — | wip_scrap_records | daily_report_window, window_utils |
 | wip_product_report_window.py | — | wip_scrap_records | daily_report_window, window_utils, wip_expansion_window※ |
 | wip_scrap_correction_window.py | — | operation_log, wip_scrap_records | window_utils |
@@ -84,14 +86,17 @@ import の向きだけを見ているので、実際の呼び出し回数や呼�
 
 ## 層のルールと実態が食い違っている箇所（実測）
 
-CLAUDE.md「層のルール」との食い違い。2026-10-13（段階5の後）の時点。
-ui → services → models の一方向以外の import と、models/ の外の SQL 実行は 0 件（段階4で解消）。
-他のモジュールの `_` 始まりの名前の import が8件残っている（一覧は `docs/refactoring_plan.md`「既知の違反」）。
+CLAUDE.md「層のルール」との食い違い。2026-10-13（段階6の後）の時点。
+ui → services → models の一方向以外の import、models/ の外の SQL 実行、他のモジュールの `_` 始まりの名前の import は 0 件（`docs/refactoring_plan.md`「既知の違反」）。
 
 | 種類 | 箇所 | 内容 |
 |---|---|---|
-| 他モジュールの `_` 関数 | services 4ファイル・ui 3ファイル | `docs/refactoring_plan.md`「既知の違反」の表のとおり（8件） |
 | ui → models の直接呼び出し | ui/ のほぼ全画面 | 上の表のとおり。「既存コードは触るときだけ直す」の対象 |
+
+## 共通の UI 部品（段階6）
+
+- `ui/column_filter.py`: 一覧の列ごとの絞り込み（テキストの部分一致・チェックボックスの完全一致・期間指定）と並べ替えの判定、チェックボックス式の絞り込みポップアップ（`CheckboxFilterPopup`）。生産実績入力の計画一覧・NG 一覧・仕掛一覧が使う。画面ごとの違い（数値として並べる列、期間指定と「入力済みを隠す」は計画一覧だけ、など）は揃えずに、画面側に残すか引数で渡す
+- `ui/async_task.py`: `run_in_background()`。LoadingWindow＋別スレッド＋after(200) のポーリング。今はメイン画面の4か所だけが使う（同じパターンはほかの画面にも残っている）
 
 ## 命名規則と実態が食い違っている箇所
 
