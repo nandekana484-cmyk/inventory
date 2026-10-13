@@ -43,6 +43,7 @@ group_active_plan_items_by_lot()によるN+1解消）により、再照合コス
     追加する。
 """
 from models.db_common import get_connection
+from models.kitting_plan import normalize_product_name
 
 
 def init_csv_import_staging_tables():
@@ -128,11 +129,8 @@ def upsert_pending_csv_import_row(data: dict, import_batch_id: int = None, claim
     単発呼び出し向け）。
 
     lot_noは呼び出し元（parse_production_csv_for_staging()）で既に
-    str().strip()済みの値を渡す想定。product_nameの正規化はservices.
-    production_import_service.normalize_product_name()を使う（本モジュールが
-    逆方向にservicesをトップレベルでインポートすると循環importになるため、
-    models.kitting_plan.find_matching_plan_items()と同じく関数内インポートで
-    回避する）。
+    str().strip()済みの値を渡す想定。product_nameの正規化はmodels.kitting_plan.
+    normalize_product_name()を使う（段階4で services から models へ移した。以前は関数内で services を import していた）。
 
     data：{"csv_row_no", "lot_no", "product_name", "daily_qty",
            "report_date", "worker_id"}。未知のキーは無視する。
@@ -146,8 +144,6 @@ def upsert_pending_csv_import_row(data: dict, import_batch_id: int = None, claim
 
     戻り値：保存した行（または再利用した既存行）のpending_row_id。
     """
-    from services.production_import_service import normalize_product_name
-
     lot_no = str(data.get("lot_no") or "").strip()
     product_name = data.get("product_name")
     product_name_normalized = normalize_product_name(product_name)

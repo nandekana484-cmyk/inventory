@@ -1,5 +1,7 @@
 import os
+import re
 import sqlite3
+import unicodedata
 from datetime import datetime
 
 from models.db_common import get_connection
@@ -885,15 +887,33 @@ def create_plan_version(
         return new_plan_item_id
 
 
+# 段階4で services/production_import_service.py から移した（関数の中身は変えていない）。models から services を import しないため。
+def normalize_product_name(name):
+    """
+    製品名の表記ゆらぎ（全角/半角、大文字/小文字、空白）を吸収する正規化関数。
+
+    - unicodedata.normalize("NFKC", ...) で全角/半角を統一
+      （全角英数・カナ→半角、一部記号の統一もNFKCの範囲でカバーされる）
+    - 小文字化（大文字/小文字ゆらぎの吸収）
+    - 前後の空白除去、中間の連続空白を1つに圧縮
+
+    NFKCでカバーされない記号ゆらぎ（例：長音記号の統一など）まで踏み込んだ
+    正規化は仕様未確定のため決め打ちしない。
+    """
+    if name is None:
+        return ""
+    normalized = unicodedata.normalize("NFKC", str(name))
+    normalized = normalized.lower().strip()
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized
+
+
 def find_matching_plan_items(lot_no: str, product_name_normalized: str, plan_items_by_lot: dict = None):
     """
     実績CSV自動取込用に、lot_no と正規化済みの製品名から候補の計画を探す。戻り値は (lot_no が一致する計画, そのうち製品名も一致する計画)。
     plan_items_by_lot（{lot_no: [item, ...]}）を渡すと、list_active_plan_items() を呼ばずにそこから引く
     （CSV の行ごとに全件を取得していたため、2000行で約61秒かかっていた。渡すと1秒未満）。
     """
-    # production_import_service がこのモジュールを import しているので、関数内で import する（循環 import の回避）。
-    from services.production_import_service import normalize_product_name
-
     if plan_items_by_lot is not None:
         candidates = plan_items_by_lot.get(lot_no, [])
     else:

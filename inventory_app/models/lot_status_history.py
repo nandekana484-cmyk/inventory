@@ -107,30 +107,13 @@ def _flatten_files_detail(lot_status: dict) -> list:
     return entries
 
 
-def record_lot_status_snapshot(lot_no: str, trigger_source: str) -> int:
+def insert_lot_status_snapshot(lot_no: str, lot_status: dict, trigger_source: str) -> int:
     """
-    services.production_service.evaluate_lot_status(lot_no) を呼び、その結果を
-    lot_status_history に1行INSERTする。戻り値：INSERTした行のid。
-
-    services.production_service を関数内で遅延importする（models層のモジュールが
-    services層に依存する、通常とは逆方向の依存になるが、record_lot_status_
-    snapshot()の実装をこのモジュールに置くという要件のためにあえて許容する。
-    production_service.py側もこのモジュールをトップレベルでimportするため、
-    双方がトップレベルimportし合うと循環importになる。呼ばれる時点まで解決を
-    遅延させることでこれを回避する、ui層で確立済みの「循環import回避のため
-    ここで都度importする」パターンと同じ対処）。
-
-    本関数は失敗時（対象lot_noの計画が見つからない場合のValueError、DB書き込み
-    エラー等）に例外をそのまま送出する。実績登録・修正処理自体を失敗させたくない
-    呼び出し元は、本関数の呼び出し側でtry/exceptにより捕捉すること
-    （services/production_service.py::register_daily_result()等の実装を参照。
-    「記録自体の失敗が、実績登録・修正という本来の処理を失敗させてはならない」
-    という要件があるため、本関数自体はその判断を行わず、素直に例外を伝播する
-    のみに留める）。
+    ロット状態（services.production_service.evaluate_lot_status() の結果）を lot_status_history に1行INSERTする。戻り値：INSERTした行のid。
+    段階4で record_lot_status_snapshot() から、評価の後の記録部分（中身は変えていない）を分けた。評価して記録する本体は
+    services.production_service.record_lot_status_snapshot()（models から services を import しないため）。
+    失敗時（DB書き込みエラー等）は例外をそのまま送出する。
     """
-    from services.production_service import evaluate_lot_status
-
-    lot_status = evaluate_lot_status(lot_no)
     files_detail = _flatten_files_detail(lot_status)
     total_surplus_qty = sum(f["surplus_qty"] for f in files_detail)
     total_not_produced_qty = sum(f["not_produced_qty"] for f in files_detail)

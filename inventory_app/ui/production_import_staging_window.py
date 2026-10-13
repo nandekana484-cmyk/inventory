@@ -16,7 +16,7 @@ from services.production_import_service import (
     normalize_product_name,
     group_active_plan_items_by_lot,
 )
-from services.production_service import search_plan_by_kitting_no, get_daily_history
+from services.production_service import search_plan_by_kitting_no, get_daily_history, record_lot_status_snapshot
 from services.production_entry_service import (
     _resolve_csv_report_date,
     register_actual_and_ng,
@@ -31,7 +31,6 @@ from models.production_import_staging import (
     delete_pending_csv_import_row,
     upsert_pending_csv_import_row,
 )
-from models.lot_status_history import record_lot_status_snapshot
 
 logger = logging.getLogger(__name__)
 # ui.plan_candidate_dialog の並べ替え・ハイライト判定を、重複させないためにそのまま使う（_ 始まりだが意図的な再利用）。

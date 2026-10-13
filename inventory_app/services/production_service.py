@@ -22,12 +22,23 @@ from models.production import (
     apply_daily_production_changes,
 )
 from models.board_structure_master import get_board_structure
-from models.lot_status_history import record_lot_status_snapshot
+from models.lot_status_history import insert_lot_status_snapshot
 from models.scrap_records import list_scrap_summary_by_kitting_no
 from models.ng_declarations import list_ng_declarations_latest
 from services.date_parsing import _parse_plan_start_datetime
 
 logger = logging.getLogger(__name__)
+
+
+def record_lot_status_snapshot(lot_no: str, trigger_source: str) -> int:
+    """
+    evaluate_lot_status(lot_no) を呼び、その結果を lot_status_history に1行記録する（models.lot_status_history.insert_lot_status_snapshot()）。
+    戻り値：INSERTした行のid。段階4で models/lot_status_history.py から移した（models が services を import していたため）。
+    失敗時（対象lot_noの計画が見つからない場合のValueError、DB書き込みエラー等）は例外をそのまま送出する。
+    実績の登録・修正を失敗させたくない呼び出し元は、_record_lot_status_snapshot_safely() のように try/except で捕まえること。
+    """
+    lot_status = evaluate_lot_status(lot_no)
+    return insert_lot_status_snapshot(lot_no, lot_status, trigger_source)
 
 
 def _record_lot_status_snapshot_safely(lot_no: str, trigger_source: str):

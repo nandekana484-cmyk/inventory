@@ -10,8 +10,6 @@ CSVには kitting_list_no が存在しないため、lot_no + 製品名（表記
 kitting_plan_items を特定し（models.kitting_plan.resolve_plan_by_lot_and_name）、
 確定できた行のみ既存の services.production_service.register_daily_result() で保存する。
 """
-import re
-import unicodedata
 from datetime import datetime
 
 from services.csv_parsing_common import parse_csv_generic
@@ -21,7 +19,8 @@ from services.production_service import (
     register_opposite_side_daily_result,
     DailyResultAlreadyExists,
 )
-from models.kitting_plan import (
+from models.kitting_plan import (  # normalize_product_name は段階4で models へ移した（ここから re-export する）
+    normalize_product_name,
     resolve_plan_by_lot_and_name,
     find_matching_plan_items,
     find_plan_item_by_kitting_no,
@@ -54,26 +53,6 @@ COLUMN_MAP_PRODUCTION = {
     "report_date": ["report_date", "日付", "実績日", "払い出し日"],
     "worker_id": ["worker_id", "担当者", "作業者"],
 }
-
-
-def normalize_product_name(name):
-    """
-    製品名の表記ゆらぎ（全角/半角、大文字/小文字、空白）を吸収する正規化関数。
-
-    - unicodedata.normalize("NFKC", ...) で全角/半角を統一
-      （全角英数・カナ→半角、一部記号の統一もNFKCの範囲でカバーされる）
-    - 小文字化（大文字/小文字ゆらぎの吸収）
-    - 前後の空白除去、中間の連続空白を1つに圧縮
-
-    NFKCでカバーされない記号ゆらぎ（例：長音記号の統一など）まで踏み込んだ
-    正規化は仕様未確定のため決め打ちしない。
-    """
-    if name is None:
-        return ""
-    normalized = unicodedata.normalize("NFKC", str(name))
-    normalized = normalized.lower().strip()
-    normalized = re.sub(r"\s+", " ", normalized)
-    return normalized
 
 
 # report_dateの表記ゆらぎ吸収用（is_already_registered()専用、2026-10-06追加）。

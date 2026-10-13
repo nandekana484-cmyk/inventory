@@ -42,8 +42,7 @@ from models.kitting_plan import (
 from models.production import (
     get_connection as get_production_connection, replace_daily_result,
 )
-from models.lot_status_history import record_lot_status_snapshot
-from services.production_service import list_incomplete_lots
+from services.production_service import list_incomplete_lots, record_lot_status_snapshot
 from services.date_parsing import _parse_plan_start_datetime
 
 logger = logging.getLogger(__name__)
