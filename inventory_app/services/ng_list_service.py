@@ -1,10 +1,10 @@
-"""
-NG 一覧（ui/ng_input_window.py の右ペイン）の行を組み立てる。DB を読むだけで、ウィジェットには触れない。
-段階4で ui/ng_input_window.py から移した（関数の中身は変えていない）。在庫差異レポート前の未処理件数（services/unprocessed_check_service.py）も使う。
-"""
-from models.kitting_plan import find_plan_item_by_kitting_no
-from models.ng_declarations import list_ng_declarations_latest
-from models.ng_exclusion_list import list_ng_exclusions
+"""
+NG 一覧（ui/ng_input_window.py の右ペイン）の行を組み立てる。DB を読むだけで、ウィジェットには触れない。
+段階4で ui/ng_input_window.py から移した（関数の中身は変えていない）。在庫差異レポート前の未処理件数（services/unprocessed_check_service.py）も使う。
+"""
+from models.kitting_plan import find_plan_item_by_kitting_no
+from models.ng_declarations import list_ng_declarations_latest
+from models.ng_exclusion_list import list_ng_exclusions
 from models.scrap_records import list_scrap_summary_by_kitting_no
 
 # NG 一覧の列順。_fetch_ng_list_rows() のタプルと一致させること（unprocessed_check_service もこの定義を参照する）。

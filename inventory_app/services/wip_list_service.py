@@ -1,9 +1,9 @@
-"""
-仕掛一覧（ui/wip_expansion_window.py の右ペイン）の行を組み立てる。DB を読むだけで、ウィジェットには触れない。
-段階4で ui/wip_expansion_window.py から移した。中身で変えたのは、STATUS_CONFIRMED_ORPHAN の参照先（画面クラスの属性 → このモジュールの定数）だけ。
-"""
-from models.wip_board_snapshot import list_wip_snapshot
-from models.wip_exclusion_list import list_wip_exclusions
+"""
+仕掛一覧（ui/wip_expansion_window.py の右ペイン）の行を組み立てる。DB を読むだけで、ウィジェットには触れない。
+段階4で ui/wip_expansion_window.py から移した。中身で変えたのは、STATUS_CONFIRMED_ORPHAN の参照先（画面クラスの属性 → このモジュールの定数）だけ。
+"""
+from models.wip_board_snapshot import list_wip_snapshot
+from models.wip_exclusion_list import list_wip_exclusions
 from models.wip_scrap_records import list_wip_scrap_summary
 
 # 仕掛一覧の列順。_fetch_wip_list_rows() のタプルと一致させること（unprocessed_check_service もこの定義を参照する）。
