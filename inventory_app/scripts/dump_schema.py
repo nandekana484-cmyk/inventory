@@ -1,3 +1,7 @@
+import os
+import sys
+# 段階8で inventory_app/ から scripts/ へ移したので、inventory_app/ を import できるようにする。
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import sqlite3
 from config import DB_PATH
 
