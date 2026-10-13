@@ -152,7 +152,7 @@ def _format_board_count(board_name):
     return f"{board_structure['board_count']:g}"
 
 
-def _row_to_values(row):
+def report_row_to_values(row):
     # 数量項目は生産実績入力画面の計画一覧（load_plan_list()）と同様に整数表示に揃える
     # （DB上はREAL/INTEGER混在のため、無加工だと"100.0"のように小数点が出てしまう）。
     # 「確認事項」（confirmation_note、2026-09-28追加）は、REPORT_HEADERS・
@@ -346,3 +346,6 @@ class ReportPreviewWindow(tk.Toplevel):
             text=f"ページ {page_no} / {total_pages}", font=("Helvetica", 9),
         )
 
+
+# 段階6で公開名を付けた。旧名は同じものを指す別名として残す（呼び出し側は新しい名前を使う）。
+_row_to_values = report_row_to_values

@@ -16,7 +16,7 @@ from tkcalendar import DateEntry
 from services.production_service import build_monthly_report, build_wip_extraction_rows, evaluate_lot_status
 from ui.daily_report_window import (
     REPORT_HEADERS,
-    _row_to_values,
+    report_row_to_values,
     build_daily_report_pdf,
     ReportPreviewWindow,
     configure_lot_stripe_tags,
@@ -692,7 +692,7 @@ class UnifiedReportWindow(tk.Toplevel):
                 writer = csv.writer(f)
                 writer.writerow(REPORT_HEADERS)
                 for row in self.report_rows:
-                    writer.writerow(_row_to_values(row))
+                    writer.writerow(report_row_to_values(row))
         except Exception as e:
             messagebox.showerror("エラー", f"CSV出力に失敗しました：{e}", parent=self.winfo_toplevel())
             return

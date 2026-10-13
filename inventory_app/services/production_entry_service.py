@@ -8,7 +8,7 @@ from datetime import datetime
 
 from models.ng_declarations import save_ng_declaration
 from models.operation_log import log_operation
-from services.date_parsing import _parse_flexible_date
+from services.date_parsing import parse_flexible_date
 from services.production_service import (
     register_daily_result,
     overwrite_daily_result,
@@ -16,12 +16,12 @@ from services.production_service import (
 )
 
 
-def _resolve_csv_report_date(raw_value):
+def resolve_csv_report_date(raw_value):
     """
     CSV の払い出し日を "YYYY-MM-DD" に正規化する。解釈できなければ None（登録側で実行日を使う）。
     表記ゆれを残すと report_date の文字列範囲検索が壊れるため、必ず正規化する（docs/domain/production_entry.md）。
     """
-    parsed = _parse_flexible_date(raw_value)
+    parsed = parse_flexible_date(raw_value)
     if parsed is None:
         return None
     return parsed.strftime("%Y-%m-%d")
@@ -163,3 +163,7 @@ def format_registration_message(result, save_qty_by_side):
         lines.append("以下の項目でエラーが発生しました（登録できた分はそのまま残っています）：")
         lines.extend(result["errors"])
     return "\n".join(lines)
+
+
+# 段階6で公開名を付けた。旧名は同じものを指す別名として残す（呼び出し側は新しい名前を使う）。
+_resolve_csv_report_date = resolve_csv_report_date

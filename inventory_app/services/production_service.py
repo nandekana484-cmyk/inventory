@@ -17,7 +17,7 @@ from models.production import (
     delete_daily_production,
     apply_daily_production_changes,
 )
-from services.date_parsing import _parse_plan_start_datetime
+from services.date_parsing import parse_plan_start_datetime
 # 段階5で services/lot_status_service.py へ移した。import している側を変えないよう、ここから re-export する。
 from services.lot_status_service import (  # noqa: F401 （re-export）
     record_lot_status_snapshot,
@@ -396,7 +396,7 @@ def _pick_representative_plan_item(items: list):
     同じ (setup_file_no, production_side) の複数バッチから、仕掛スナップショットの代表を1件選ぶ。
     生産予定日が最も新しいもの（手元に残る仕掛の実体に近い）。解釈できなければ最後の1件。
     """
-    parseable = [(_parse_plan_start_datetime(item.get("plan_start_datetime")), item) for item in items]
+    parseable = [(parse_plan_start_datetime(item.get("plan_start_datetime")), item) for item in items]
     parseable = [(dt, item) for dt, item in parseable if dt is not None]
     if parseable:
         return max(parseable, key=lambda pair: pair[0])[1]

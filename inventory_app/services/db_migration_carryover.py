@@ -45,7 +45,9 @@ from models.production import (
     fetch_production_daily_for_lot, all_production_daily_exist,
 )
 from services.production_service import list_incomplete_lots, record_lot_status_snapshot
-from services.date_parsing import _parse_plan_start_datetime
+from services.date_parsing import parse_plan_start_datetime
+# 段階2まではこのモジュールの関数だった。旧名でも参照できるよう、同じ関数を指す別名を残す。
+_parse_plan_start_datetime = parse_plan_start_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -141,9 +143,9 @@ def _check_lot_no_duplicate(lot_no: str, old_plan_start_datetimes: list) -> dict
     has_undetermined = False
 
     for existing_raw in existing_raw_list:
-        existing_dt = _parse_plan_start_datetime(existing_raw)
+        existing_dt = parse_plan_start_datetime(existing_raw)
         for old_raw in old_raw_list:
-            old_dt = _parse_plan_start_datetime(old_raw)
+            old_dt = parse_plan_start_datetime(old_raw)
             if existing_dt is None or old_dt is None:
                 has_undetermined = True
                 continue
@@ -286,7 +288,7 @@ def _filter_plan_items_for_migration(plan_items: list, production_rows: list, re
             included_items.append(item)  # 着手済み：常に含める
             continue
 
-        parsed = _parse_plan_start_datetime(item.get("plan_start_datetime"))
+        parsed = parse_plan_start_datetime(item.get("plan_start_datetime"))
         if parsed is None:
             included_items.append(item)  # 判定不能：安全側で含める
             undetermined_kitting_list_nos.append(kitting_list_no)

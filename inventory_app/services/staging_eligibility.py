@@ -5,7 +5,7 @@
 旧位置からは re-export しているので、既存の呼び出し側はそのまま動く。
 判定の優先順位と各理由の意味は docs/domain/production_import_staging.md。
 """
-from services.date_parsing import _parse_flexible_date, _parse_plan_start_datetime
+from services.date_parsing import parse_flexible_date, parse_plan_start_datetime
 from services.production_import_service import (
     normalize_product_name,
     group_active_plan_items_by_lot,
@@ -62,10 +62,10 @@ def _date_only_diff_days(report_date, plan_start_datetime):
     払い出し日と生産予定日の差の日数（絶対値）を、日付だけで比較する。どちらかが解釈できなければ None。
     時刻まで含めると暦日の差とずれる（実データの生産予定日には全件時刻がある。7/23 と 7/21 23:50 は2日だが、1日になってしまう）。
     """
-    reference = _parse_flexible_date(report_date)
+    reference = parse_flexible_date(report_date)
     if reference is None:
         return None
-    dt = _parse_plan_start_datetime(plan_start_datetime)
+    dt = parse_plan_start_datetime(plan_start_datetime)
     if dt is None:
         return None
     return abs((dt.date() - reference.date()).days)

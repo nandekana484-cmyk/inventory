@@ -7,7 +7,7 @@
 from datetime import datetime
 
 
-def _parse_plan_start_datetime(value):
+def parse_plan_start_datetime(value):
     try:
         return datetime.strptime(str(value).strip(), "%Y/%m/%d %H:%M:%S")
     except (TypeError, ValueError):
@@ -23,7 +23,7 @@ def _parse_plan_start_datetime(value):
 _REPORT_DATE_FORMATS = ("%Y-%m-%d", "%Y/%m/%d")
 
 
-def _parse_flexible_date(value):
+def parse_flexible_date(value):
     """
     払い出し日（report_date）のパースを1箇所に集約した共通関数。
     _REPORT_DATE_FORMATSを順に試し、最初に成功した結果を返す。
@@ -60,3 +60,8 @@ def _parse_flexible_date(value):
         except (TypeError, ValueError):
             continue
     return None
+
+
+# 段階6で公開名を付けた。旧名は同じものを指す別名として残す（呼び出し側は新しい名前を使う）。
+_parse_plan_start_datetime = parse_plan_start_datetime
+_parse_flexible_date = parse_flexible_date

@@ -24,7 +24,7 @@ from models.kitting_plan import (
     find_master_plan_discrepancies, find_unregistered_production_side_file_nos,
     find_registered_file_nos_missing_line_combinations, list_mounting_lines_by_file_no,
 )
-from services.csv_parsing_common import _open_csv_with_fallback
+from services.csv_parsing_common import open_csv_with_fallback
 from ui.loading_window import LoadingWindow
 from ui.warnings_list_window import WarningsListWindow
 from ui.window_utils import center_window
@@ -94,7 +94,7 @@ def _parse_production_side_csv(file_path):
     """
     warnings = []
 
-    with _open_csv_with_fallback(file_path) as f:
+    with open_csv_with_fallback(file_path) as f:
         reader = csv.DictReader(f)
         rows = list(reader)
 

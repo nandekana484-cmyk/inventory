@@ -18,7 +18,7 @@ from services.production_import_service import (
 )
 from services.production_service import search_plan_by_kitting_no, get_daily_history, record_lot_status_snapshot
 from services.production_entry_service import (
-    _resolve_csv_report_date,
+    resolve_csv_report_date,
     register_actual_and_ng,
     format_registration_message,
 )
@@ -653,7 +653,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
         result = register_actual_and_ng(
             plan, {}, daily_qty, {}, existing[-1]["daily_qty"] if existing else None,
             worker.get("worker_id", "SYSTEM"), worker.get("name", "unknown"),
-            report_date=_resolve_csv_report_date(row.get("report_date")), record_history=record_history,
+            report_date=resolve_csv_report_date(row.get("report_date")), record_history=record_history,
         )
         if not result["actual_registered"]:
             messagebox.showerror(

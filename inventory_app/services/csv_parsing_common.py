@@ -15,7 +15,7 @@ import csv
 _ENCODINGS_TO_TRY = ["utf-8-sig", "utf-8", "shift_jis", "cp932"]
 
 
-def _open_csv_with_fallback(file_path):
+def open_csv_with_fallback(file_path):
     """utf-8-sig → utf-8 → shift_jis → cp932 の順でエンコーディングを判定して開く。"""
     last_error = None
     for encoding in _ENCODINGS_TO_TRY:
@@ -83,3 +83,7 @@ def parse_csv_generic(file_path, column_map):
             rows.append(row)
 
     return rows
+
+
+# 段階6で公開名を付けた。旧名は同じものを指す別名として残す（呼び出し側は新しい名前を使う）。
+_open_csv_with_fallback = open_csv_with_fallback

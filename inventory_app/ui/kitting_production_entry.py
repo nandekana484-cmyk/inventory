@@ -37,6 +37,7 @@ from ui.actual_correction_window import ActualCorrectionWindow  # noqa: F401 （
 # 段階1で services/production_entry_service.py へ移した。_resolve_csv_report_date はここから re-export する。
 from services.production_entry_service import (  # noqa: E402,F401 （re-export）
     _resolve_csv_report_date,
+    resolve_csv_report_date,
     compute_ng_save_qty,
     is_plan_row_completed,
     plan_row_tag,
@@ -1368,7 +1369,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         existing_daily_qty = existing[-1]["daily_qty"] if existing else None
         existing_report_date = existing[-1]["report_date"] if existing else None
         # これから登録する実績の日付（表示用）。手入力では None（実行日を使う）。
-        new_report_date = _resolve_csv_report_date(self._pending_csv_report_date)
+        new_report_date = resolve_csv_report_date(self._pending_csv_report_date)
 
         mismatch_lines = []
         for side in ("1", "2"):
@@ -1490,7 +1491,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
             return True
 
         last = existing[-1]
-        new_report_date = _resolve_csv_report_date(new_report_date_raw)
+        new_report_date = resolve_csv_report_date(new_report_date_raw)
         existing_date_text = last.get("report_date") or "(日付不明)"
         new_date_text = new_report_date or "(本日)"
         message = (
@@ -1545,7 +1546,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         worker_id = self.current_worker.get("worker_id", "SYSTEM")
         kitting_no = self.current_plan["kitting_list_no"]
         lot_no = self.current_plan["lot_no"]
-        report_date = _resolve_csv_report_date(self._pending_csv_report_date)
+        report_date = resolve_csv_report_date(self._pending_csv_report_date)
         self._pending_csv_report_date = None
         # _pending_csv_row_removal は直後にクリアされるので、最後の lift() の要否判定用に先に控えておく。
         from_csv_staging = self._pending_csv_row_removal is not None
