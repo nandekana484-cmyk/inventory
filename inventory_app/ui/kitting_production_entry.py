@@ -30,6 +30,7 @@ from ui.daily_drawdown_window import DailyDrawdownWindow
 from ui.production_import_staging_window import open_or_notify
 from ui.loading_window import LoadingWindow
 from ui.window_utils import center_window
+from ui.column_filter import build_filter_predicates, row_matches, filter_rows, date_range_predicate, make_sort_key
 # 段階2で ui/actual_correction_window.py へ移した。他の画面はここから import しているので re-export する。
 from ui.actual_correction_window import ActualCorrectionWindow  # noqa: F401 （re-export）
 
@@ -416,21 +417,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         """
         from_text = self._plan_date_from_entry.get().strip() if self._plan_date_from_entry else ""
         to_text = self._plan_date_to_entry.get().strip() if self._plan_date_to_entry else ""
-        if not from_text and not to_text:
-            return None
-
-        from_date = from_text.replace("-", "/") if from_text else None
-        to_date = to_text.replace("-", "/") if to_text else None
-
-        def predicate(value):
-            date_part = value[:10].replace("-", "/")
-            if from_date and date_part < from_date:
-                return False
-            if to_date and date_part > to_date:
-                return False
-            return True
-
-        return predicate
+        return date_range_predicate(from_text, to_text)
 
     def _add_plan_checkbox_filter_button(self, parent, col_key):
         """
@@ -709,16 +696,9 @@ class KittingProductionEntryWindow(tk.Toplevel):
         """
         現在の絞り込み状態から、列ごとの述語（value: str -> bool）の辞書を作る。指定の無い列は含めない。
         """
-        predicates = {}
-        for col_key, var in self._plan_filter_vars.items():
-            text = var.get().strip()
-            if not text:
-                continue
-            needle = text.lower()
-            predicates[col_key] = lambda value, needle=needle: needle in value.lower()
-
-        for col_key, selected_values in self._plan_checkbox_filters.items():
-            predicates[col_key] = lambda value, selected=selected_values: value in selected
+        predicates = build_filter_predicates(
+            {col_key: var.get() for col_key, var in self._plan_filter_vars.items()}, self._plan_checkbox_filters,
+        )
 
         date_range_predicate = self._plan_date_range_predicate()
         if date_range_predicate is not None:
@@ -727,11 +707,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         return predicates
 
     def _plan_row_matches(self, row, predicates):
-        for col_key, predicate in predicates.items():
-            col_index = self._plan_col_index[col_key]
-            if not predicate(str(row[col_index])):
-                return False
-        return True
+        return row_matches(row, predicates, self._plan_col_index)
 
     def apply_plan_filters(self, event=None):
         """
@@ -740,10 +716,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         ロット完成数と比べると、実績0のロットが 0 >= 0 で「完了」と誤判定される。
         """
         predicates = self._plan_filter_predicates()
-        if not predicates:
-            filtered = self._all_plan_rows
-        else:
-            filtered = [row for row in self._all_plan_rows if self._plan_row_matches(row, predicates)]
+        filtered = filter_rows(self._all_plan_rows, predicates, self._plan_col_index)
 
         if self._hide_completed_var.get():
             lot_no_index = self._plan_col_index["lot_no"]
@@ -832,13 +805,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
     def sort_plan_list(self, col):
         numeric_cols = {"planned_qty", "order_qty", "actual_qty", "diff", "lot_completed", "lot_remaining"}
 
-        def sort_key(value):
-            if col in numeric_cols:
-                try:
-                    return float(value)
-                except (TypeError, ValueError):
-                    return float("-inf")
-            return value
+        sort_key = make_sort_key(col, numeric_cols)
 
         ascending = self.plan_sort_states.get(col, True)
 

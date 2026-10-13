@@ -22,6 +22,7 @@ from ui.checkable_treeview import CheckableTreeview
 from ui.loading_window import LoadingWindow
 from ui.scrap_correction_window import ScrapCorrectionWindow
 from ui.window_utils import center_window
+from ui.column_filter import build_filter_predicates, row_matches, filter_rows, make_sort_key
 
 # 共有の BOMService（仕掛展開画面と共有するので、共有フォルダのインデックス作成は1回で済む）。
 _bom_service = get_shared_bom_service()
@@ -1086,32 +1087,18 @@ class NgInputWindow(tk.Toplevel):
         self._populate_ng_tree(rows)
 
     def _ng_filter_predicates(self):
-        predicates = {}
-        for col_key, var in self._ng_filter_vars.items():
-            text = var.get().strip()
-            if not text:
-                continue
-            needle = text.lower()
-            predicates[col_key] = lambda value, needle=needle: needle in value.lower()
-
-        for col_key, selected_values in self._ng_checkbox_filters.items():
-            predicates[col_key] = lambda value, selected=selected_values: value in selected
+        predicates = build_filter_predicates(
+            {col_key: var.get() for col_key, var in self._ng_filter_vars.items()}, self._ng_checkbox_filters,
+        )
 
         return predicates
 
     def _ng_row_matches(self, row, predicates):
-        for col_key, predicate in predicates.items():
-            col_index = self._ng_col_index[col_key]
-            if not predicate(str(row[col_index])):
-                return False
-        return True
+        return row_matches(row, predicates, self._ng_col_index)
 
     def apply_ng_filters(self, event=None):
         predicates = self._ng_filter_predicates()
-        if not predicates:
-            filtered = self._all_ng_rows
-        else:
-            filtered = [row for row in self._all_ng_rows if self._ng_row_matches(row, predicates)]
+        filtered = filter_rows(self._all_ng_rows, predicates, self._ng_col_index)
         self._populate_ng_tree(filtered)
 
     def clear_ng_filters(self):
@@ -1125,13 +1112,7 @@ class NgInputWindow(tk.Toplevel):
     def sort_ng_list(self, col):
         numeric_cols = {"declared_ng_qty", "part_count", "record_count"}
 
-        def sort_key(value):
-            if col in numeric_cols:
-                try:
-                    return float(value)
-                except (TypeError, ValueError):
-                    return float("-inf")
-            return value
+        sort_key = make_sort_key(col, numeric_cols)
 
         ascending = self._ng_sort_states.get(col, True)
 
