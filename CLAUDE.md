@@ -34,7 +34,7 @@
 ## 命名
 - `ui/*_window.py` / `services/*_service.py` / `models/<テーブル名>.py`
 - 層をまたいで同じファイル名を作らない
-- マイグレーション: `db/migration_<3桁連番>_<内容>.py`（001 は migrate_001.py、002〜004 は内容名なし）
+- マイグレーション: `db/migrations/m<3桁連番>_<内容>.py`（014 から。001〜013 は `db/legacy/` の記録。手順は docs/db.md）
 - バージョン: `inventory_app/version.py` の APP_VERSION / BUILD_DATE が唯一の参照元。再ビルドのたびに更新し、CHANGELOG.md に書く
 - 設計判断はコード中で「D-xx 参照」と CANONICAL_DESIGN_DECISIONS.md の D番号を指す
 
@@ -57,7 +57,7 @@
 - ロット完成数の集計キー。代入ではなく加算する（lot_status_service `_compute_lot_completion()`）
 - グローバルな `config.DB_PATH` の切り替え（開いている画面・前月引き継ぎ・既定DB）
 - Tk の pack 順序。Treeview を先に pack するとスクロールバーやボタンが潰れる
-- スキーマのドリフト（migration の未適用、`CREATE TABLE IF NOT EXISTS` では列が増えない）
+- スキーマのドリフト（`CREATE TABLE IF NOT EXISTS` では列が増えない。マイグレーションと同じコミットで CREATE TABLE も直す）
 - 根拠と場所: `docs/fragile_spots.md`
 
 ## 詳細ドキュメント
