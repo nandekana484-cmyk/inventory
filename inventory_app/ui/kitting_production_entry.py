@@ -1,14 +1,11 @@
 import threading
 import queue
-from datetime import datetime
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from tkcalendar import DateEntry
 from services.production_service import (
     search_plan_by_kitting_no,
-    register_daily_result,
-    overwrite_daily_result,
     register_opposite_side_daily_result,
     get_daily_history,
     calculate_lot_completion,
@@ -25,9 +22,8 @@ from models.kitting_plan import (
     classify_side1_only_plan, SIDE1_ONLY_CLASS_WAITING_SIDE2, SIDE1_ONLY_CLASS_UNREGISTERED,
 )
 from models.production import list_daily_production_today
-from models.ng_declarations import save_ng_declaration, get_ng_declaration
+from models.ng_declarations import get_ng_declaration
 from models.board_structure_master import get_board_structure
-from models.operation_log import log_operation
 from ui.unified_report_window import UnifiedReportWindow
 from ui.lot_progress_window import LotProgressWindow
 from ui.daily_drawdown_window import DailyDrawdownWindow
@@ -44,6 +40,7 @@ from services.production_entry_service import (  # noqa: E402,F401 （re-export�
     compute_ng_save_qty,
     is_plan_row_completed,
     plan_row_tag,
+    register_actual_and_ng,
 )
 
 
@@ -1505,7 +1502,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
     def _perform_registration(self, daily_qty, preview, record_history=True):
         """
-        確認ダイアログで「登録」が選ばれた後、実績→反対側の面→NG の順に登録する。
+        確認ダイアログで「登録」が選ばれた後、実績→反対側の面→NG の順に登録する（書き込みは register_actual_and_ng()）。
         途中でエラーが出ても、成功した分は残してエラーを表示する（ロールバックしない）。
         record_history=False は Shift+S 一括登録用（呼び出し元が最後にロット単位でまとめて記録する）。
         実績の日付は CSV の払い出し日（手入力なら実行日）、NG の日付は当日。
@@ -1519,59 +1516,25 @@ class KittingProductionEntryWindow(tk.Toplevel):
         # _pending_csv_row_removal は直後にクリアされるので、最後の lift() の要否判定用に先に控えておく。
         from_csv_staging = self._pending_csv_row_removal is not None
 
-        try:
-            if preview["existing_daily_qty"] is not None:
-                new_cumulative = overwrite_daily_result(
-                    kitting_no, lot_no, daily_qty, worker_id, report_date=report_date,
-                    record_history=record_history,
-                )
-            else:
-                new_cumulative = register_daily_result(
-                    kitting_no, lot_no, daily_qty, worker_id, report_date=report_date,
-                    record_history=record_history,
-                )
-        except Exception as e:
-            messagebox.showerror("登録エラー", f"実績の登録に失敗しました：{e}", parent=self.winfo_toplevel())
+        result = register_actual_and_ng(
+            self.current_plan, self._ng_side_plans, daily_qty, preview["save_qty_by_side"],
+            preview["existing_daily_qty"], worker_id, self.current_worker.get("name", "unknown"),
+            report_date=report_date, record_history=record_history,
+        )
+        if not result["actual_registered"]:
+            messagebox.showerror("登録エラー", f"実績の登録に失敗しました：{result['actual_error']}", parent=self.winfo_toplevel())
             return
 
-        log_operation(
-            self.current_worker.get("name", "unknown"),
-            "生産実績登録",
-            detail=f"{kitting_no} / ロットNo. {lot_no} / {daily_qty:g}",
-        )
-
-        # CSV 経由なら、実績の登録が成功した直後にその行を一覧から消す。
+        # CSV 経由なら、実績の登録が成功したらその行を一覧から消す。
         # NG・反対側連動の成否は問わない（CSV 行が表すのは実績数量だけで、NG は別枠のため）。
         if self._pending_csv_row_removal is not None:
             self._pending_csv_row_removal()
             self._pending_csv_row_removal = None
 
-        errors = []
-        opposite_registered = False
-        try:
-            opposite_registered = self._register_opposite_side_daily_result(
-                daily_qty, worker_id, report_date=report_date, record_history=record_history,
-            )
-        except Exception as e:
-            errors.append(f"反対側の面への実績連動登録に失敗しました：{e}")
-
-        # NG は当日の日付で保存する（実績は CSV の払い出し日のまま）。report_date をここで当日に置き換えるので、
-        # 実績と反対側連動の登録より後に置くこと。
-        report_date = datetime.now().strftime("%Y-%m-%d")
-        declared_faces = []
-        for side in ("1", "2"):
-            if side not in preview["save_qty_by_side"]:
-                continue
-            plan = self._ng_side_plans[side]
-            try:
-                save_ng_declaration(
-                    plan["kitting_list_no"], plan["setup_file_no"], int(side),
-                    preview["save_qty_by_side"][side], report_date,
-                    lot_no=plan["lot_no"], is_unplanned=False,
-                )
-                declared_faces.append(side)
-            except Exception as e:
-                errors.append(f"面{side}のNG登録に失敗しました：{e}")
+        new_cumulative = result["new_cumulative"]
+        opposite_registered = result["opposite_registered"]
+        declared_faces = result["declared_sides"]
+        errors = result["errors"]
 
         self.lbl_app_cum.config(text=f"{new_cumulative:.0f}")
         self.load_today_log()

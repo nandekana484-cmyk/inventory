@@ -4,7 +4,16 @@
 リファクタリング段階1で移した。旧位置には re-export か、ここを呼ぶだけの薄いメソッドを残しているので、
 既存の呼び出し側はそのまま動く。業務ルールは docs/domain/production_entry.md。
 """
+from datetime import datetime
+
+from models.ng_declarations import save_ng_declaration
+from models.operation_log import log_operation
 from services.date_parsing import _parse_flexible_date
+from services.production_service import (
+    register_daily_result,
+    overwrite_daily_result,
+    register_opposite_side_daily_result,
+)
 
 
 def _resolve_csv_report_date(raw_value):
@@ -62,3 +71,78 @@ def plan_row_tag(classification):
         else ""
     )
     return tag
+
+
+def register_actual_and_ng(plan, ng_side_plans, daily_qty, save_qty_by_side, existing_daily_qty,
+                           worker_id, worker_name, report_date=None, record_history=True):
+    """
+    実績→操作履歴→反対側の面→NG の順に DB へ書き込む。段階3aで _perform_registration() から移した書き込み部分。
+    途中でエラーが出ても、成功した分は残す（ロールバックしない）。実績の登録に失敗したら、それ以降は書き込まない。
+    実績の日付は report_date（None なら登録側で実行日。上書きなら既存の日付を引き継ぐ）、NG の日付は当日。
+    ng_side_plans は面（"1"/"2"）-> その面の計画。save_qty_by_side は compute_ng_save_qty() の戻り値。
+    戻り値の dict:
+      actual_registered: 実績を登録できたか
+      actual_error: 実績の登録で出た例外（成功時は None）
+      new_cumulative: 登録後のアプリ内累計（失敗時は None）
+      opposite_registered: 反対側の面へ連動登録したか
+      declared_sides: NG を保存した面（"1"/"2"）の一覧
+      errors: 反対側の連動・NG の保存で出たエラーの文言の一覧
+    """
+    result = {
+        "actual_registered": False,
+        "actual_error": None,
+        "new_cumulative": None,
+        "opposite_registered": False,
+        "declared_sides": [],
+        "errors": [],
+    }
+    kitting_no = plan["kitting_list_no"]
+    lot_no = plan["lot_no"]
+
+    try:
+        if existing_daily_qty is not None:
+            new_cumulative = overwrite_daily_result(
+                kitting_no, lot_no, daily_qty, worker_id, report_date=report_date,
+                record_history=record_history,
+            )
+        else:
+            new_cumulative = register_daily_result(
+                kitting_no, lot_no, daily_qty, worker_id, report_date=report_date,
+                record_history=record_history,
+            )
+    except Exception as e:
+        result["actual_error"] = e
+        return result
+    result["actual_registered"] = True
+    result["new_cumulative"] = new_cumulative
+
+    log_operation(
+        worker_name,
+        "生産実績登録",
+        detail=f"{kitting_no} / ロットNo. {lot_no} / {daily_qty:g}",
+    )
+
+    try:
+        result["opposite_registered"] = register_opposite_side_daily_result(
+            plan, daily_qty, worker_id, report_date=report_date, record_history=record_history,
+        )
+    except Exception as e:
+        result["errors"].append(f"反対側の面への実績連動登録に失敗しました：{e}")
+
+    # NG は当日の日付で保存する（実績は CSV の払い出し日のまま）。
+    ng_report_date = datetime.now().strftime("%Y-%m-%d")
+    for side in ("1", "2"):
+        if side not in save_qty_by_side:
+            continue
+        side_plan = ng_side_plans[side]
+        try:
+            save_ng_declaration(
+                side_plan["kitting_list_no"], side_plan["setup_file_no"], int(side),
+                save_qty_by_side[side], ng_report_date,
+                lot_no=side_plan["lot_no"], is_unplanned=False,
+            )
+            result["declared_sides"].append(side)
+        except Exception as e:
+            result["errors"].append(f"面{side}のNG登録に失敗しました：{e}")
+
+    return result
