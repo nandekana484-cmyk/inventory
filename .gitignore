@@ -1,6 +1,7 @@
 # Python キャッシュ
 __pycache__/
 *.pyc
+.pytest_cache/
 
 # ログ
 *.log
