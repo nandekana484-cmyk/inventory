@@ -60,8 +60,11 @@ def test_error_passes_exception_and_traceback(tk_root):
 
 
 def test_main_window_uses_run_in_background():
+    """メイン画面は4か所で run_in_background() を呼び、自分ではスレッドもキューも作らない（コメントは数えない）。"""
+    import ast
     import inspect
     from ui import main_window
-    source = inspect.getsource(main_window)
-    assert source.count("run_in_background(") == 4
-    assert "threading.Thread" not in source and "queue.Queue" not in source
+    tree = ast.parse(inspect.getsource(main_window))
+    calls = [ast.unparse(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)]
+    assert calls.count("run_in_background") == 4
+    assert not {"threading.Thread", "queue.Queue", "LoadingWindow"} & set(calls)
