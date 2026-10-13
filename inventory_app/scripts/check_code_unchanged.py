@@ -1,8 +1,8 @@
 """コメントと docstring 以外が変わっていないことを確認する。
 
 使い方（リポジトリのルートで実行）:
-    python scripts/check_code_unchanged.py ui/kitting_production_entry.py
-    python scripts/check_code_unchanged.py ui/kitting_production_entry.py HEAD~1
+    python scripts/check_code_unchanged.py ui/kitting/kitting_production_entry.py
+    python scripts/check_code_unchanged.py ui/kitting/kitting_production_entry.py HEAD~1
 
 第2引数は比較元のコミット（省略時は HEAD）。
 作業ツリーのファイルと比較し、構文木が一致すれば OK を表示する。

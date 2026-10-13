@@ -308,7 +308,7 @@ def apply_daily_production_changes(changes: list):
     production_dailyへの複数の変更（更新・削除・追加）を**1つのトランザクション**
     でまとめて確定する（2026-10-08新設、D-112）。
 
-    ui.kitting_production_entry.ActualCorrectionWindowで、面1・面2の実績を
+    ui.kitting.kitting_production_entry.ActualCorrectionWindowで、面1・面2の実績を
     連動させて修正・削除する際に使う。update_daily_production()・
     delete_daily_production()・insert_daily_production()は、それぞれ単独で
     get_connection()を開いてcommit()するため、2つの関数を連続で呼ぶだけでは

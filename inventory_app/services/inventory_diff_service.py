@@ -18,7 +18,7 @@ from models.wip_scrap_records import query_wip_totals, list_wip_scrap_summary
 
 def _collect_wip_totals():
     """
-    仕掛展開画面（ui.wip_expansion_window.WipExpansionWindow）で確定登録済みの
+    仕掛展開画面（ui.ng_wip.wip_expansion_window.WipExpansionWindow）で確定登録済みの
     仕掛展開結果（models.wip_scrap_records）から、96コード（part_no）単位の
     合計仕掛数量を取得する。
 
@@ -51,10 +51,10 @@ def count_unconfirmed_wip_boards() -> int:
     うち、models.wip_scrap_records（仕掛展開画面での確定登録）に対応する行が
     まだ無いものの件数を返す。
 
-    ui.wip_expansion_window.WipExpansionWindow._fetch_wip_list_rows() の
+    ui.ng_wip.wip_expansion_window.WipExpansionWindow._fetch_wip_list_rows() の
     「未確定」判定と同じロジック（(kitting_list_no, lot_no, production_side)
     キーでの突き合わせ）をここでも独立して行う。在庫差異レポート
-    （ui.inventory_diff_window）が、_collect_wip_totals()に反映されていない
+    （ui.inventory.inventory_diff_window）が、_collect_wip_totals()に反映されていない
     未確定分の存在をユーザーに注意表示するために使う。
     """
     confirmed_keys = {
@@ -74,7 +74,7 @@ def _collect_scrap_totals():
     """
     NG（仕損）実績（models.scrap_records）を、96コード単位で集計して返す。
 
-    scrap_records は ui.ng_input_window で、BOMService による展開結果から
+    scrap_records は ui.ng_wip.ng_input_window で、BOMService による展開結果から
     操作者が選択・登録した「96コードごとの消費数量」を既に保存済みのため、
     ここでは再展開せず単純に集計するだけでよい。
     """

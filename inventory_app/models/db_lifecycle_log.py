@@ -6,7 +6,7 @@
 models.operation_log（月次DB内の操作履歴、config.DB_PATH切り替えの対象）とは
 意図的に別テーブル・別DBにしている。背景：新規作成・削除・バックアップの呼び出し
 といった「DBそのものに対する操作」を月次DB側のoperation_logへ記録する既存の
-やり方（ui/main_window.py・ui/db_delete_helper.pyの既存のlog_operation()呼び出し）
+やり方（ui/main_window.py・ui/common/db_delete_helper.pyの既存のlog_operation()呼び出し）
 には、次の2つの問題があった：
   1. 削除したDB自体のoperation_logには記録できない（削除と同時に消えるため）。
   2. 新規作成・バックアップ呼び出しの記録は「その時点で新たに開いたDB」の
@@ -33,7 +33,7 @@ from datetime import datetime
 from models.db_common import get_master_connection
 
 # operation_type の既知の値（呼び出し元が渡す文字列を本モジュール側では
-# 限定しないが、一覧表示側（ui.operation_log_window）で表示用ラベルに
+# 限定しないが、一覧表示側（ui.system.operation_log_window）で表示用ラベルに
 # 変換する際の対応表として、ここに定数としてまとめておく）。
 OPERATION_TYPE_CREATE = "create"
 OPERATION_TYPE_CREATE_WITH_CARRY_OVER = "create_with_carry_over"

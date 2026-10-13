@@ -16,8 +16,8 @@ from models.wip_board_snapshot import save_wip_snapshot
 from models.wip_exclusion_list import mark_wip_excluded
 from models.wip_scrap_records import save_wip_scrap_records
 from services.unprocessed_check_service import check_unprocessed_items
-from ui.ng_input_window import NgInputWindow
-from ui.wip_expansion_window import WipExpansionWindow
+from ui.ng_wip.ng_input_window import NgInputWindow
+from ui.ng_wip.wip_expansion_window import WipExpansionWindow
 
 
 @pytest.fixture

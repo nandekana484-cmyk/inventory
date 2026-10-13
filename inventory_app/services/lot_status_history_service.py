@@ -185,7 +185,7 @@ def get_drawdown_date_range():
 # 分担の判断としてそのまま有効）：
 #
 # 「未完了」を判定する方法として、全アクティブロットを都度再計算する
-# evaluate_all_lot_status()・check_lot_progress()（ui.lot_progress_window.
+# evaluate_all_lot_status()・check_lot_progress()（ui.production.lot_progress_window.
 # LotProgressWindow「ロット進捗チェック」画面）が既に存在し、呼び出しの
 # たびに現在アクティブな全ロットを現在の計画・実績・マスタから計算し直す
 # 設計のため、計画はあるが実績が1件も無いロットも含めて網羅的に把握できる。

@@ -946,7 +946,7 @@ def resolve_plan_by_lot_and_name(lot_no: str, product_name_normalized: str, plan
 
 # ---------------------------------------------------------------- 段階4で services・ui から移した SQL
 # SQL 文は変えていない。旧位置（services/db_migration_carryover.py・services/kitting_import_service.py・
-# ui/kitting_plan_import.py）には、これを呼ぶだけの関数を残している。
+# ui/kitting/kitting_plan_import.py）には、これを呼ぶだけの関数を残している。
 
 def fetch_plan_items_for_lot(lot_no: str) -> list:
     """
@@ -1005,7 +1005,7 @@ def update_plan_batch_row_count(batch_id: int, row_count: int):
 
 def list_plan_items_for_batch(batch_id: int) -> list:
     """
-    バッチの計画行を、計画CSV取込画面の明細の列だけ kitting_list_no 順で返す（ui/kitting_plan_import.py）。
+    バッチの計画行を、計画CSV取込画面の明細の列だけ kitting_list_no 順で返す（ui/kitting/kitting_plan_import.py）。
     行は sqlite3.Row。無効化された旧バージョンの行も含む（以前の画面の SQL のまま）。
     """
     conn = get_connection()

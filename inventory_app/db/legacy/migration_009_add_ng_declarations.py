@@ -3,10 +3,10 @@
 migration_009:
 NG（仕損）枚数の申告のみを記録する ng_declarations テーブルを新設する。
 
-生産実績入力画面（ui/kitting_production_entry.py）のNG入力は、これまでBOM展開・
+生産実績入力画面（ui/kitting/kitting_production_entry.py）のNG入力は、これまでBOM展開・
 部品確認・scrap_recordsへの登録までその場で行っていたが、「枚数の申告のみ」を
 行う画面（生産実績入力画面）と「BOM展開して部品登録する」画面（NG入力画面
-ui/ng_input_window.py）に分離するにあたり、申告値の保存先として新設する。
+ui/ng_wip/ng_input_window.py）に分離するにあたり、申告値の保存先として新設する。
 
 kitting_list_no・production_side・report_dateの組み合わせにつき常に最大1件
 （「同日は1件」ルール、models/ng_declarations.py::save_ng_declaration() が実装する）。

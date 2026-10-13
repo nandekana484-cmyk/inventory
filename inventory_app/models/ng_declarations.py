@@ -2,9 +2,9 @@
 """
 NG（仕損）枚数の申告のDBアクセス層。
 
-生産実績入力画面（ui/kitting_production_entry.py）でユーザーが入力する「NG枚数」を、
+生産実績入力画面（ui/kitting/kitting_production_entry.py）でユーザーが入力する「NG枚数」を、
 BOM展開前の生値のまま記録する（申告のみ）。実際の96コード単位への展開・登録
-（models/scrap_records.py）は、NG入力画面（ui/ng_input_window.py）の「展開」操作で
+（models/scrap_records.py）は、NG入力画面（ui/ng_wip/ng_input_window.py）の「展開」操作で
 別途行う。
 
 kitting_list_no・lot_no・production_sideの組み合わせにつき常に最大1件（report_date
@@ -97,7 +97,7 @@ def get_ng_declaration(kitting_list_no: str, side: int, lot_no: str = None):
 def list_ng_declarations_latest() -> list:
     """
     kitting_list_no・lot_no・production_side単位の申告を1件ずつ返す
-    （ui.ng_input_window のNG一覧、ng_declarations×scrap_recordsのマージ用）。
+    （ui.ng_wip.ng_input_window のNG一覧、ng_declarations×scrap_recordsのマージ用）。
 
     save_ng_declaration()が「1計画（kitting_list_no・lot_no）・面＝1レコード、
     常に上書き」ルール（report_dateを問わない）で保存するため、この単位では

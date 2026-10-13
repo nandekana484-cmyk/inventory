@@ -46,8 +46,8 @@ class TestParseFlexibleDate:
 
 
 def test_old_location_reexports_same_functions():
-    """旧位置（ui.plan_candidate_dialog）から import しても、同じ関数オブジェクトが返る。"""
-    from ui import plan_candidate_dialog
+    """旧位置（ui.kitting.plan_candidate_dialog）から import しても、同じ関数オブジェクトが返る。"""
+    from ui.kitting import plan_candidate_dialog
     assert plan_candidate_dialog._parse_flexible_date is date_parsing._parse_flexible_date
     assert plan_candidate_dialog._parse_plan_start_datetime is date_parsing._parse_plan_start_datetime
     assert plan_candidate_dialog._REPORT_DATE_FORMATS is date_parsing._REPORT_DATE_FORMATS

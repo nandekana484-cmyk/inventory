@@ -1,6 +1,6 @@
 # models/wip_exclusion_list.py
 """
-仕掛一覧（ui/wip_expansion_window.py）の行を「対象外」としてマークするための
+仕掛一覧（ui/ng_wip/wip_expansion_window.py）の行を「対象外」としてマークするための
 DBアクセス層。models/ng_exclusion_list.pyと同じパターンで実装している。
 
 識別キーは (kitting_list_no, lot_no, file_no, production_side) の組み合わせ。

@@ -99,7 +99,7 @@ def upsert_worker(worker_id: str, name: str, role: str = "operator", is_active: 
 def any_admin_exists() -> bool:
     """
     role='admin'の作業者がmaster.dbに1人でも存在するか返す（2026-10-03追加、
-    ui.worker_registration_window.WorkerRegistrationWindowの役割選択肢の
+    ui.master.worker_registration_window.WorkerRegistrationWindowの役割選択肢の
     制御に使う）。
 
     is_active（有効/無効）は問わない：無効化されたadminが1人いるだけの状態で

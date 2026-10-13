@@ -58,7 +58,7 @@ COLUMN_MAP_PRODUCTION = {
 # report_dateの表記ゆらぎ吸収用（is_already_registered()専用、2026-10-06追加）。
 # CSV側は"2026/7/14"のようなスラッシュ区切り・ゼロ埋め無し、production_daily側は
 # "2026-07-14"のようなハイフン区切り・ゼロ埋め済みで保存されており、書式が
-# 異なるため、比較前に同じ形式へ正規化する必要がある。ui.plan_candidate_dialog.
+# 異なるため、比較前に同じ形式へ正規化する必要がある。ui.kitting.plan_candidate_dialog.
 # _parse_flexible_date()と同じ対応形式だが、services層からui層を参照すると
 # 依存方向が逆転するため、本モジュール専用に同等のロジックを複製している。
 _REPORT_DATE_FORMATS_FOR_MATCH = ("%Y-%m-%d", "%Y/%m/%d")
@@ -97,7 +97,7 @@ def group_active_plan_items_by_lot(include_completed=False):
     グルーピング」と同じアプローチをこちらにも適用し、ループに入る前に本関数で
     1回だけ計画一覧を取得する。
 
-    モジュール外にも公開している理由：ui.production_import_staging_window
+    モジュール外にも公開している理由：ui.production.production_import_staging_window
     （実績CSVステージング一覧）が、表示・再開のたびに保留行の候補を
     find_matching_plan_items()で再照合する際、同じくN+1を避けるために
     この関数を再利用するため（ステージングデータの永続化に伴い、候補自体は
@@ -123,7 +123,7 @@ def is_already_registered(lot_no, product_name, daily_qty, plan_items_by_lot=Non
     判定する。
     実績CSVステージング一覧（parse_production_csv_for_staging()）で、
     重複登録の必要が無い行を一覧から除外し、代わりに「登録済みリスト」
-    （ui.production_import_staging_window.ProductionImportStagingWindow.
+    （ui.production.production_import_staging_window.ProductionImportStagingWindow.
     self._already_registered_rows）へ振り分けるために使う。
 
     対象計画の特定：find_matching_plan_items(lot_no, 正規化済み
@@ -311,7 +311,7 @@ def import_production_csv(file_path, default_worker_id=None):
     面1/面2連動：主行の登録（新規追加／上書きいずれも）に成功した後、
     services.production_service.register_opposite_side_daily_result() を使って
     反対側の面（存在する場合）にも同じdaily_qtyを連動登録する
-    （ui.kitting_production_entry.KittingProductionEntryWindow の手動入力と
+    （ui.kitting.kitting_production_entry.KittingProductionEntryWindow の手動入力と
     共通のロジック）。反対側への登録が失敗しても、主行自体はimportedに含めたまま
     とし（主行の処理結果を巻き込まない）、反対側のエラーのみ別途errorsに記録する。
 
@@ -468,7 +468,7 @@ def import_production_csv(file_path, default_worker_id=None):
 
     # 区切り文字・列名の不一致でヘッダーが正しく認識されないと、全行が
     # 「lot_noまたはproduct_nameが空」「daily_qtyが空」として一律にスキップ
-    # されてしまう（実際に発生した事例：ui.parts_attributes_import_window.py
+    # されてしまう（実際に発生した事例：ui.master.parts_attributes_import_window.py
     # と同種のパターン）。これに気づきやすくするため、必須列の空欄による
     # スキップが読み込み行数の9割以上を占める場合は、通常の行単位警告とは別に、
     # 列名の確認を促す注意喚起メッセージを warnings の先頭に追加する。
@@ -486,7 +486,7 @@ def import_production_csv(file_path, default_worker_id=None):
     return {"imported": imported, "unmatched": unmatched, "warnings": warnings, "errors": errors}
 
 
-# ステージング一覧（ui.production_import_staging_window._load_staged_rows_
+# ステージング一覧（ui.production.production_import_staging_window._load_staged_rows_
 # from_db()が、同モジュールのevaluate_auto_register_eligibility()を使って
 # 組み立てる"status"）の表示ラベル。UI側（ui/production_import_staging_
 # window.py）で使う。
@@ -496,7 +496,7 @@ def import_production_csv(file_path, default_worker_id=None):
 # Shift+Sの判定（数量完全一致・日付の差が1日以内）とは無関係に表示されており
 # 食い違っていた（実データで自動確定可能1173件と報告した際も、この旧い基準で
 # 集計していたことが後日判明した）。今回、一覧の状態表示をShift+S・Shift+Qの
-# 実際の判定（ui.production_import_staging_window.evaluate_auto_register_
+# 実際の判定（ui.production.production_import_staging_window.evaluate_auto_register_
 # eligibility()）に基づくものに統一した。キーの文字列は同モジュールの
 # 各種REASON_*定数・STATUS_ELIGIBLE_*定数の値と1対1で対応する（importはせず、
 # 文字列リテラルとして手動で同期する。既存のservices→ui依存を作らない
@@ -517,7 +517,7 @@ STAGING_STATUS_LABELS = {
     "date_diff_too_large": "要確認（日付差5日以上）",
 }
 
-# 対象外の理由（2026-10-06新設）。ui.production_import_staging_window.
+# 対象外の理由（2026-10-06新設）。ui.production.production_import_staging_window.
 # ProductionImportStagingWindowの「対象外一覧」（旧「登録済みリスト」を
 # 理由列付きに拡張したもの）で使う。
 EXCLUSION_REASON_ALREADY_REGISTERED = "登録済み"
@@ -599,7 +599,7 @@ def parse_production_csv_for_staging(file_path, default_worker_id=None):
     "matched_kitting_list_no", "existing_qty", "import_batch_id", "reason"}。
     is_already_registered()が返す詳細情報（判定に使った一致計画・既存実績値）
     に、通常の保留行と同じCSV由来のフィールドとreason（上記
-    EXCLUSION_REASON_*）を合わせたもの。ui.production_import_staging_window.
+    EXCLUSION_REASON_*）を合わせたもの。ui.production.production_import_staging_window.
     ProductionImportStagingWindow.self._excluded_rows（「対象外一覧」、旧
     「登録済みリスト」）の元データとして使う。pending_csv_import_rowsへは
     保存しない（本関数のdocstring既存部分の通り）ため、この戻り値がこの

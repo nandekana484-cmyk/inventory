@@ -7,7 +7,7 @@ from typing import Callable, Optional
 from models.kitting_plan import (
     create_plan_batch, create_plan_version, upsert_pending_kitting_plan_item, find_pending_kitting_plan_item,
     delete_pending_kitting_plan_item, update_plan_batch_row_count,
-    list_plan_items_for_batch,  # noqa: F401 （ui/kitting_plan_import.py が ui から models を直接呼ばないよう、ここから使う）
+    list_plan_items_for_batch,  # noqa: F401 （ui/kitting/kitting_plan_import.py が ui から models を直接呼ばないよう、ここから使う）
 )
 from models.board_structure_master import normalize_board_name
 

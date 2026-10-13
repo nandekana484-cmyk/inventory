@@ -304,7 +304,7 @@ def test_load_staged_rows_duplicate_counts_only_single_candidate_rows(monthly_db
 # ---------------------------------------------------------------- 旧位置と依存
 
 def test_old_location_reexports_same_objects():
-    from ui import production_import_staging_window as old
+    from ui.production import production_import_staging_window as old
     for name in ("_date_only_diff_days", "_is_qty_mismatch", "is_auto_confirmable",
                  "evaluate_auto_register_eligibility", "_load_staged_rows_from_db",
                  "AUTO_REGISTER_SKIP_REASON_LABELS", "AUTO_REGISTER_MAX_DAYS_SHIFT_S"):

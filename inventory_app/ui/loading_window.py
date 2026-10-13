@@ -2,7 +2,7 @@
 import tkinter as tk
 from tkinter import ttk
 
-from ui.window_utils import center_window
+from ui.common.window_utils import center_window
 
 
 class LoadingWindow(tk.Toplevel):

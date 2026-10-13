@@ -1,5 +1,5 @@
 """
-生産実績入力画面（ui/kitting_production_entry.py）の、画面に依存しない計算・判定。GUI に依存しない純粋関数。
+生産実績入力画面（ui/kitting/kitting_production_entry.py）の、画面に依存しない計算・判定。GUI に依存しない純粋関数。
 
 リファクタリング段階1で移した。旧位置には re-export か、ここを呼ぶだけの薄いメソッドを残しているので、
 既存の呼び出し側はそのまま動く。業務ルールは docs/domain/production_entry.md。

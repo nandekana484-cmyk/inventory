@@ -1,12 +1,12 @@
 # services/unprocessed_check_service.py
 """
-在庫差異レポート（ui/inventory_diff_window.py）を開く前の注意喚起用チェック。
+在庫差異レポート（ui/inventory/inventory_diff_window.py）を開く前の注意喚起用チェック。
 
 NG一覧・仕掛一覧の行の組み立て（services/ng_list_service.py・services/wip_list_service.py の
 fetch_ng_list_rows()/fetch_wip_list_rows()、DB読み取りのみ）をそのまま再利用し、
 「未処理」（NG一覧：status="未展開"、仕掛一覧：status="未確定"、いずれも対象外指定されていないもの）の件数を数える。
 集計ロジックを複製しないのは、片方だけを直して定義がずれるのを防ぐため。列の位置は NG_LIST_COLUMNS / WIP_LIST_COLUMNS で引く。
-以前は画面（ui/ng_input_window.py・ui/wip_expansion_window.py）から import していた（services → ui の逆転）。段階4で services へ移した。
+以前は画面（ui/ng_wip/ng_input_window.py・ui/ng_wip/wip_expansion_window.py）から import していた（services → ui の逆転）。段階4で services へ移した。
 """
 from services import ng_list_service, wip_list_service
 

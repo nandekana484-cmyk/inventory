@@ -1,5 +1,5 @@
 """
-ui/kitting_production_entry.py の _perform_registration() が DB に書き込む結果と、画面側の動き（呼び出し順・メッセージ）を固定する（段階3a）。
+ui/kitting/kitting_production_entry.py の _perform_registration() が DB に書き込む結果と、画面側の動き（呼び出し順・メッセージ）を固定する（段階3a）。
 画面は表示しない。self の代わりに、_perform_registration() が使う属性・メソッドだけを持つ偽の画面を渡す。
 失敗はトリガー（RAISE(ABORT)）で起こす。関数の置き場所を問わずに効くようにするため（モジュール属性の差し替えは使わない）。
 """
@@ -17,7 +17,7 @@ from models.ng_declarations import init_ng_declarations_table, save_ng_declarati
 from models.operation_log import list_operation_log
 from models.production import insert_daily_production
 from services.production_service import get_daily_history
-from ui.kitting_production_entry import KittingProductionEntryWindow as KPE
+from ui.kitting.kitting_production_entry import KittingProductionEntryWindow as KPE
 
 PLAN_START = "2026/07/22 08:00:00"
 

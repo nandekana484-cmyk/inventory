@@ -2,7 +2,7 @@
 """
 仕掛（WIP）展開結果のDBアクセス層。
 
-ui.wip_expansion_window で、services.bom_service.BOMService.expand_wip_to_parts()に
+ui.ng_wip.wip_expansion_window で、services.bom_service.BOMService.expand_wip_to_parts()に
 よるBOM展開結果から操作者が選択した部品を、96コード単位の「消費数量」として
 保存する。models.scrap_records（NG／仕損実績）と同じ設計方針を踏襲する
 （列構成・delete-then-insertパターン・集計関数の形）。
@@ -39,7 +39,7 @@ def save_wip_scrap_records(kitting_list_no: str, file_no: str, side: int, record
     新しい部品ごとの消費数量（records）で登録し直す（delete-then-insert）。
     models.scrap_records.replace_scrap_records() と同じパターン。
 
-    ui.wip_expansion_window で仕掛一覧から同じ基板を再展開・再確定登録する場合に、
+    ui.ng_wip.wip_expansion_window で仕掛一覧から同じ基板を再展開・再確定登録する場合に、
     「後からの展開・登録を正として上書きする」ために使う。1つのコネクション・
     1つのcommitで削除・再登録の両方を確定させる（途中で例外が発生した場合、
     withブロックにより自動的にロールバックされ、削除だけが反映される中途半端な
@@ -135,7 +135,7 @@ def list_wip_scrap_summary() -> list:
     """
     kitting_list_no・lot_no・production_side単位で仕掛展開結果（確定登録済み分）を
     集計する。models.scrap_records.list_scrap_summary_by_kitting_no() と同様の設計
-    （ui.wip_expansion_window の仕掛一覧の状態表示、Step2の仕掛版レポート用）。
+    （ui.ng_wip.wip_expansion_window の仕掛一覧の状態表示、Step2の仕掛版レポート用）。
 
     戻り値：[{"kitting_list_no", "file_no", "production_side", "lot_no",
               "mounting_line", "part_count", "record_count",
@@ -193,7 +193,7 @@ def query_wip_totals_range(from_date: str, to_date: str) -> dict:
     """
     96コード（part_no）単位で仕掛展開結果（確定登録済み分）の消費数量を、
     created_at（確定登録日時）の日付部分がfrom_date～to_date（両端含む、
-    "YYYY-MM-DD"文字列）の範囲に絞って集計する（ui.wip_parts_report_window の
+    "YYYY-MM-DD"文字列）の範囲に絞って集計する（ui.reports.wip_parts_report_window の
     仕掛96レポート用）。models.scrap_records.query_scrap_totals_range() と
     同じパターン。
 

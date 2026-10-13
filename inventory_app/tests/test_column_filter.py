@@ -1,8 +1,8 @@
-"""ui/column_filter.py の判定（ウィジェットを使わない部分）。3画面での使われ方は test_list_filters.py で固定している。"""
+"""ui/common/column_filter.py の判定（ウィジェットを使わない部分）。3画面での使われ方は test_list_filters.py で固定している。"""
 import ast
 import inspect
 
-from ui import column_filter as cf
+from ui.common import column_filter as cf
 
 COL_INDEX = {"a": 0, "b": 1}
 

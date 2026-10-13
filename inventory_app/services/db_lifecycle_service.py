@@ -157,7 +157,7 @@ def finish_restore(backup_file_path, folder_name, worker_name):
 
 def delete_database(db_path, worker_name):
     """
-    月次DB のファイル（と .lock・.lock.tmp）を消し、記録する。フォルダ自体は残す。確認は呼び出し元（ui/db_delete_helper.py）が済ませておくこと。
+    月次DB のファイル（と .lock・.lock.tmp）を消し、記録する。フォルダ自体は残す。確認は呼び出し元（ui/common/db_delete_helper.py）が済ませておくこと。
     操作履歴は、消した DB ではなく今の DB（config.DB_PATH。消す DB とは必ず違う）に記録する。master.db の履歴は消した後も残る。
     """
     folder_name = os.path.basename(os.path.dirname(db_path))

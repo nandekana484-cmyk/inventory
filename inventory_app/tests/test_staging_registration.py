@@ -1,5 +1,5 @@
 """
-ステージング画面（ui/production_import_staging_window.py）経由の登録を固定する（段階3b）。
+ステージング画面（ui/production/production_import_staging_window.py）経由の登録を固定する（段階3b）。
 画面は表示しない。ステージング画面・親画面（生産実績入力）とも、偽の self に本物のクラスのメソッドを結び付けて呼ぶ。
 偽の self が肩代わりするのは、ウィジェット（Treeview・Entry・Label）と、DB を読まない画面の更新だけ。
 失敗は SQLite のトリガーで起こす（関数の置き場所を問わずに効くようにするため）。
@@ -20,8 +20,8 @@ from models.production import insert_daily_production
 from models.production_import_staging import create_csv_import_batch, upsert_pending_csv_import_row
 from services.production_service import get_daily_history
 from services.staging_eligibility import _load_staged_rows_from_db
-from ui.kitting_production_entry import KittingProductionEntryWindow as KPE
-from ui.production_import_staging_window import ProductionImportStagingWindow as PISW
+from ui.kitting.kitting_production_entry import KittingProductionEntryWindow as KPE
+from ui.production.production_import_staging_window import ProductionImportStagingWindow as PISW
 
 CSV_DATE = "2026/7/23"
 CSV_DATE_NORMALIZED = "2026-07-23"

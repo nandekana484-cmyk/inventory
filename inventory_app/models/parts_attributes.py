@@ -112,7 +112,7 @@ def list_parts_attributes() -> list:
 
 
 def get_parts_attributes_count() -> int:
-    """登録件数表示用（ui/parts_attributes_import_window.py）。総件数のみ返す。"""
+    """登録件数表示用（ui/master/parts_attributes_import_window.py）。総件数のみ返す。"""
     init_parts_attributes_table()
     with get_master_connection() as con:
         return con.execute("SELECT COUNT(*) AS c FROM parts_attributes").fetchone()["c"]

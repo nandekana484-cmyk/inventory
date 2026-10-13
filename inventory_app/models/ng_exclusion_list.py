@@ -1,6 +1,6 @@
 # models/ng_exclusion_list.py
 """
-NG一覧（ui/ng_input_window.py）の行を「対象外」としてマークするためのDBアクセス層。
+NG一覧（ui/ng_wip/ng_input_window.py）の行を「対象外」としてマークするためのDBアクセス層。
 
 業務上NGとして扱う必要がない（例：申告ミス、対応不要と判断された等）行を、
 実績（scrap_records）やNG申告（ng_declarations）のデータ自体は変更せずに

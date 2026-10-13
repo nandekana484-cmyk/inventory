@@ -9,9 +9,9 @@ from tkinter import ttk
 
 import pytest
 
-from ui.kitting_production_entry import KittingProductionEntryWindow
-from ui.ng_input_window import NgInputWindow
-from ui.wip_expansion_window import WipExpansionWindow
+from ui.kitting.kitting_production_entry import KittingProductionEntryWindow
+from ui.ng_wip.ng_input_window import NgInputWindow
+from ui.ng_wip.wip_expansion_window import WipExpansionWindow
 
 SCREENS = {
     "plan": (KittingProductionEntryWindow, ("list_no", "lot_no", "board_name")),

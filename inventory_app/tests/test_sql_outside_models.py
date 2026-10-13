@@ -2,7 +2,7 @@
 services・ui にあった SQL の挙動を固定する（段階4の作業4で models へ移す前の値）。
 対象: backup_service.validate_monthly_db_backup()、master_merge_service.merge_master_from_backup()、
 db_migration_carryover の4関数、lot_status_history.get_drawdown_date_range()、
-kitting_import_service の row_count 更新、ui/kitting_plan_import.py の _load_items_for_batch()。
+kitting_import_service の row_count 更新、ui/kitting/kitting_plan_import.py の _load_items_for_batch()。
 """
 import os
 import shutil
@@ -186,7 +186,7 @@ def test_kitting_import_updates_row_count(monthly_db, tmp_path):
     assert [(b["source_file"], b["row_count"]) for b in batches][-1] == ("plan.csv", 2)
 
 
-# ---------------------------------------------------------------- ui/kitting_plan_import.py の _load_items_for_batch
+# ---------------------------------------------------------------- ui/kitting/kitting_plan_import.py の _load_items_for_batch
 
 class _FakeTree:
     def __init__(self):
@@ -203,7 +203,7 @@ class _FakeTree:
 
 
 def test_kitting_plan_import_load_items_for_batch(monthly_db):
-    from ui.kitting_plan_import import KittingPlanImportWindow
+    from ui.kitting.kitting_plan_import import KittingPlanImportWindow
     batch_id = create_plan_batch("plan.csv", imported_by="test", row_count=2)
     _add_plan(batch_id, "K2", "L1")
     _add_plan(batch_id, "K1", "L1", side="1")

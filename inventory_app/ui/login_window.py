@@ -6,8 +6,8 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from models.workers import get_active_workers
 from ui.main_window import MainWindow
-from ui.worker_registration_window import WorkerRegistrationWindow
-from ui.window_utils import center_window
+from ui.master.worker_registration_window import WorkerRegistrationWindow
+from ui.common.window_utils import center_window
 from version import get_version_label
 
 class LoginWindow(tk.Tk):

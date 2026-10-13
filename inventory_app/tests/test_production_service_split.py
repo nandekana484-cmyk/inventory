@@ -62,7 +62,7 @@ def test_report_service_does_not_import_production_service():
     ("_RIGHT_ALIGNED", "CANDIDATE_RIGHT_ALIGNED"),
 ])
 def test_plan_candidate_dialog_old_names_are_aliases(old, new):
-    from ui import plan_candidate_dialog
+    from ui.kitting import plan_candidate_dialog
     assert getattr(plan_candidate_dialog, old) is getattr(plan_candidate_dialog, new)
 
 

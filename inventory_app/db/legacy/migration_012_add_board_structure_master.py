@@ -4,8 +4,8 @@ migration_012:
 構成基板数マスタ（board_structure_master）テーブルを新設する。
 
 kitting_plan_items.board_name（基板名）単位に「構成基板数」を保持する参照専用
-マスタ。ui/board_structure_import_window.py のCSVインポートでのみ更新され、
-生産実績入力画面（ui/kitting_production_entry.py）の計画情報欄で参照表示にのみ
+マスタ。ui/master/board_structure_import_window.py のCSVインポートでのみ更新され、
+生産実績入力画面（ui/kitting/kitting_production_entry.py）の計画情報欄で参照表示にのみ
 使う。
 
 models/board_structure_master.py::init_board_structure_master_table() が

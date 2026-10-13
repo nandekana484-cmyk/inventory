@@ -1,7 +1,7 @@
 """
 日付の解釈（払い出し日・生産予定日）。GUI に依存しない純粋関数。
 
-リファクタリング段階1で ui/plan_candidate_dialog.py から移した（関数の中身は変えていない）。
+リファクタリング段階1で ui/kitting/plan_candidate_dialog.py から移した（関数の中身は変えていない）。
 旧位置からは re-export しているので、既存の呼び出し側はそのまま動く。
 """
 from datetime import datetime
@@ -36,7 +36,7 @@ def parse_flexible_date(value):
     "%Y-%m-%d"のみでは実データに対して常にパース不能になっていた。
     そのため複数形式に対応させ、関数名も実態に合わせて改称した。
 
-    本関数はui.kitting_production_entry._resolve_csv_report_date()からも
+    本関数はui.kitting.kitting_production_entry._resolve_csv_report_date()からも
     importして使う（同じ日付形式の解釈をここに集約し、重複実装を避ける
     ため）。呼び出し元ごとに戻り値の扱いが異なる点に注意：
       - 本モジュール内（_sort_candidates_by_closeness()・

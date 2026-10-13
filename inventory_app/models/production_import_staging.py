@@ -2,7 +2,7 @@
 """
 実績CSV取込のステージングデータ（登録前の一時保管）の永続化。
 
-以前はui.production_import_staging_window.ProductionImportStagingWindowの
+以前はui.production.production_import_staging_window.ProductionImportStagingWindowの
 メモリ上（self._row_by_iid）にのみ保持しており、ウィンドウを閉じる・
 アプリを終了すると未登録行が失われる問題があった。CSVから読み取った
 生の行データ（lot_no・product_name・daily_qty・report_date・worker_id）
@@ -199,7 +199,7 @@ def list_pending_csv_import_rows() -> list:
     """
     未処理の実績CSVステージング行を全件、pending_row_id昇順（取込・登録順）で返す。
 
-    ui.production_import_staging_window（ステージング一覧の表示・再開）から
+    ui.production.production_import_staging_window（ステージング一覧の表示・再開）から
     呼ばれる想定で、テーブルが未作成のDB（一度もCSV取込を行っていない、
     または新規作成直後のDB）でも安全に呼べるよう、ここでは呼び出し頻度が
     低い（一覧を開くたびに1回）ことを踏まえてinit_csv_import_staging_tables()

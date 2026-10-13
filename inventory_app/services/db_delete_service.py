@@ -1,10 +1,10 @@
 # services/db_delete_service.py
 """
-月別DB削除処理。ui/main_window.py（ローカルDB一覧）から、ui/db_delete_helper.py
+月別DB削除処理。ui/main_window.py（ローカルDB一覧）から、ui/common/db_delete_helper.py
 経由で利用する。
 
 ダイアログ表示・最終的な削除可否のユーザー確認自体はUI層
-（ui/db_delete_helper.py）の責務とし、本モジュールは「削除してよいかの
+（ui/common/db_delete_helper.py）の責務とし、本モジュールは「削除してよいかの
 機械的な判定材料」の提供と「実際のファイル削除」のみを担う。
 """
 import os
@@ -27,7 +27,7 @@ def is_current_database(db_path: str) -> bool:
 def check_delete_safety(db_path: str) -> dict:
     """
     削除前の安全確認結果をまとめて返す。呼び出し元（UI層）はこの結果に応じて
-    表示するダイアログの強さを切り替える（ui/db_delete_helper.py参照）。
+    表示するダイアログの強さを切り替える（ui/common/db_delete_helper.py参照）。
 
     戻り値：{
         "is_current": bool,        # 現在接続中のDBと同一か（Trueなら削除を拒否すべき）

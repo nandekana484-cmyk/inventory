@@ -316,7 +316,7 @@ def list_production_side_groups() -> list:
 
 
 def get_production_side_count_summary() -> dict:
-    """登録件数表示用（ui/production_side_master_window.py）。(setup_file_no, mounting_line)組の件数を返す。"""
+    """登録件数表示用（ui/master/production_side_master_window.py）。(setup_file_no, mounting_line)組の件数を返す。"""
     groups = list_production_side_groups()
     return {"total": len(groups)}
 

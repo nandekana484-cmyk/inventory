@@ -3,7 +3,7 @@ from models.db_common import get_connection
 # =====================================================
 # 96コードごとの在庫数量（inventory_stock）
 #
-# フェーズ2：在庫CSVインポート（ui.inventory_input_window）に対応するため、
+# フェーズ2：在庫CSVインポート（ui.inventory.inventory_input_window）に対応するため、
 # 棚種別・部品支給区分・マスタCHK使用数の3列を追加した。
 # 既存の part_no・stock_qty のみを扱う upsert_inventory() はそのまま残し、
 # 新列は upsert_inventory_stock() 経由でのみ設定する

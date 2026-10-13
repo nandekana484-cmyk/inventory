@@ -490,7 +490,7 @@ class BOMService:
 
 
 # アプリ全体で共有する単一のBOMServiceインスタンス。
-# 以前はui.ng_input_window.py・ui.wip_expansion_window.pyがそれぞれ独立して
+# 以前はui.ng_wip.ng_input_window.py・ui.ng_wip.wip_expansion_window.pyがそれぞれ独立して
 # モジュールレベルの_bom_service = BOMService()を持っていたため、どちらの画面を
 # 先に開くかによって、BOMService._index（BOMFileIndex、共有フォルダのインデックス。
 # インスタンスに紐づくキャッシュ）が画面ごとに別々に構築されていた

@@ -1,8 +1,8 @@
-"""ui/async_task.py の run_in_background()（段階6）。メイン画面での使われ方は test_main_window_background.py で固定している。"""
+"""ui/common/async_task.py の run_in_background()（段階6）。メイン画面での使われ方は test_main_window_background.py で固定している。"""
 import threading
 import time
 
-from ui.async_task import run_in_background
+from ui.common.async_task import run_in_background
 from ui.loading_window import LoadingWindow
 
 

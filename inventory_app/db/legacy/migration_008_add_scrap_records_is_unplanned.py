@@ -2,7 +2,7 @@
 """
 migration_008:
 scrap_records（NG／仕損実績）に、計画外（kitting_plan_itemsに存在しないfile_no・
-生産面へのNG登録。ui.ng_input_window のファイルNo.検索経由）かどうかを示す
+生産面へのNG登録。ui.ng_wip.ng_input_window のファイルNo.検索経由）かどうかを示す
 is_unplanned フラグ列（INTEGER, NOT NULL, DEFAULT 0）を追加する。
 
 query_scrap_totals()（在庫差異レポートで使われている唯一の集計関数）は

@@ -3,8 +3,8 @@
 構成基板数マスタのDBアクセス層。
 
 kitting_plan_items.board_name（基板名）単位に「構成基板数」を保持する参照専用
-マスタ。CSVインポート（ui/board_structure_import_window.py）でのみ更新され、
-生産実績入力画面（ui/kitting_production_entry.py）の計画情報欄で参照表示にのみ
+マスタ。CSVインポート（ui/master/board_structure_import_window.py）でのみ更新され、
+生産実績入力画面（ui/kitting/kitting_production_entry.py）の計画情報欄で参照表示にのみ
 使う（他のBOM計算・実績登録処理からは参照されない）。
 
 models/parts_attributes.py と同じ「CSVをマスタとした差分同期」パターン
@@ -137,7 +137,7 @@ def list_board_structure() -> list:
 
 def get_board_structure_count_summary() -> dict:
     """
-    登録件数表示用（ui/board_structure_import_window.py）。
+    登録件数表示用（ui/master/board_structure_import_window.py）。
     総件数と、構成基板数（board_count）が未設定（NULL）の件数を返す。
     """
     init_board_structure_master_table()

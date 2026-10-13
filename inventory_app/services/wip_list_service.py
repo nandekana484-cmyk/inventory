@@ -1,6 +1,6 @@
 """
-仕掛一覧（ui/wip_expansion_window.py の右ペイン）の行を組み立てる。DB を読むだけで、ウィジェットには触れない。
-段階4で ui/wip_expansion_window.py から移した。中身で変えたのは、STATUS_CONFIRMED_ORPHAN の参照先（画面クラスの属性 → このモジュールの定数）だけ。
+仕掛一覧（ui/ng_wip/wip_expansion_window.py の右ペイン）の行を組み立てる。DB を読むだけで、ウィジェットには触れない。
+段階4で ui/ng_wip/wip_expansion_window.py から移した。中身で変えたのは、STATUS_CONFIRMED_ORPHAN の参照先（画面クラスの属性 → このモジュールの定数）だけ。
 """
 from models.wip_board_snapshot import list_wip_snapshot
 from models.wip_exclusion_list import list_wip_exclusions

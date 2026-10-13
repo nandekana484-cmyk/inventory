@@ -100,7 +100,7 @@ def test_side_without_plan_is_not_saved():
 
 def test_old_method_delegates_to_new_function():
     """旧 KittingProductionEntryWindow._compute_ng_save_qty() は、self._ng_side_plans を渡して新しい関数を呼ぶ。"""
-    from ui.kitting_production_entry import KittingProductionEntryWindow
+    from ui.kitting.kitting_production_entry import KittingProductionEntryWindow
     fake_self = types.SimpleNamespace(_ng_side_plans=BOTH_SIDES)
     assert KittingProductionEntryWindow._compute_ng_save_qty(fake_self, {"1": 3.0, "2": 5.0}) == {"1": 8.0, "2": 5.0}
 
@@ -154,7 +154,7 @@ def test_plan_row_tag(classification, expected):
 # ---------------------------------------------------------------- 旧位置と依存
 
 def test_old_location_reexports_resolve_csv_report_date():
-    from ui import kitting_production_entry as old
+    from ui.kitting import kitting_production_entry as old
     assert old._resolve_csv_report_date is pes._resolve_csv_report_date
 
 

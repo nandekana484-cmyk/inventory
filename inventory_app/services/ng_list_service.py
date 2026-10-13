@@ -1,6 +1,6 @@
 """
-NG 一覧（ui/ng_input_window.py の右ペイン）の行を組み立てる。DB を読むだけで、ウィジェットには触れない。
-段階4で ui/ng_input_window.py から移した（関数の中身は変えていない）。在庫差異レポート前の未処理件数（services/unprocessed_check_service.py）も使う。
+NG 一覧（ui/ng_wip/ng_input_window.py の右ペイン）の行を組み立てる。DB を読むだけで、ウィジェットには触れない。
+段階4で ui/ng_wip/ng_input_window.py から移した（関数の中身は変えていない）。在庫差異レポート前の未処理件数（services/unprocessed_check_service.py）も使う。
 """
 from models.kitting_plan import find_plan_item_by_kitting_no
 from models.ng_declarations import list_ng_declarations_latest

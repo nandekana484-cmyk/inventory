@@ -2,7 +2,7 @@
 """
 NG（仕損）実績のDBアクセス層（フェーズ2・新BOM基盤接続）。
 
-ui.ng_input_window で、新BOM基盤（services.bom_service.BOMService）による
+ui.ng_wip.ng_input_window で、新BOM基盤（services.bom_service.BOMService）による
 BOM展開結果から操作者が選択した部品を、96コード単位の「消費数量」として
 保存する。ng_qty 列は列名こそ「NG数量」だが、実際に保存する値は
 BOM展開で計算済みの消費数量（qty_per_product × 入力されたNG枚数）である。
@@ -23,7 +23,7 @@ def init_scrap_records_table():
     scrap_records テーブルの初期化（既存があれば何もしない）。
 
     is_unplanned：計画外（kitting_plan_itemsに存在しないfile_no・生産面への登録、
-    ui.ng_input_window のファイルNo.検索経由）のレコードかどうかを示すフラグ
+    ui.ng_wip.ng_input_window のファイルNo.検索経由）のレコードかどうかを示すフラグ
     （0=計画あり、1=計画外）。
     lot_no：実DBで同一kitting_list_noが複数の異なるlot_noにまたがって存在する
     ケースが478件確認されているため、kitting_list_noだけでは一意に扱えない。
@@ -59,7 +59,7 @@ def save_scrap_record(kitting_list_no: str, file_no: str, side: int, part_no: st
     lot_no：計画あり登録の場合は選択中の計画のlot_noを渡す。計画外
     （is_unplanned=True）の場合はNoneのままでよい。
     is_unplanned：計画外登録（kitting_plan_itemsに存在しないfile_no・生産面への
-    NG登録、ui.ng_input_window のファイルNo.検索経由）の場合True。デフォルトFalse
+    NG登録、ui.ng_wip.ng_input_window のファイルNo.検索経由）の場合True。デフォルトFalse
     （従来通りのキッティングリストNo.検索・計画ありの登録）。
     """
     init_scrap_records_table()
@@ -79,7 +79,7 @@ def replace_scrap_records(kitting_list_no: str, file_no: str, side: int, records
     指定kitting_list_no・lot_no・production_sideの既存scrap_recordsを全て削除し、
     新しい部品ごとの消費数量（records）で登録し直す（delete-then-insert）。
 
-    ui.ng_input_window でNG一覧から既存登録済みの計画を選び再展開・再登録する場合に、
+    ui.ng_wip.ng_input_window でNG一覧から既存登録済みの計画を選び再展開・再登録する場合に、
     「後からの展開・登録を正として上書きする」ために使う。1つのコネクション・
     1つのcommitで削除・再登録の両方を確定させる（途中で例外が発生した場合、
     withブロックにより自動的にロールバックされ、削除だけが反映される中途半端な
@@ -128,7 +128,7 @@ def list_scrap_records_by_kitting_no(kitting_list_no: str, lot_no: str = None,
     場合はlot_no=NULLのレコードのみが対象になる。「lot_no未指定で全件」という抜け道は
     用意しない）。
 
-    ui.ng_input_window.on_register() が、置き換え対象となる既存レコードの有無・件数を
+    ui.ng_wip.ng_input_window.on_register() が、置き換え対象となる既存レコードの有無・件数を
     確認する（上書き確認ダイアログを出すかどうかの判定）ために使う。lot_noを渡さないと
     別ロットの既存レコードまで「既存あり」として拾ってしまい、実際には削除されない
     レコードに基づいて確認ダイアログを出してしまう。
@@ -159,7 +159,7 @@ def list_scrap_records_by_kitting_no(kitting_list_no: str, lot_no: str = None,
 def update_scrap_record(id: int, qty: float):
     """
     scrap_records 1件（id指定）のng_qty（消費数量）のみを修正する。
-    models.production.update_daily_production()（ui.kitting_production_entry.
+    models.production.update_daily_production()（ui.kitting.kitting_production_entry.
     ActualCorrectionWindow が使う、単一行を主キー指定で直接UPDATEする関数）と
     同じ設計・同じ単純さ（対象行の存在確認は行わず、該当idが無ければ0件更新のまま
     何も起きない。呼び出し元が一覧から選択した既存行のidを渡す前提のため）。
@@ -262,7 +262,7 @@ def query_scrap_totals_range(from_date: str, to_date: str) -> dict:
     """
     96コード（part_no）単位でNG（仕損）消費数量を、report_dateが
     from_date～to_date（両端含む、"YYYY-MM-DD"文字列）の範囲に絞って集計する
-    （ui.parts_ng_report_window の96NGレポート用）。
+    （ui.reports.parts_ng_report_window の96NGレポート用）。
 
     query_scrap_totals()と同じ理由により、lot_noは条件・グループ化に含めない
     （96コードの消費実数を見る集計のため、ロットへの帰属を問わず合算する）。

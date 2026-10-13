@@ -9,6 +9,6 @@ def test_old_module_reexports_same_functions():
 
 
 def test_screen_import_still_works():
-    from ui.daily_drawdown_window import get_daily_drawdown, get_drawdown_date_range
+    from ui.production.daily_drawdown_window import get_daily_drawdown, get_drawdown_date_range
     assert get_daily_drawdown is new.get_daily_drawdown
     assert get_drawdown_date_range is new.get_drawdown_date_range

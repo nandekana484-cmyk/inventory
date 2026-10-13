@@ -94,7 +94,7 @@ def list_operation_log(limit: int = None) -> list:
 
 
 # 在庫値出力済みDBの警告（CANONICAL_DESIGN_DECISIONS.md D-5x参照）で使う
-# operation_name。ui.inventory_diff_window.InventoryDiffWindowの
+# operation_name。ui.inventory.inventory_diff_window.InventoryDiffWindowの
 # on_export_pdf()/on_export_csv()が成功時にこの名前でlog_operation()を呼ぶ。
 OPERATION_NAME_INVENTORY_DIFF_EXPORT = "在庫値出力"
 

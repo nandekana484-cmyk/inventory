@@ -2,7 +2,7 @@
 """
 仕掛（WIP）基板一覧のスナップショットのDBアクセス層。
 
-実績レポート画面（ui/unified_report_window.py、旧ui/monthly_report_window.py。
+実績レポート画面（ui/reports/unified_report_window.py、旧ui/monthly_report_window.py。
 2026-10-01に日報・月報統合につき削除・統合済み）の「仕掛数量抽出」ボタンで、
 その時点の集計結果（self.report_rows）のうち仕掛数量（surplus_qty）が0より
 大きい行を抽出し、後続の「仕掛展開」機能（未実装）の入力データとして保存する。

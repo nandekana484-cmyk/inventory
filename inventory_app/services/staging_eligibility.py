@@ -1,7 +1,7 @@
 """
 実績CSV取込の自動登録（Shift+S／Shift+Q）の判定と、保留行の読み込み。GUI に依存しない。
 
-リファクタリング段階1で ui/production_import_staging_window.py から移した（関数の中身は変えていない）。
+リファクタリング段階1で ui/production/production_import_staging_window.py から移した（関数の中身は変えていない）。
 旧位置からは re-export しているので、既存の呼び出し側はそのまま動く。
 判定の優先順位と各理由の意味は docs/domain/production_import_staging.md。
 """
@@ -84,7 +84,7 @@ def is_auto_confirmable(lot_no, product_name, planned_qty, daily_qty, plan_start
     """
     数量が完全一致し、払い出し日と生産予定日の差が max_date_diff_days 日以内（日付のみで比較）なら True。
     比較できない場合は False（安全側）。lot_no・product_name は判定に使わない（呼び出し元で一致を確認済み）。
-    以前は ui/production_import_staging_window.py にあった（日付の解釈が ui.plan_candidate_dialog にあったため）。段階1で services へ移した。
+    以前は ui/production/production_import_staging_window.py にあった（日付の解釈が ui.kitting.plan_candidate_dialog にあったため）。段階1で services へ移した。
     """
     try:
         if float(planned_qty) != float(daily_qty):

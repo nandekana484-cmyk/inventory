@@ -8,23 +8,23 @@ import config
 from services.db_lock_service import (
     acquire_lock, release_lock, update_heartbeat, get_lock_info, LockFileCorruptedError,
 )
-from ui.kitting_plan_import import KittingPlanImportWindow
-from ui.kitting_production_entry import KittingProductionEntryWindow
-from ui.async_task import run_in_background
-from ui.inventory_input_window import InventoryInputWindow
-from ui.theoretical_inventory_import_window import TheoreticalInventoryImportWindow
-from ui.inventory_diff_window import InventoryDiffWindow
-from ui.ng_input_window import NgInputWindow
-from ui.parts_attributes_import_window import PartsAttributesImportWindow
-from ui.board_structure_import_window import BoardStructureImportWindow
-from ui.production_side_master_window import ProductionSideMasterWindow
-from ui.wip_expansion_window import WipExpansionWindow
-from ui.worker_management_window import WorkerManagementWindow
-from ui.worker_registration_window import WorkerRegistrationWindow
-from ui.operation_log_window import OperationLogWindow
+from ui.kitting.kitting_plan_import import KittingPlanImportWindow
+from ui.kitting.kitting_production_entry import KittingProductionEntryWindow
+from ui.common.async_task import run_in_background
+from ui.inventory.inventory_input_window import InventoryInputWindow
+from ui.inventory.theoretical_inventory_import_window import TheoreticalInventoryImportWindow
+from ui.inventory.inventory_diff_window import InventoryDiffWindow
+from ui.ng_wip.ng_input_window import NgInputWindow
+from ui.master.parts_attributes_import_window import PartsAttributesImportWindow
+from ui.master.board_structure_import_window import BoardStructureImportWindow
+from ui.master.production_side_master_window import ProductionSideMasterWindow
+from ui.ng_wip.wip_expansion_window import WipExpansionWindow
+from ui.master.worker_management_window import WorkerManagementWindow
+from ui.master.worker_registration_window import WorkerRegistrationWindow
+from ui.system.operation_log_window import OperationLogWindow
 from models.operation_log import log_operation, get_inventory_diff_export_status
 from models.db_lifecycle_log import record_db_lifecycle_event, OPERATION_TYPE_CREATE_WITH_CARRY_OVER
-from ui.db_delete_helper import confirm_and_delete_database
+from ui.common.db_delete_helper import confirm_and_delete_database
 from services.db_migration_carryover import carry_over_incomplete_lots
 from services.backup_service import (
     backup_databases, validate_monthly_db_backup,
@@ -37,7 +37,7 @@ from services.db_lifecycle_service import (
     finish_restore, NEW_FOLDER_EMPTY, NEW_FOLDER_RESERVED, NEW_FOLDER_EXISTS,
     ensure_db_schema, SchemaError, DatabaseTooNewError, LegacyDatabaseError, MigrationFailedError, default_db_path,
 )
-from ui.window_utils import center_window
+from ui.common.window_utils import center_window
 from version import get_version_label
 
 
@@ -113,7 +113,7 @@ class MainWindow(tk.Tk):
         )
         self.btn_create_database.pack(side=tk.LEFT)
 
-        # 別スレッドで実行する処理（ui/async_task.py の run_in_background()）の読み込み中の表示。
+        # 別スレッドで実行する処理（ui/common/async_task.py の run_in_background()）の読み込み中の表示。
         # on_create_database()の引き継ぎ処理（非同期）用
         self._create_db_loading_window = None
 
@@ -557,7 +557,7 @@ class MainWindow(tk.Tk):
             if on_ready is not None:
                 on_ready(window)
 
-        # 読み込み中の表示・別スレッド・ポーリングは ui/async_task.py（段階6）。エラーは例外の文字列をそのまま出す。
+        # 読み込み中の表示・別スレッド・ポーリングは ui/common/async_task.py（段階6）。エラーは例外の文字列をそのまま出す。
         run_in_background(
             self, None, lambda: KittingProductionEntryWindow._fetch_plan_list_rows(), _on_success, _on_error,
         )
@@ -623,7 +623,7 @@ class MainWindow(tk.Tk):
 
     def open_pdf_ocr_import(self):
         """循環import回避のため、ここで都度importする。"""
-        from ui.pdf_ocr_import_window import PdfOcrImportWindow
+        from ui.system.pdf_ocr_import_window import PdfOcrImportWindow
         self._open_singleton_window("pdf_ocr_import", lambda: PdfOcrImportWindow(self))
 
     def open_parts_attributes_import(self):
@@ -852,7 +852,7 @@ class MainWindow(tk.Tk):
         messagebox.showinfo("完了", "データベースを切り替えました。", parent=self.winfo_toplevel())
 
     def on_delete_local_database(self):
-        """ローカルの月別 DB を削除する（ui.db_delete_helper、安全確認込み）。削除後に一覧を読み直す。"""
+        """ローカルの月別 DB を削除する（ui.common.db_delete_helper、安全確認込み）。削除後に一覧を読み直す。"""
         folder = self.db_folder_var.get().strip()
         if not folder:
             messagebox.showwarning("警告", "削除するフォルダを選択してください。", parent=self.winfo_toplevel())
@@ -1006,7 +1006,7 @@ class MainWindow(tk.Tk):
         # 完了時に master.db の履歴へ、引き継ぎ元として記録するフォルダ名。
         self._create_db_old_db_folder = os.path.basename(os.path.dirname(old_db_path))
 
-        # 読み込み中の表示・別スレッド・ポーリングは ui/async_task.py（段階6）。エラーは「例外の文字列＋改行＋traceback」で渡す。
+        # 読み込み中の表示・別スレッド・ポーリングは ui/common/async_task.py（段階6）。エラーは「例外の文字列＋改行＋traceback」で渡す。
         self._create_db_loading_window = run_in_background(
             self, "前月からの未完了分を引き継いでいます…",
             lambda: self._run_carry_over_in_thread(old_db_path, new_db_path, folder),
@@ -1119,7 +1119,7 @@ class MainWindow(tk.Tk):
         self._backup_destination_folder = destination_folder
 
         self._set_menu_enabled(False)
-        # 読み込み中の表示・別スレッド・ポーリングは ui/async_task.py（段階6）。エラーは「例外の文字列＋改行＋traceback」で渡す。
+        # 読み込み中の表示・別スレッド・ポーリングは ui/common/async_task.py（段階6）。エラーは「例外の文字列＋改行＋traceback」で渡す。
         self._backup_loading_window = run_in_background(
             self, "データベースをバックアップしています…",
             lambda: self._run_backup_in_thread(destination_folder),
@@ -1191,7 +1191,7 @@ class MainWindow(tk.Tk):
             return
 
         self._set_menu_enabled(False)
-        # 読み込み中の表示・別スレッド・ポーリングは ui/async_task.py（段階6）。エラーは「例外の文字列＋改行＋traceback」で渡す。
+        # 読み込み中の表示・別スレッド・ポーリングは ui/common/async_task.py（段階6）。エラーは「例外の文字列＋改行＋traceback」で渡す。
         self._merge_master_loading_window = run_in_background(
             self, "マスタデータを取り込んでいます…",
             lambda: self._run_merge_master_in_thread(backup_file_path),
