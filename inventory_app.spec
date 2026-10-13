@@ -23,7 +23,7 @@ inventory_app.spec
 import os
 import sys
 
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 from PyInstaller.utils.win32.versioninfo import (
     VSVersionInfo, FixedFileInfo, StringFileInfo, StringTable, StringStruct, VarFileInfo, VarStruct,
 )
@@ -116,6 +116,10 @@ hiddenimports += [
     "uvicorn.lifespan.on",
     "dotenv",
 ]
+
+# 月次DB のマイグレーション（db/migrations/m0NN_*.py、段階7b）は、DB を開くときに名前で探して import するので、
+# import 解析では見つからない。パッケージの中のモジュールをすべて同梱する。
+hiddenimports += collect_submodules("db.migrations")
 
 # Tesseract OCR本体・Poppler本体・tessdata_local（同梱しない方針、モジュール
 # docstring参照）はdatas/binariesに含めない。コード（services/pdf_ocr_service.py
