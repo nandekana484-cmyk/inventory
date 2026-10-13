@@ -344,32 +344,28 @@ def test_restore_folder_name_checks(host, current_db, backup_file, answer, expec
 
 
 def test_restore_failure_removes_new_folder(host, current_db, backup_file, monkeypatch):
-    def failing_restore(path, folder_name):
-        new_folder = os.path.join(config.APP_DATA_DIR, "db", folder_name)
-        os.makedirs(new_folder)
-        with open(os.path.join(new_folder, "inventory.db"), "w"):
-            pass
-        raise OSError("コピーに失敗")
-
-    monkeypatch.setattr(mw, "restore_backup_as_new_local_db", failing_restore)
+    """コピーの途中で失敗したら、作りかけのフォルダを消してからエラーを出す。検証の後でバックアップを消して、本当に失敗させる。"""
     host.answers["askopenfilename"] = [backup_file]
-    host.answers["askstring"] = ["FAIL"]
+
+    def remove_backup_then_answer(*args, **kwargs):
+        os.remove(backup_file)
+        return "FAIL"
+
+    monkeypatch.setattr(tkinter.simpledialog, "askstring", remove_backup_then_answer)
     host.on_restore_from_backup()
-    assert not os.path.exists(os.path.join(config.APP_DATA_DIR, "db", "FAIL"))   # 作りかけのフォルダを消してからエラーを出す
-    assert _messages(host) == [("showerror", "取り込みエラー", "バックアップの取り込み中にエラーが発生しました：\nコピーに失敗")]
+    assert not os.path.exists(os.path.join(config.APP_DATA_DIR, "db", "FAIL"))
+    (kind, title, message), = _messages(host)
+    assert (kind, title) == ("showerror", "取り込みエラー")
+    assert message.startswith("バックアップの取り込み中にエラーが発生しました：\n")
     assert config.DB_PATH == current_db
     assert _lifecycle() == []
 
 
-def test_restore_lock_failure_removes_new_folder(host, current_db, backup_file, monkeypatch):
-    real_restore = mw.restore_backup_as_new_local_db
-
-    def restore_then_lock_by_other(path, folder_name):
-        new_path = real_restore(path, folder_name)
-        acquire_lock(new_path, "他の人", "PC9")
-        return new_path
-
-    monkeypatch.setattr(mw, "restore_backup_as_new_local_db", restore_then_lock_by_other)
+def test_restore_lock_failure_removes_new_folder(host, current_db, backup_file):
+    """コピーした DB のロックを他の人が持っていたら（先にロックファイルだけがある）、切り替えずにフォルダを消す。"""
+    new_path = _db_path("LOCKED")
+    os.makedirs(os.path.dirname(new_path))
+    acquire_lock(new_path, "他の人", "PC9")
     acquire_lock(current_db, "作業者A", "PC1")
     host._lock_acquired = True
     host.answers["askopenfilename"] = [backup_file]
