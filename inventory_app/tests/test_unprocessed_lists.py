@@ -121,3 +121,26 @@ def test_empty_lists(monthly_db):
 def test_unprocessed_counts(ng_data, wip_data):
     """未処理＝NG は「未展開」、仕掛は「未確定」で、どちらも対象外でないもの。"""
     assert check_unprocessed_items() == {"ng_unprocessed_count": 2, "wip_unprocessed_count": 1}
+
+
+# ---------------------------------------------------------------- 段階4: services へ移した後の構造
+
+def test_screen_constants_refer_to_services():
+    from services import ng_list_service, wip_list_service
+    assert NgInputWindow.NG_LIST_COLUMNS is ng_list_service.NG_LIST_COLUMNS
+    assert WipExpansionWindow.WIP_LIST_COLUMNS is wip_list_service.WIP_LIST_COLUMNS
+    assert WipExpansionWindow.STATUS_CONFIRMED_ORPHAN is wip_list_service.STATUS_CONFIRMED_ORPHAN
+
+
+def test_services_do_not_import_ui_or_gui():
+    import ast
+    import inspect
+    from services import ng_list_service, wip_list_service, unprocessed_check_service
+    for module in (ng_list_service, wip_list_service, unprocessed_check_service):
+        names = set()
+        for node in ast.walk(ast.parse(inspect.getsource(module))):
+            if isinstance(node, ast.Import):
+                names.update(a.name.split(".")[0] for a in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names.add(node.module.split(".")[0])
+        assert not names & {"tkinter", "tkcalendar", "ui"}, module.__name__

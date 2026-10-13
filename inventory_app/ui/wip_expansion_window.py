@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 from services.bom_service import get_shared_bom_service
+from services import wip_list_service
 from models.wip_board_snapshot import list_wip_snapshot
 from models.wip_scrap_records import save_wip_scrap_records, list_wip_scrap_summary
 from models.wip_exclusion_list import (
@@ -26,11 +27,8 @@ class WipExpansionWindow(tk.Toplevel):
     行をダブルクリックすると、その仕掛数量分を BOM 展開して左ペインに部品を表示する。
     チェックした部品は「確定」で wip_scrap_records に登録する（on_confirm()）。詳細は docs/domain/wip_expansion.md。
     """
-    # 仕掛一覧の列順。_fetch_wip_list_rows() のタプルと一致させること（unprocessed_check_service もこの定義を参照する）。
-    WIP_LIST_COLUMNS = (
-        "kitting_list_no", "board_name", "file_no", "side", "lot_no",
-        "mounting_line", "surplus_qty", "status", "created_at", "excluded",
-    )
+    # 仕掛一覧の列順。定義は services/wip_list_service.py（_fetch_wip_list_rows() のタプルと一致させる）。
+    WIP_LIST_COLUMNS = wip_list_service.WIP_LIST_COLUMNS
 
     def __init__(self, parent, current_worker=None):
         super().__init__(parent)
@@ -851,65 +849,12 @@ class WipExpansionWindow(tk.Toplevel):
 
         return popup
 
-    # スナップショットの無い確定済み行の状態。「確定済み」「未確定」と別の値にして、一括展開・登録の対象や未確定件数に入らないようにする。
-    STATUS_CONFIRMED_ORPHAN = "確定済み(スナップショットなし)"
+    STATUS_CONFIRMED_ORPHAN = wip_list_service.STATUS_CONFIRMED_ORPHAN
 
     @staticmethod
     def _fetch_wip_list_rows():
-        """
-        仕掛一覧の DB アクセスだけを行う（ウィジェットに触れない）。
-        スナップショットと確定済みの展開結果を (kitting_list_no, lot_no, production_side) で合わせ、「確定済み」「未確定」を付ける。
-        production_side はスナップショットが TEXT、確定済みが INTEGER なので、str() にそろえて比べる。
-        対象外の行も一覧から消さず「対象外」列で示す。スナップショットから消えた確定済み行も、実績修正で見つけられるよう末尾に足す。
-        """
-        summaries = list_wip_scrap_summary()
-        confirmed_keys = {
-            (s["kitting_list_no"], s["lot_no"] or "", str(s["production_side"]))
-            for s in summaries
-        }
-        excluded_keys = {
-            (e["kitting_list_no"], e["lot_no"] or "", e["file_no"], str(e["production_side"]))
-            for e in list_wip_exclusions()
-        }
-
-        rows = []
-        snapshot_keys = set()
-        for row in list_wip_snapshot():
-            key = (row["kitting_list_no"], row["lot_no"] or "", str(row["production_side"]))
-            snapshot_keys.add(key)
-            status = "確定済み" if key in confirmed_keys else "未確定"
-            exclusion_key = (row["kitting_list_no"], row["lot_no"] or "", row["file_no"], str(row["production_side"]))
-            rows.append((
-                row["kitting_list_no"],
-                row["board_name"],
-                row["file_no"],
-                row["production_side"],
-                row["lot_no"] or "",
-                row["mounting_line"] or "",
-                f"{row['surplus_qty']:g}",
-                status,
-                row["created_at"] or "",
-                "対象外" if exclusion_key in excluded_keys else "",
-            ))
-
-        for s in summaries:
-            key = (s["kitting_list_no"], s["lot_no"] or "", str(s["production_side"]))
-            if key in snapshot_keys:
-                continue
-            exclusion_key = (s["kitting_list_no"], s["lot_no"] or "", s["file_no"], str(s["production_side"]))
-            rows.append((
-                s["kitting_list_no"],
-                "",
-                s["file_no"],
-                str(s["production_side"]),
-                s["lot_no"] or "",
-                "",
-                "",
-                WipExpansionWindow.STATUS_CONFIRMED_ORPHAN,
-                "",
-                "対象外" if exclusion_key in excluded_keys else "",
-            ))
-        return rows
+        """段階4で services/wip_list_service.py へ移した。ここからはそれを呼ぶだけ（unprocessed_check_service も services 側を使う）。"""
+        return wip_list_service._fetch_wip_list_rows()
 
     def _populate_wip_tree(self, rows):
         status_index = self._wip_col_index["status"]
