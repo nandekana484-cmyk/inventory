@@ -146,3 +146,20 @@ def register_actual_and_ng(plan, ng_side_plans, daily_qty, save_qty_by_side, exi
             result["errors"].append(f"面{side}のNG登録に失敗しました：{e}")
 
     return result
+
+
+def format_registration_message(result, save_qty_by_side):
+    """
+    register_actual_and_ng() が実績の登録に成功したときの完了文。生産実績入力画面とステージング画面の共通の文言。
+    save_qty_by_side は register_actual_and_ng() に渡したもの（申告した NG 数量の表示に使う）。
+    """
+    lines = [f"実績を登録しました。アプリ入力累計：{result['new_cumulative']:.0f}"]
+    if result["opposite_registered"]:
+        lines.append("反対側の面にも同じ数量を連動登録しました。")
+    for side in result["declared_sides"]:
+        lines.append(f"面{side}：NG数量{save_qty_by_side[side]:g}を申告しました")
+    if result["errors"]:
+        lines.append("")
+        lines.append("以下の項目でエラーが発生しました（登録できた分はそのまま残っています）：")
+        lines.extend(result["errors"])
+    return "\n".join(lines)

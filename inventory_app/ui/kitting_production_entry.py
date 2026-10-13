@@ -41,6 +41,7 @@ from services.production_entry_service import (  # noqa: E402,F401 （re-export�
     is_plan_row_completed,
     plan_row_tag,
     register_actual_and_ng,
+    format_registration_message,
 )
 
 
@@ -1565,9 +1566,6 @@ class KittingProductionEntryWindow(tk.Toplevel):
             self._pending_csv_row_removal = None
 
         new_cumulative = result["new_cumulative"]
-        opposite_registered = result["opposite_registered"]
-        declared_faces = result["declared_sides"]
-        errors = result["errors"]
 
         self.lbl_app_cum.config(text=f"{new_cumulative:.0f}")
         self.load_today_log()
@@ -1576,17 +1574,9 @@ class KittingProductionEntryWindow(tk.Toplevel):
         # 同じ lot_no の行だけ部分更新する。すべての書き込み（実績・反対側連動・NG）の後に呼ぶこと。
         self._refresh_plan_list_for_lot(lot_no)
 
-        msg_lines = [f"実績を登録しました。アプリ入力累計：{new_cumulative:.0f}"]
-        if opposite_registered:
-            msg_lines.append("反対側の面にも同じ数量を連動登録しました。")
-        for side in declared_faces:
-            msg_lines.append(f"面{side}：NG数量{preview['save_qty_by_side'][side]:g}を申告しました")
-        if errors:
-            msg_lines.append("")
-            msg_lines.append("以下の項目でエラーが発生しました（登録できた分はそのまま残っています）：")
-            msg_lines.extend(errors)
-
-        messagebox.showinfo("登録完了", "\n".join(msg_lines), parent=self.winfo_toplevel())
+        messagebox.showinfo(
+            "登録完了", format_registration_message(result, preview["save_qty_by_side"]), parent=self.winfo_toplevel(),
+        )
 
         # CSV 経由なら一覧を手前に戻し、キーボードフォーカスも一覧へ渡す。lift() だけではフォーカスが記入欄に残り、
         # 一覧で押した Shift+S が文字入力になる（D-84）。topmost は後に開くダイアログを隠すので使わない。

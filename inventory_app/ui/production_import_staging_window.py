@@ -1,7 +1,7 @@
 """
 実績CSV取込のステージング一覧（「確認・選択・転記」方式）。右＝登録待ちの保留行、左＝選択した行の候補。
-候補をダブルクリックすると、親（KittingProductionEntryWindow）の search_plan()・entry_daily_qty・
-_pending_csv_row_removal・_pending_csv_report_date へ直接転記する。候補は DB に保存せず、表示のたびに再照合する。
+候補をダブルクリックすると、親（KittingProductionEntryWindow）の load_staged_row() で記入欄に転記する。
+右クリック・Shift+S・Shift+Q の登録は、services の register_actual_and_ng() を直接呼ぶ。候補は DB に保存せず、表示のたびに再照合する。
 設計と経緯は docs/domain/production_import_staging.md。
 """
 import csv
@@ -15,6 +15,12 @@ from services.production_import_service import (
     EXCLUSION_REASON_LABELS,
     normalize_product_name,
     group_active_plan_items_by_lot,
+)
+from services.production_service import search_plan_by_kitting_no, get_daily_history
+from services.production_entry_service import (
+    _resolve_csv_report_date,
+    register_actual_and_ng,
+    format_registration_message,
 )
 from models.kitting_plan import (
     find_matching_plan_items, classify_side1_only_plan,
@@ -533,7 +539,8 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
     def _make_remove_callback(self, staging_iid):
         """
-        登録成功時に親の _perform_registration() から呼ばれ、一覧と DB から該当行を消すコールバックを作る。
+        実績の登録が成功したときに呼ばれ、一覧と DB から該当行を消すコールバックを作る。
+        呼ぶのは、転記した行なら親の _perform_registration()、即時登録・一括登録ならこの画面の _register_staged_row()。
         staging_iid はクロージャで捕まえるので、後で別の行が選ばれても正しい行を指す。
         消した後は次の行を選ぶ（無ければ前の行、どちらも無ければ選択なし）。消す前に次の行を控えること（消した後は next() できない）。
         一括登録では、バッチの最後の選択処理で上書きされる。
@@ -572,12 +579,11 @@ class ProductionImportStagingWindow(tk.Toplevel):
         if row is None or staging_iid is None:
             return
 
-        self._parent.search_plan(candidate["kitting_list_no"], lot_no=candidate["lot_no"])
-        self._parent.entry_daily_qty.delete(0, tk.END)
-        self._parent.entry_daily_qty.insert(0, f"{row['daily_qty']:g}")
-        self._parent._pending_csv_row_removal = self._make_remove_callback(staging_iid)
-        self._parent._pending_csv_report_date = row.get("report_date")
-        self._parent.entry_daily_qty.focus_set()
+        self._parent.load_staged_row(
+            candidate["kitting_list_no"], candidate["lot_no"], daily_qty=row["daily_qty"],
+            report_date=row.get("report_date"), on_registered=self._make_remove_callback(staging_iid),
+            focus_entry=True,
+        )
 
     def _on_candidate_right_click(self, event):
         """
@@ -616,13 +622,56 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
         self._register_candidate_immediately(row, staging_iid, candidate)
 
+    def _register_staged_row(self, row, staging_iid, candidate, record_history=True, show_in_parent=True):
+        """
+        保留行1件を、確認ダイアログ（親の _start_registration()）を通さずに登録する。右クリックの即時登録と一括登録の共通部分。
+        既に実績があるとき・面1だけの計画のときは確認し、「いいえ」なら何もせず None を返す（保留行は残る）。
+        登録は register_actual_and_ng() を直接呼び、戻り値をそのまま返す。実績の登録が成功したら保留行を消し、失敗したらエラーを出す。
+        NG は登録しない（save_qty_by_side={}。自動確定の要件は実績数量と日付だけで、NG 欄の値を誤って使わないため）。
+        show_in_parent=True なら、登録の前に親の画面へ計画を表示し、登録の後に親の画面を更新する（一括登録は最後に1回だけ行う）。
+        """
+        parent = self._parent
+        daily_qty = row["daily_qty"]
+        kitting_list_no = candidate["kitting_list_no"]
+        lot_no = candidate["lot_no"]
+
+        # 既に実績があれば、黙って上書きせず確認する。一括登録では事前に除外済みだが、経路を問わず確認する。
+        if not parent.confirm_overwrite_if_existing(kitting_list_no, lot_no, daily_qty, row.get("report_date")):
+            return None
+
+        # 面1だけの計画で「面2待ち」「未登録」なら、理由を示して確認する（D-9x）。一括登録では事前に除外済みだが、経路を問わず確認する。
+        if not _confirm_side1_only_if_applicable(parent, candidate):
+            return None
+
+        remove_callback = self._make_remove_callback(staging_iid)
+        if show_in_parent:
+            # コールバックも親に渡しておく。実績の登録に失敗しても、親の画面から登録し直せば保留行が消える（以前と同じ）。
+            parent.load_staged_row(kitting_list_no, lot_no, daily_qty=daily_qty, on_registered=remove_callback)
+
+        plan, _candidates = search_plan_by_kitting_no(kitting_list_no, lot_no)
+        existing = get_daily_history(kitting_list_no, lot_no)
+        worker = parent.current_worker
+        result = register_actual_and_ng(
+            plan, {}, daily_qty, {}, existing[-1]["daily_qty"] if existing else None,
+            worker.get("worker_id", "SYSTEM"), worker.get("name", "unknown"),
+            report_date=_resolve_csv_report_date(row.get("report_date")), record_history=record_history,
+        )
+        if not result["actual_registered"]:
+            messagebox.showerror(
+                "登録エラー", f"実績の登録に失敗しました：{result['actual_error']}", parent=parent.winfo_toplevel(),
+            )
+            return result
+
+        # NG・反対側連動の成否は問わない（CSV 行が表すのは実績数量だけ）。
+        remove_callback()
+        if show_in_parent:
+            parent.refresh_after_external_registration([lot_no], new_cumulative=result["new_cumulative"])
+        return result
+
     def _register_candidate_immediately(self, row, staging_iid, candidate, record_history=True):
         """
-        右クリックでの即時登録。転記したうえで、親の _perform_registration() を直接呼ぶ。
-        確認ダイアログは _start_registration() 側にあるので、そこを通らずに preview を組み立てて渡すことで省く。
-        row・staging_iid を引数で受け取るのは、一括登録が複数選択の各行について呼ぶため（左ペインに表示中の行とは限らない）。
-        record_history=False は一括登録用（最後にロット単位でまとめて記録する）。
-        NG は登録しない（save_qty_by_side={}。自動確定の要件は実績数量と日付だけで、NG 欄の値を誤って使わないため）。
+        右クリックでの即時登録（_register_staged_row()）。その後、完了文を出す。
+        row・staging_iid を引数で受け取るのは、左ペインに表示中の行とは限らない呼び出しに備えるため。
         計画数と実績数が違うときは、完了メッセージの代わりに「数量を修正しますか？」と尋ねる。
         """
         parent = self._parent
@@ -631,35 +680,14 @@ class ProductionImportStagingWindow(tk.Toplevel):
         lot_no = candidate["lot_no"]
         planned_qty = candidate.get("planned_qty")
 
-        # 既に実績があれば、黙って上書きせず確認する。一括登録では事前に除外済みだが、経路を問わず確認する。
-        if not parent.confirm_overwrite_if_existing(kitting_list_no, lot_no, daily_qty, row.get("report_date")):
+        result = self._register_staged_row(row, staging_iid, candidate, record_history=record_history)
+        if result is None:
             return
 
-        # 面1だけの計画で「面2待ち」「未登録」なら、理由を示して確認する（D-9x）。一括登録では事前に除外済みだが、経路を問わず確認する。
-        if not _confirm_side1_only_if_applicable(parent, candidate):
-            return
-
-        parent.search_plan(kitting_list_no, lot_no=lot_no)
-        parent.entry_daily_qty.delete(0, tk.END)
-        parent.entry_daily_qty.insert(0, f"{daily_qty:g}")
-        parent._pending_csv_row_removal = self._make_remove_callback(staging_iid)
-        parent._pending_csv_report_date = row.get("report_date")
-
-        preview = parent._build_registration_preview(daily_qty, {})
-
-        # 数量差があれば完了メッセージを差し替えるため、showinfo() を一時的に無効にして内容だけを捕まえる（try/finally で必ず戻す）。
-        captured = []
-        original_showinfo = messagebox.showinfo
-        messagebox.showinfo = lambda title, message, **kw: captured.append((title, message))
-        try:
-            parent._perform_registration(daily_qty, preview, record_history=record_history)
-        finally:
-            messagebox.showinfo = original_showinfo
-
-        if captured:
-            completion_title, completion_message = captured[0]
+        if result["actual_registered"]:
+            completion_title, completion_message = "登録完了", format_registration_message(result, {})
         else:
-            # 実績の登録自体に失敗して showinfo() まで届かなかったときの既定値。
+            # 実績の登録に失敗したときの既定値（エラーは _register_staged_row() で表示済み）。以前からこの文言を出している。
             completion_title, completion_message = "登録完了", f"実績を登録しました（実績数：{daily_qty:g}）。"
 
         try:
@@ -682,10 +710,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
             if messagebox.askyesno(completion_title, message, parent=self.winfo_toplevel()):
                 # 該当計画を開き直して記入欄に実績数を入れ、フォーカスを渡す。訂正して通常の Enter フローで再登録すると上書きされる。
                 # この場合だけ、一覧への復帰をしない（fix_in_entry_window）。
-                parent.search_plan(kitting_list_no, lot_no=lot_no)
-                parent.entry_daily_qty.delete(0, tk.END)
-                parent.entry_daily_qty.insert(0, f"{daily_qty:g}")
-                parent.entry_daily_qty.focus_set()
+                parent.load_staged_row(kitting_list_no, lot_no, daily_qty=daily_qty, focus_entry=True)
                 fix_in_entry_window = True
 
         # ダブルクリック・Shift+S と同じく、一覧を前面に戻してフォーカスも渡す（次の行の選択は remove_callback で済んでいる）。
@@ -730,8 +755,9 @@ class ProductionImportStagingWindow(tk.Toplevel):
         - 候補は行ごとに再照合する（表示時点のキャッシュは古い可能性がある）。plan_items_by_lot はループの前に1回だけ取得する
         - require_confirm=True（Shift+Q）は、登録の前に件数を示す確認ダイアログを出す。「いいえ」なら何も変えない
         - 合格しない行は理由ごとに数えるだけで、一覧に残す
-        - 実行中は showinfo() を無効にし、最後に1回だけ件数を出す（try/finally で戻す）。showerror() は止めない
+        - 行ごとの完了文は出さず、最後に1回だけ件数を出す。行ごとの showerror() は止めない
         - 登録の成否は、iid が _row_by_iid から消えたか（remove_callback が呼ばれたか）で判定する
+        - 親の画面は行ごとに更新せず、最後に1回だけ更新する
         - 終わったら、処理した範囲の直後の行を選ぶ
         """
         selected_iids = list(self.tree.selection())
@@ -804,26 +830,40 @@ class ProductionImportStagingWindow(tk.Toplevel):
         registered_count = 0
         failed_count = 0
         skip_reason_counts = {}
-        # 登録できた行の lot_no（反対側の面も同じ lot_no なので追加は不要）。最後にまとめて履歴を記録する。
-        affected_lot_nos = set()
+        # 登録できた行の lot_no（反対側の面も同じ lot_no なので追加は不要）。最後にまとめて履歴を記録し、親の計画一覧も更新する。
+        affected_lot_nos = []
+        # 確認ダイアログを通って登録まで進んだ最後の行。最後に親の画面に表示する。
+        last_attempted = None
 
-        original_showinfo = messagebox.showinfo
-        messagebox.showinfo = lambda *a, **kw: None
-        try:
-            for iid, row, eligibility, reason, candidate, _date_diff in evaluated:
-                if eligibility != AUTO_REGISTER_ELIGIBLE:
-                    skip_reason_counts[reason] = skip_reason_counts.get(reason, 0) + 1
-                    continue
+        for iid, row, eligibility, reason, candidate, _date_diff in evaluated:
+            if eligibility != AUTO_REGISTER_ELIGIBLE:
+                skip_reason_counts[reason] = skip_reason_counts.get(reason, 0) + 1
+                continue
 
-                # 行ごとに履歴を記録すると100件規模で数秒かかるため、最後にロット単位でまとめて記録する。
-                self._register_candidate_immediately(row, iid, candidate, record_history=False)
-                if iid not in self._row_by_iid:
-                    registered_count += 1
-                    affected_lot_nos.add(candidate["lot_no"])
-                else:
-                    failed_count += 1
-        finally:
-            messagebox.showinfo = original_showinfo
+            # 行ごとに履歴を記録すると100件規模で数秒かかるため、最後にロット単位でまとめて記録する。
+            # 親の画面も行ごとには更新しない（登録の内容は親の画面の状態に依存しないため）。最後に1回だけ更新する。
+            result = self._register_staged_row(row, iid, candidate, record_history=False, show_in_parent=False)
+            if result is not None:
+                last_attempted = (iid, row, candidate)
+            if iid not in self._row_by_iid:
+                registered_count += 1
+                if candidate["lot_no"] not in affected_lot_nos:
+                    affected_lot_nos.append(candidate["lot_no"])
+            else:
+                failed_count += 1
+
+        # 親の画面: 登録したロットの計画一覧の行を更新し、最後に登録まで進んだ行の計画を表示する（以前の、行ごとに更新した最後の状態と同じ）。
+        # その行の登録に失敗していれば、以前と同じく記入欄に実績数を入れ、保留行を消すコールバックを渡しておく。
+        if affected_lot_nos:
+            self._parent.refresh_after_external_registration(affected_lot_nos)
+        if last_attempted is not None:
+            last_iid, last_row, last_candidate = last_attempted
+            last_failed = last_iid in self._row_by_iid
+            self._parent.load_staged_row(
+                last_candidate["kitting_list_no"], last_candidate["lot_no"],
+                daily_qty=last_row["daily_qty"] if last_failed else None,
+                on_registered=self._make_remove_callback(last_iid) if last_failed else None,
+            )
 
         # 影響したロットごとに1回だけ履歴を記録する。1件の失敗がほかを止めないよう、ロットごとに try/except する。
         for lot_no in affected_lot_nos:
