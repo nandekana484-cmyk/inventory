@@ -1,13 +1,10 @@
 ﻿import os
-import shutil
 import socket
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
 import tkinter.font as tkfont
 from datetime import datetime
 import config
-from db.init_db import init_database_at
-from models.kitting_plan import init_kitting_plan_tables
 from services.db_lock_service import (
     acquire_lock, release_lock, update_heartbeat, get_lock_info, LockFileCorruptedError,
 )
@@ -26,15 +23,19 @@ from ui.worker_management_window import WorkerManagementWindow
 from ui.worker_registration_window import WorkerRegistrationWindow
 from ui.operation_log_window import OperationLogWindow
 from models.operation_log import log_operation, get_inventory_diff_export_status
-from models.db_lifecycle_log import record_db_lifecycle_event, OPERATION_TYPE_CREATE, OPERATION_TYPE_CREATE_WITH_CARRY_OVER, OPERATION_TYPE_RESTORE_FROM_BACKUP
+from models.db_lifecycle_log import record_db_lifecycle_event, OPERATION_TYPE_CREATE_WITH_CARRY_OVER
 from ui.db_delete_helper import confirm_and_delete_database
 from services.db_migration_carryover import carry_over_incomplete_lots
 from services.backup_service import (
-    backup_databases, validate_monthly_db_backup, restore_backup_as_new_local_db,
+    backup_databases, validate_monthly_db_backup,
 )
 from services.master_merge_service import merge_master_from_backup
 from services.unprocessed_check_service import check_unprocessed_items
-from services.app_settings_service import load_last_db_path
+from services.db_lifecycle_service import (
+    restore_last_db_path, list_db_folders, db_path_for_folder, check_new_db_folder, set_current_db_path,
+    create_db_file, activate_new_db, record_db_created, restore_backup_to_new_folder, discard_restored_folder,
+    finish_restore, NEW_FOLDER_EMPTY, NEW_FOLDER_RESERVED, NEW_FOLDER_EXISTS,
+)
 from ui.window_utils import center_window
 from version import get_version_label
 
@@ -51,12 +52,7 @@ class MainWindow(tk.Tk):
 
         # 前回選んでいた DB があれば切り替える。無ければ既定DB のまま。記憶したパスが今は無ければ、
         # 既定DB で起動し、UI を作り終えてから知らせる。
-        last_db_path = load_last_db_path()
-        if last_db_path and last_db_path != config.DB_PATH:
-            if os.path.exists(last_db_path):
-                config.set_db_path(last_db_path)
-            else:
-                self._restore_last_db_failed_path = last_db_path
+        self._restore_last_db_failed_path = restore_last_db_path()
 
         # 既定DB（未選択）の間は、ロックファイルにも一切触れない（D-56・D-57 の「既定DB は読み書きしない」を .lock にも広げた）。
         # 既定DB 以外でロックを取れなければ、ほかの PC・利用者が使用中とみなして起動を中断する
@@ -716,13 +712,7 @@ class MainWindow(tk.Tk):
         return ellipsis
 
     def _load_db_folders(self):
-        db_root = os.path.join(config.APP_DATA_DIR, "db")
-        folders = []
-        if os.path.isdir(db_root):
-            folders = sorted(
-                name for name in os.listdir(db_root)
-                if os.path.isfile(os.path.join(db_root, name, "inventory.db"))
-            )
+        folders = list_db_folders()
         self.db_folder_combobox["values"] = folders
         if folders:
             self.db_folder_combobox.current(0)
@@ -742,7 +732,7 @@ class MainWindow(tk.Tk):
             return False
 
         self._release_current_lock()
-        config.set_db_path(new_path)
+        set_current_db_path(new_path)
         self._lock_acquired = True
         self._update_current_db_label()
         return True
@@ -753,7 +743,7 @@ class MainWindow(tk.Tk):
             messagebox.showwarning("警告", "切り替え先のフォルダを選択してください。", parent=self.winfo_toplevel())
             return
 
-        new_path = os.path.join(config.APP_DATA_DIR, "db", folder, "inventory.db")
+        new_path = db_path_for_folder(folder)
         if new_path == config.DB_PATH:
             messagebox.showinfo("情報", "既にこのデータベースを使用中です。", parent=self.winfo_toplevel())
             return
@@ -769,7 +759,7 @@ class MainWindow(tk.Tk):
             messagebox.showwarning("警告", "削除するフォルダを選択してください。", parent=self.winfo_toplevel())
             return
 
-        db_path = os.path.join(config.APP_DATA_DIR, "db", folder, "inventory.db")
+        db_path = db_path_for_folder(folder)
         if confirm_and_delete_database(self.winfo_toplevel(), db_path, current_worker=self.current_worker):
             self._load_db_folders()
             # 今の DB は削除できないので実質の変化は無いが、再評価の入口を1つにそろえるため呼ぶ。
@@ -804,30 +794,26 @@ class MainWindow(tk.Tk):
         if not folder_name:
             return
         folder_name = folder_name.strip()
-        if not folder_name:
+        folder_problem = check_new_db_folder(folder_name)
+        if folder_problem == NEW_FOLDER_EMPTY:
             messagebox.showwarning("警告", "フォルダ名を入力してください。", parent=self.winfo_toplevel())
             return
-        if folder_name.lower() == config.DB_ROOT_FOLDER_NAME:
-            # "db" は既定DB の判定（親フォルダ名が "db" か）とぶつかるので予約する。
+        if folder_problem == NEW_FOLDER_RESERVED:
             messagebox.showwarning(
                 "警告", f"フォルダ名「{folder_name}」は予約されているため使用できません。",
                 parent=self.winfo_toplevel(),
             )
             return
-
-        new_folder = os.path.join(config.APP_DATA_DIR, "db", folder_name)
-        new_db_path = os.path.join(new_folder, "inventory.db")
-        if os.path.exists(new_db_path):
+        if folder_problem == NEW_FOLDER_EXISTS:
             messagebox.showwarning(
                 "警告", f"フォルダ「{folder_name}」のデータベースは既に存在します。", parent=self.winfo_toplevel(),
             )
             return
 
+        # 失敗したら、作りかけのフォルダを消してから例外が来る（db_lifecycle_service）。今の DB とロックは変えない。
         try:
-            restore_backup_as_new_local_db(backup_file_path, folder_name)
+            new_db_path = restore_backup_to_new_folder(backup_file_path, folder_name)
         except Exception as e:
-            if os.path.isdir(new_folder):
-                shutil.rmtree(new_folder, ignore_errors=True)
             messagebox.showerror(
                 "取り込みエラー", f"バックアップの取り込み中にエラーが発生しました：\n{e}",
                 parent=self.winfo_toplevel(),
@@ -837,21 +823,10 @@ class MainWindow(tk.Tk):
         if not self._try_switch_db_path(new_db_path, error_title="切替不可"):
             # ロック取得失敗：_try_switch_db_path()は失敗時に現在のDB・ロックを
             # 変更しない契約のため、コピー済みの新フォルダだけを後始末する。
-            shutil.rmtree(new_folder, ignore_errors=True)
+            discard_restored_folder(folder_name)
             return
 
-        init_kitting_plan_tables()
-        log_operation(
-            self.current_worker.get("name", "unknown"),
-            "バックアップからの取り込み",
-            detail=f"元ファイル: {backup_file_path} / 取り込み先: {folder_name}",
-        )
-        # 履歴を master.db にも記録する（取り込み先の DB を後で消しても残る）。
-        record_db_lifecycle_event(
-            OPERATION_TYPE_RESTORE_FROM_BACKUP, folder_name,
-            worker_name=self.current_worker.get("name", "unknown"),
-            source_info=backup_file_path,
-        )
+        finish_restore(backup_file_path, folder_name, self.current_worker.get("name", "unknown"))
 
         messagebox.showinfo(
             "取り込み完了",
@@ -869,18 +844,19 @@ class MainWindow(tk.Tk):
         新しい DB を作る。前月からの引き継ぎが OFF なら同期的に作り、ON なら carry_over_incomplete_lots() を別スレッドで実行する。
         """
         folder = self.new_db_folder_var.get().strip()
-        if not folder:
+        folder_problem = check_new_db_folder(folder)
+        if folder_problem == NEW_FOLDER_EMPTY:
             messagebox.showwarning("警告", "作成するフォルダ名を入力してください。", parent=self.winfo_toplevel())
             return
-        if folder.lower() == config.DB_ROOT_FOLDER_NAME:
+        if folder_problem == NEW_FOLDER_RESERVED:
             messagebox.showwarning(
                 "警告", f"フォルダ名「{folder}」は予約されているため使用できません。",
                 parent=self.winfo_toplevel(),
             )
             return
 
-        new_db_path = os.path.join(config.APP_DATA_DIR, "db", folder, "inventory.db")
-        if os.path.exists(new_db_path):
+        new_db_path = db_path_for_folder(folder)
+        if folder_problem == NEW_FOLDER_EXISTS:
             messagebox.showwarning("警告", f"フォルダ「{folder}」のデータベースは既に存在します。", parent=self.winfo_toplevel())
             return
 
@@ -897,7 +873,7 @@ class MainWindow(tk.Tk):
             ):
                 return
 
-        init_database_at(new_db_path)
+        create_db_file(new_db_path)
 
         # 作ったばかりなので通常は取れるが、念のため確認する（失敗すると、新しい DB ファイルは使われずに残る）。
         if not self._acquire_lock_with_corruption_handling(new_db_path):
@@ -912,14 +888,10 @@ class MainWindow(tk.Tk):
         self._lock_acquired = True
 
         if not carry_over:
-            config.set_db_path(new_db_path)
-            init_kitting_plan_tables()
+            activate_new_db(new_db_path)
             self._update_current_db_label()
             # 履歴を master.db に記録する。
-            record_db_lifecycle_event(
-                OPERATION_TYPE_CREATE, folder,
-                worker_name=self.current_worker.get("name", "unknown"),
-            )
+            record_db_created(folder, self.current_worker.get("name", "unknown"))
             messagebox.showinfo("完了", "新しいデータベースを作成しました。", parent=self.winfo_toplevel())
             self._load_db_folders()
             self.db_folder_var.set(folder)
