@@ -7,7 +7,7 @@ CLAUDE.md「壊しやすい箇所」の根拠。2026-10-09 時点（HEAD c08a88a
 ## 1. 実績CSV取込の照合・自動登録判定
 
 - 場所
-  - `inventory_app/services/staging_eligibility.py`: `evaluate_auto_register_eligibility()`, `is_auto_confirmable()`, `_load_staged_rows_from_db()`（段階1で ui/production_import_staging_window.py から移した。旧位置から re-export している）
+  - `inventory_app/services/staging_eligibility.py`: `evaluate_auto_register_eligibility()`, `is_auto_confirmable()`, `_load_staged_rows_from_db()`（段階1で ui/production/production_import_staging_window.py から移した。旧位置から re-export している）
   - `inventory_app/ui/production_import_staging_window.py`: `_execute_bulk_register()`, `_register_candidate_immediately()`
   - `inventory_app/services/production_entry_service.py`: `register_actual_and_ng()`（登録の DB への書き込み。書き込みの順序は `docs/domain/production_entry.md`「実績CSVの保留行を消すタイミング」）
   - `inventory_app/services/production_import_service.py`: `is_already_registered()`
@@ -66,4 +66,4 @@ CLAUDE.md「壊しやすい箇所」の根拠。2026-10-09 時点（HEAD c08a88a
 ## 選外（候補として確認したもの）
 
 - `ui/main_window.py`: 変更回数が最多（24コミット）。ただし、同じ不具合を繰り返し直した記録は見つからなかった
-- `ui/kitting_production_entry.py`: 変更21コミット、2600行（行数1位）。上の 1・3・4 と重なる
+- `ui/kitting/kitting_production_entry.py`: 変更21コミット、2600行（行数1位）。上の 1・3・4 と重なる

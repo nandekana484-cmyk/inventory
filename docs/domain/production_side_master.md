@@ -1,4 +1,4 @@
-# 生産面マスター（ui/production_side_master_window.py）
+# 生産面マスター（ui/master/production_side_master_window.py）
 
 2026-10-09 のコメント軽量化で、コメント・docstring から移した内容。関数名で参照する。
 マスターの設計そのもの（キー・正規化・CSV 形式）は CANONICAL_DESIGN_DECISIONS.md §33（D-92〜D-93）。
@@ -24,7 +24,7 @@
 
 ## 色
 
-- 背景色（未保存の変更）: 追加＝緑（ui.plan_candidate_dialog の auto_confirmable と同じ）、変更＝黄（large_diff と同じ）、削除予定＝赤（large_diff_both と同じ）。新しい配色を増やさず、アプリ全体で色の意味をそろえる
+- 背景色（未保存の変更）: 追加＝緑（ui.kitting.plan_candidate_dialog の auto_confirmable と同じ）、変更＝黄（large_diff と同じ）、削除予定＝赤（large_diff_both と同じ）。新しい配色を増やさず、アプリ全体で色の意味をそろえる
 - 判定結果（ファイルNo単位）は文字色で示す。背景色と別の属性なので、同じ行に両方付けても競合しない
 
 ## CSV 取込（`_parse_production_side_csv()`）

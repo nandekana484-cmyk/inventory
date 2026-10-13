@@ -7,10 +7,10 @@
 利用者は作業者IDでログインする（admin/operator の2ロール）。
 - 環境: Python / Tkinter＋tkcalendar / SQLite（月次DB＋master.db）
 - 起動: `run_app.bat`（`.venv\Scripts\python.exe inventory_app\main.py` を実行する）。配布は PyInstaller（`inventory_app.spec`、onefile）
-- テスト: `inventory_app` で `python -m pytest tests/`（現状は1件だけ）
+- テスト: `inventory_app` で `..\.venv\Scripts\python.exe -m pytest tests/`
 
 ## フォルダの役割
-- `ui/` — 画面。入力の受け取りと表示だけを行う
+- `ui/` — 画面。入力の受け取りと表示だけを行う。直下は main_window・login_window・loading_window だけで、ほかは common（共通部品）・kitting・production・inventory・ng_wip・reports・master・system に分けている
 - `services/` — 業務ロジック。UIに依存しない
 - `models/` — テーブル単位のDBアクセス
 - `db/` — スキーマとマイグレーション
@@ -18,7 +18,7 @@
 - `tests/` — テスト
 - `docs/` — 詳細ドキュメント（必要なときだけ読む）
 - 実態: ui/services/models/db/tests は `inventory_app/` の下にある。`docs/` だけリポジトリ直下
-- 実態: `scripts/` は `inventory_app/scripts/`（check_code_unchanged.py）。古い単発スクリプトは `inventory_app/` 直下（check_*・delete_*・dump_schema・list_*・verify_*・test_kitting_import.py）とルート（check_db.py・check_env.py）に残っている
+- 実態: `scripts/` は `inventory_app/scripts/`（check_code_unchanged.py と、古い単発スクリプト check_*・delete_*・dump_schema・list_*・verify_*）。ルートにも check_db.py・check_env.py がある
 - 実態: `db/` には実行時のDB（`db/<フォルダ名>/inventory.db`・`master.db`）とバックアップ（`*.bak_*`）も置かれる
 - その他: `inventory_app/imports/`（取込サンプル）、ルートの CANONICAL_DESIGN_DECISIONS.md（設計判断の記録。D番号で grep する）・CHANGELOG.md・*_NOTES.md
 

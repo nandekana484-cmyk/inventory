@@ -1,4 +1,4 @@
-# 実績CSV取込のステージング一覧（ui/production_import_staging_window.py）
+# 実績CSV取込のステージング一覧（ui/production/production_import_staging_window.py）
 
 2026-10-09 のコメント軽量化で、コメント・docstring から移した内容。関数名で参照する。
 生産実績入力画面側のルールは `docs/domain/production_entry.md`。
@@ -6,9 +6,9 @@
 ## 画面の構成と連携
 
 - 右ペイン＝登録待ちの保留行（`pending_csv_import_rows`）、左ペイン＝右で選んだ行の候補（`find_matching_plan_items()` で再照合）。NG入力・仕掛展開画面と同じ配置規則（左＝操作・詳細、右＝一覧）
-- 候補をダブルクリックすると、親（`KittingProductionEntryWindow`）の `load_staged_row()` で記入欄に転記する。以前は `ui.plan_candidate_dialog.select_plan_candidate_by_lot()`（モーダルダイアログ＋コールバック）を使っていたが、親への参照を持っていたので直接呼ぶ形にした。親の `load_staged_row()` はウインドウの前面やフォーカスに依存しない
+- 候補をダブルクリックすると、親（`KittingProductionEntryWindow`）の `load_staged_row()` で記入欄に転記する。以前は `ui.kitting.plan_candidate_dialog.select_plan_candidate_by_lot()`（モーダルダイアログ＋コールバック）を使っていたが、親への参照を持っていたので直接呼ぶ形にした。親の `load_staged_row()` はウインドウの前面やフォーカスに依存しない
 - 親の画面に触るのは公開メソッド `load_staged_row()`・`refresh_after_external_registration()`・`confirm_overwrite_if_existing()` だけ（段階3b、2026-10-13。以前は親の `_pending_csv_row_removal`・`_perform_registration()` などを直接使っていた）
-- `ui.plan_candidate_dialog` の並べ替え・ハイライト判定（`_sort_candidates_by_closeness()`・`_is_large_qty_diff()` など）は、重複させないため直接 import して使う。`plan_candidate_dialog` 自体は NG入力画面がまだ使うので変えていない
+- `ui.kitting.plan_candidate_dialog` の並べ替え・ハイライト判定（`_sort_candidates_by_closeness()`・`_is_large_qty_diff()` など）は、重複させないため直接 import して使う。`plan_candidate_dialog` 自体は NG入力画面がまだ使うので変えていない
 - 登録完了の検知: `_confirm_candidate()` で作った remove_callback を `load_staged_row()` で親に渡し、親の `_perform_registration()` が実績の登録成功時に呼ぶ。即時登録・一括登録では、この画面の `_register_staged_row()` が呼ぶ。この画面から DB をポーリングはしない
 - 候補は DB に保存せず、表示のたびに再照合する（計画の変更に追随するため）。登録・除外が決まった保留行は、即座に物理削除し、履歴は残さない
 
@@ -33,18 +33,18 @@
 ### 日付の差の計算（`_date_only_diff_days()`）
 
 - 日付だけで比べ、時刻は無視する。以前の `_compute_date_diff_days()` は時刻を含む経過時間を切り捨てていたため、暦日の差とずれた。実データの生産予定日には全件 0時以外の時刻がある。例: 払い出し日 2026-07-23・生産予定日 2026/07/21 23:50 は暦日で2日だが、経過時間では1日10分なので1日になっていた
-- 日付の解釈（`_parse_flexible_date()`・`_parse_plan_start_datetime()`）は ui.plan_candidate_dialog のものを使い、形式の解釈を1か所に集める
+- 日付の解釈（`_parse_flexible_date()`・`_parse_plan_start_datetime()`）は ui.kitting.plan_candidate_dialog のものを使い、形式の解釈を1か所に集める
 - 払い出し日は実運用で `"2026/3/18"`（スラッシュ区切り・ゼロ埋めなし）。以前の解釈は `"%Y-%m-%d"` しか受け付けず、`is_auto_confirmable()` が常に False になっていた（修正済み）
 
 ### `is_auto_confirmable()` の置き場所
 
-- 調査時の指示は services/production_import_service.py だったが、日付の解釈に ui.plan_candidate_dialog を使うため、services に置くと services から ui への依存になる。呼び出し元もこのファイルだけなので、ここに置いた（`docs/refactoring_plan.md`「業務ロジックが ui/ にある」）
+- 調査時の指示は services/production_import_service.py だったが、日付の解釈に ui.kitting.plan_candidate_dialog を使うため、services に置くと services から ui への依存になる。呼び出し元もこのファイルだけなので、ここに置いた（`docs/refactoring_plan.md`「業務ロジックが ui/ にある」）
 
 ## 候補一覧の色
 
 - 数量差・日付差が大きい候補（`_is_large_qty_diff()`: 実績数の20%超、`_is_large_date_diff()`: 3日以上）は黄・オレンジ。両方なら赤（large_diff_both）を単独で付ける（タグの重ね合わせの優先順位があいまいになるのを避けるため）
 - 自動確定できる候補（緑、数量差0かつ日付差1日以内）は、閾値が重ならないので large_diff 系と同時には該当しない。念のため最優先で判定する
-- 製品名不一致は赤（`ui/highlight_colors.MISMATCH_RED`）で、ほかのすべての条件より優先する（「同じ行に複数の条件が当てはまるときは、製品名不一致を優先する」という要求）
+- 製品名不一致は赤（`ui/common/highlight_colors.MISMATCH_RED`）で、ほかのすべての条件より優先する（「同じ行に複数の条件が当てはまるときは、製品名不一致を優先する」という要求）
 - 登録済みの候補は文字色をグレーにする。背景色と別の軸なので、ほかのタグと重ねて付ける
 
 ## キー操作

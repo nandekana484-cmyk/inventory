@@ -61,4 +61,4 @@ DB の切替・新規作成・削除・バックアップ・復元の手順は `
 - 引き継ぎの完了時、`config.DB_PATH` はもう新しい DB なので、操作履歴は新しい DB に記録される（旧DB には書かない）
 - 作成・削除・バックアップの呼び出しの履歴は、`log_operation()`（月次DB）に加えて master.db の db_lifecycle_log にも記録する（2026-10-06、D-87）。取り込み先の DB を後で消しても残る
 - フォルダ名 "db" は、既定DB の判定（親フォルダ名が "db" か）とぶつかるので予約している
-- 非同期の処理（引き継ぎ・バックアップ・マスタの取り込み）は、LoadingWindow＋threading.Thread(daemon=True)＋queue.Queue＋after(200) のポーリングで行い、実行中は DB 操作のボタンを無効にする。段階6から、この4か所（生産実績入力画面を開く処理を含む）は `ui/async_task.py` の `run_in_background()` を使う。エラーの文言は以前と同じ（画面を開くときは例外の文字列、ほかは「例外の文字列＋traceback」）
+- 非同期の処理（引き継ぎ・バックアップ・マスタの取り込み）は、LoadingWindow＋threading.Thread(daemon=True)＋queue.Queue＋after(200) のポーリングで行い、実行中は DB 操作のボタンを無効にする。段階6から、この4か所（生産実績入力画面を開く処理を含む）は `ui/common/async_task.py` の `run_in_background()` を使う。エラーの文言は以前と同じ（画面を開くときは例外の文字列、ほかは「例外の文字列＋traceback」）

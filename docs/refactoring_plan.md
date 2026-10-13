@@ -77,11 +77,11 @@
 
 コメントの「D-9x」は、CANONICAL_DESIGN_DECISIONS.md の D番号が決まる前に書かれた仮番号。内容から D-92〜D-94（生産面マスター）のどれかと思われるが、どれに当たるかは未確認。正しい番号が分かったら置き換える。
 
-- 前回確認した3か所（`ui/kitting_production_entry.py`）
+- 前回確認した3か所（`ui/kitting/kitting_production_entry.py`）
   - `_fetch_plan_list_rows()` の隠し要素1のコメント（生産面マスターの分類）
   - `create_widgets()` の計画一覧のタグ設定のコメント（b・c の背景色）
   - `_build_registration_preview()` の分類のコメント（b・c なら確認ダイアログで理由を示す）
-- ほかにも同じ仮番号がある（2026-10-09 時点、計34か所）: `models/kitting_plan.py`（8）、`models/production_side_master.py`（7）、`ui/production_side_master_window.py`（6）、`ui/kitting_plan_import.py`（3）、`ui/production_import_staging_window.py`（3）、`ui/main_window.py`（2）、`services/master_merge_service.py`（1）、`services/production_import_service.py`（1）
+- ほかにも同じ仮番号がある（2026-10-09 時点、計34か所）: `models/kitting_plan.py`（8）、`models/production_side_master.py`（7）、`ui/master/production_side_master_window.py`（6）、`ui/kitting/kitting_plan_import.py`（3）、`ui/production/production_import_staging_window.py`（3）、`ui/main_window.py`（2）、`services/master_merge_service.py`（1）、`services/production_import_service.py`（1）
 
 ### CANONICAL §7 の「C:\python310」と、この PC の状態の食い違い
 
@@ -98,13 +98,13 @@ CANONICAL_DESIGN_DECISIONS.md §7（実行環境・依存パッケージのド�
 - 使っているのは PDF 読み取りの OCR の前処理（`services/pdf_ocr_service.py` の `preprocess_image_for_ocr()`・`_deskew()`。bilateralFilter・CLAHE・adaptiveThreshold・minAreaRect など）
 - メニューの「PDF読み取り」は常に無効（D-85）なので、画面から動作を確かめられない。有効にするときに、OCR の前処理が以前と同じ結果になるかを確認する（`docs/domain/pdf_ocr.md` の調整値は 2026-09-25 前後に決めたもので、そのときの版は未確認）
 
-### リポジトリ直下の requirements.txt
+### リポジトリ直下の requirements.txt（段階8で削除した）
 
 リポジトリ直下の `requirements.txt` は古い pip freeze（UTF-16、版を `==` で固定）で、`inventory_app\requirements.txt` と紛らわしい。
 
 - PDF 読み取りのパッケージ（pdfplumber・pytesseract・pdf2image・opencv-python-headless）が入っていない
 - run_app.bat と `docs/setup.md` が使うのは `inventory_app\requirements.txt`。版の固定は `inventory_app\requirements.lock.txt` で行う
-- 削除するか、整理する（どちらにするかは未決定）
+- 段階8（2026-10-13）で削除した
 
 ### 発注数0・実績0の行が「入力済み」になる
 
@@ -142,12 +142,12 @@ ui → models の直接呼び出し（ui/ のほぼ全画面）は「既存コ�
 
 | 段階 | 定義しているところ | 公開名 |
 |---|---|---|
-| 5 | `ui/plan_candidate_dialog.py` | `sort_candidates_by_closeness`・`is_large_qty_diff`・`is_large_date_diff`・`format_qty`・`format_planned_qty_cell`・`format_side`・`CANDIDATE_COLS`・`CANDIDATE_HEADERS`・`CANDIDATE_RIGHT_ALIGNED` |
+| 5 | `ui/kitting/plan_candidate_dialog.py` | `sort_candidates_by_closeness`・`is_large_qty_diff`・`is_large_date_diff`・`format_qty`・`format_planned_qty_cell`・`format_side`・`CANDIDATE_COLS`・`CANDIDATE_HEADERS`・`CANDIDATE_RIGHT_ALIGNED` |
 | 5 | `services/ng_list_service.py`・`services/wip_list_service.py` | `fetch_ng_list_rows`・`fetch_wip_list_rows` |
 | 6 | `services/date_parsing.py` | `parse_plan_start_datetime`・`parse_flexible_date` |
 | 6 | `services/production_entry_service.py` | `resolve_csv_report_date` |
 | 6 | `services/csv_parsing_common.py` | `open_csv_with_fallback` |
-| 6 | `ui/daily_report_window.py` | `report_row_to_values`（同じファイルで `row_to_values` が引数名に使われているので避けた） |
+| 6 | `ui/reports/daily_report_window.py` | `report_row_to_values`（同じファイルで `row_to_values` が引数名に使われているので避けた） |
 
 ### 解消したもの（段階4、2026-10-13）
 
@@ -158,7 +158,7 @@ ui → models の直接呼び出し（ui/ のほぼ全画面）は「既存コ�
 | services → ui の import | `services/unprocessed_check_service.py` | NG 一覧・仕掛一覧の行の組み立てを `services/ng_list_service.py`・`services/wip_list_service.py` へ移した。画面には呼ぶだけの staticmethod を残した |
 | models → services の import | `models/kitting_plan.py`・`models/production_import_staging.py` | `normalize_product_name()` を `models/kitting_plan.py` へ移した（`services/production_import_service.py` は re-export） |
 | models → services の import | `models/lot_status_history.py` | `record_lot_status_snapshot()` を、評価して記録する本体（`services/production_service.py`）と INSERT（`models.lot_status_history.insert_lot_status_snapshot()`）に分けた。呼び出し側3ファイルの import を書き換えた |
-| SQL が models/ の外にある | `services/backup_service.py`・`db_migration_carryover.py`・`master_merge_service.py`・`kitting_import_service.py`・`lot_status_history_service.py`・`ui/kitting_plan_import.py` | SQL 文を変えずに `models/db_common.py`（DB ファイル全体の検査・汎用の読み取り）・`models/kitting_plan.py`・`models/production.py` へ移した。旧位置の関数は名前を変えずに残し、models を呼ぶだけにした |
+| SQL が models/ の外にある | `services/backup_service.py`・`db_migration_carryover.py`・`master_merge_service.py`・`kitting_import_service.py`・`lot_status_history_service.py`・`ui/kitting/kitting_plan_import.py` | SQL 文を変えずに `models/db_common.py`（DB ファイル全体の検査・汎用の読み取り）・`models/kitting_plan.py`・`models/production.py` へ移した。旧位置の関数は名前を変えずに残し、models を呼ぶだけにした |
 | 層をまたいだ同じファイル名 | `services/lot_status_history.py` | `services/lot_status_history_service.py` に改名した。旧ファイルは re-export だけ |
-| 他の画面の `_` 属性・メソッド | `ui/production_import_staging_window.py` → 親画面 | 段階3bで公開メソッドに置き換えた |
-| 業務ロジックが ui/ にある | `ui/production_import_staging_window.py` | 段階1で自動登録の判定を `services/staging_eligibility.py` へ移した（旧位置は re-export） |
+| 他の画面の `_` 属性・メソッド | `ui/production/production_import_staging_window.py` → 親画面 | 段階3bで公開メソッドに置き換えた |
+| 業務ロジックが ui/ にある | `ui/production/production_import_staging_window.py` | 段階1で自動登録の判定を `services/staging_eligibility.py` へ移した（旧位置は re-export） |

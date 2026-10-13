@@ -15,44 +15,44 @@ import の向きだけを見ているので、実際の呼び出し回数や呼�
 
 | 画面 (ui/) | service (services/) | model (models/) | 他の ui |
 |---|---|---|---|
-| actual_correction_window.py | production_service | operation_log | window_utils |
-| async_task.py | — | — | loading_window |
-| board_structure_import_window.py | — | board_structure_master, operation_log | loading_window, warnings_list_window, window_utils |
-| checkable_treeview.py | — | — | — |
-| column_filter.py | — | — | window_utils |
-| daily_drawdown_window.py | lot_status_history | — | window_utils |
-| daily_report_window.py | — | board_structure_master | window_utils |
-| db_delete_helper.py | db_delete_service, db_lifecycle_service | — | — |
-| highlight_colors.py | — | — | — |
-| inventory_diff_window.py | inventory_diff_service | operation_log | daily_report_window, window_utils |
-| inventory_input_window.py | — | inventory, operation_log | loading_window, window_utils |
-| kitting_plan_import.py | csv_format_detection, kitting_import_service | kitting_plan, operation_log | loading_window, window_utils |
-| kitting_production_entry.py | csv_format_detection, production_entry_service, production_import_service, production_service | board_structure_master, kitting_plan, ng_declarations, production, production_import_staging | actual_correction_window, column_filter, daily_drawdown_window, loading_window, lot_progress_window, production_import_staging_window, unified_report_window, window_utils |
-| loading_window.py | — | — | window_utils |
-| login_window.py | — | workers | main_window, window_utils, worker_registration_window |
-| lot_progress_window.py | production_service | — | daily_report_window, loading_window, window_utils |
-| main_window.py | backup_service, db_lifecycle_service, db_lock_service, db_migration_carryover, master_merge_service, unprocessed_check_service | db_lifecycle_log, operation_log | async_task, board_structure_import_window, db_delete_helper, inventory_diff_window, inventory_input_window, kitting_plan_import, kitting_production_entry, login_window※, ng_input_window, operation_log_window, parts_attributes_import_window, pdf_ocr_import_window※, production_side_master_window, theoretical_inventory_import_window, window_utils, wip_expansion_window, worker_management_window, worker_registration_window |
-| ng_input_window.py | bom_service, ng_list_service, production_service | ng_declarations, ng_exclusion_list, operation_log, scrap_records | checkable_treeview, column_filter, loading_window, parts_ng_report_window※, plan_candidate_dialog※, product_ng_report_window※, scrap_correction_window, window_utils |
-| operation_log_window.py | — | db_lifecycle_log, operation_log | window_utils |
-| parts_attributes_import_window.py | — | operation_log, parts_attributes | loading_window, warnings_list_window, window_utils |
-| parts_ng_report_window.py | — | scrap_records | daily_report_window, window_utils |
-| pdf_ocr_import_window.py | pdf_ocr_service | — | highlight_colors, loading_window, window_utils |
-| plan_candidate_dialog.py | date_parsing | — | highlight_colors, window_utils |
-| product_ng_report_window.py | — | kitting_plan, scrap_records | daily_report_window, ng_input_window※, window_utils |
-| production_import_staging_window.py | production_entry_service, production_import_service, production_service, staging_eligibility | kitting_plan, production, production_import_staging | highlight_colors, kitting_production_entry※, plan_candidate_dialog, window_utils |
-| production_side_master_window.py | csv_parsing_common | kitting_plan, operation_log, production_side_master | checkable_treeview, highlight_colors, loading_window, warnings_list_window, window_utils |
-| scrap_correction_window.py | — | operation_log, scrap_records | window_utils |
-| theoretical_inventory_import_window.py | — | operation_log, theoretical_inventory | loading_window, window_utils |
-| unified_report_window.py | production_service | operation_log, wip_board_snapshot | daily_report_window, kitting_production_entry※, lot_progress_window, window_utils |
-| unmatched_production_window.py | — | — | window_utils |
-| warnings_list_window.py | — | — | window_utils |
-| window_utils.py | — | — | — |
-| wip_expansion_window.py | bom_service, wip_list_service | operation_log, wip_board_snapshot, wip_exclusion_list, wip_scrap_records | checkable_treeview, column_filter, loading_window, window_utils, wip_parts_report_window※, wip_product_report_window※, wip_scrap_correction_window |
-| wip_parts_report_window.py | — | wip_scrap_records | daily_report_window, window_utils |
-| wip_product_report_window.py | — | wip_scrap_records | daily_report_window, window_utils, wip_expansion_window※ |
-| wip_scrap_correction_window.py | — | operation_log, wip_scrap_records | window_utils |
-| worker_management_window.py | — | operation_log, workers | window_utils, worker_registration_window |
-| worker_registration_window.py | — | operation_log※, workers | window_utils |
+| common/async_task.py | — | — | loading_window |
+| common/checkable_treeview.py | — | — | — |
+| common/column_filter.py | — | — | common/window_utils |
+| common/db_delete_helper.py | db_delete_service, db_lifecycle_service | — | — |
+| common/highlight_colors.py | — | — | — |
+| common/window_utils.py | — | — | — |
+| inventory/inventory_diff_window.py | inventory_diff_service | operation_log | common/window_utils, reports/daily_report_window |
+| inventory/inventory_input_window.py | — | inventory, operation_log | common/window_utils, loading_window |
+| inventory/theoretical_inventory_import_window.py | — | operation_log, theoretical_inventory | common/window_utils, loading_window |
+| kitting/actual_correction_window.py | production_service | operation_log | common/window_utils |
+| kitting/kitting_plan_import.py | csv_format_detection, kitting_import_service | kitting_plan, operation_log | common/window_utils, loading_window |
+| kitting/kitting_production_entry.py | csv_format_detection, production_entry_service, production_import_service, production_service | board_structure_master, kitting_plan, ng_declarations, production, production_import_staging | common/column_filter, common/window_utils, kitting/actual_correction_window, loading_window, production/daily_drawdown_window, production/lot_progress_window, production/production_import_staging_window, reports/unified_report_window |
+| kitting/plan_candidate_dialog.py | date_parsing | — | common/highlight_colors, common/window_utils |
+| loading_window.py | — | — | common/window_utils |
+| login_window.py | — | workers | common/window_utils, main_window, master/worker_registration_window |
+| main_window.py | backup_service, db_lifecycle_service, db_lock_service, db_migration_carryover, master_merge_service, unprocessed_check_service | db_lifecycle_log, operation_log | common/async_task, common/db_delete_helper, common/window_utils, inventory/inventory_diff_window, inventory/inventory_input_window, inventory/theoretical_inventory_import_window, kitting/kitting_plan_import, kitting/kitting_production_entry, login_window※, master/board_structure_import_window, master/parts_attributes_import_window, master/production_side_master_window, master/worker_management_window, master/worker_registration_window, ng_wip/ng_input_window, ng_wip/wip_expansion_window, system/operation_log_window, system/pdf_ocr_import_window※ |
+| master/board_structure_import_window.py | — | board_structure_master, operation_log | common/window_utils, loading_window, system/warnings_list_window |
+| master/parts_attributes_import_window.py | — | operation_log, parts_attributes | common/window_utils, loading_window, system/warnings_list_window |
+| master/production_side_master_window.py | csv_parsing_common | kitting_plan, operation_log, production_side_master | common/checkable_treeview, common/highlight_colors, common/window_utils, loading_window, system/warnings_list_window |
+| master/worker_management_window.py | — | operation_log, workers | common/window_utils, master/worker_registration_window |
+| master/worker_registration_window.py | — | operation_log※, workers | common/window_utils |
+| ng_wip/ng_input_window.py | bom_service, ng_list_service, production_service | ng_declarations, ng_exclusion_list, operation_log, scrap_records | common/checkable_treeview, common/column_filter, common/window_utils, kitting/plan_candidate_dialog※, loading_window, ng_wip/scrap_correction_window, reports/parts_ng_report_window※, reports/product_ng_report_window※ |
+| ng_wip/scrap_correction_window.py | — | operation_log, scrap_records | common/window_utils |
+| ng_wip/wip_expansion_window.py | bom_service, wip_list_service | operation_log, wip_board_snapshot, wip_exclusion_list, wip_scrap_records | common/checkable_treeview, common/column_filter, common/window_utils, loading_window, ng_wip/wip_scrap_correction_window, reports/wip_parts_report_window※, reports/wip_product_report_window※ |
+| ng_wip/wip_scrap_correction_window.py | — | operation_log, wip_scrap_records | common/window_utils |
+| production/daily_drawdown_window.py | lot_status_history | — | common/window_utils |
+| production/lot_progress_window.py | production_service | — | common/window_utils, loading_window, reports/daily_report_window |
+| production/production_import_staging_window.py | production_entry_service, production_import_service, production_service, staging_eligibility | kitting_plan, production, production_import_staging | common/highlight_colors, common/window_utils, kitting/kitting_production_entry※, kitting/plan_candidate_dialog |
+| production/unmatched_production_window.py | — | — | common/window_utils |
+| reports/daily_report_window.py | — | board_structure_master | common/window_utils |
+| reports/parts_ng_report_window.py | — | scrap_records | common/window_utils, reports/daily_report_window |
+| reports/product_ng_report_window.py | — | kitting_plan, scrap_records | common/window_utils, ng_wip/ng_input_window※, reports/daily_report_window |
+| reports/unified_report_window.py | production_service | operation_log, wip_board_snapshot | common/window_utils, kitting/kitting_production_entry※, production/lot_progress_window, reports/daily_report_window |
+| reports/wip_parts_report_window.py | — | wip_scrap_records | common/window_utils, reports/daily_report_window |
+| reports/wip_product_report_window.py | — | wip_scrap_records | common/window_utils, ng_wip/wip_expansion_window※, reports/daily_report_window |
+| system/operation_log_window.py | — | db_lifecycle_log, operation_log | common/window_utils |
+| system/pdf_ocr_import_window.py | pdf_ocr_service | — | common/highlight_colors, common/window_utils, loading_window |
+| system/warnings_list_window.py | — | — | common/window_utils |
 
 ## service → model
 
@@ -96,8 +96,8 @@ ui → services → models の一方向以外の import、models/ の外の SQL 
 
 ## 共通の UI 部品（段階6）
 
-- `ui/column_filter.py`: 一覧の列ごとの絞り込み（テキストの部分一致・チェックボックスの完全一致・期間指定）と並べ替えの判定、チェックボックス式の絞り込みポップアップ（`CheckboxFilterPopup`）。生産実績入力の計画一覧・NG 一覧・仕掛一覧が使う。画面ごとの違い（数値として並べる列、期間指定と「入力済みを隠す」は計画一覧だけ、など）は揃えずに、画面側に残すか引数で渡す
-- `ui/async_task.py`: `run_in_background()`。LoadingWindow＋別スレッド＋after(200) のポーリング。今はメイン画面の4か所だけが使う（同じパターンはほかの画面にも残っている）
+- `ui/common/column_filter.py`: 一覧の列ごとの絞り込み（テキストの部分一致・チェックボックスの完全一致・期間指定）と並べ替えの判定、チェックボックス式の絞り込みポップアップ（`CheckboxFilterPopup`）。生産実績入力の計画一覧・NG 一覧・仕掛一覧が使う。画面ごとの違い（数値として並べる列、期間指定と「入力済みを隠す」は計画一覧だけ、など）は揃えずに、画面側に残すか引数で渡す
+- `ui/common/async_task.py`: `run_in_background()`。LoadingWindow＋別スレッド＋after(200) のポーリング。今はメイン画面の4か所だけが使う（同じパターンはほかの画面にも残っている）
 
 ## 命名規則と実態が食い違っている箇所
 
@@ -110,16 +110,16 @@ ui → services → models の一方向以外の import、models/ の外の SQL 
 
 | 行数 | ファイル | 変更コミット数 |
 |---|---|---|
-| 2600 | ui/kitting_production_entry.py | 21 |
-| 2416 | ui/production_import_staging_window.py | 14 |
+| 2600 | ui/kitting/kitting_production_entry.py | 21 |
+| 2416 | ui/production/production_import_staging_window.py | 14 |
 | 1754 | services/production_service.py | 15 |
 | 1580 | ui/main_window.py | 24 |
-| 1472 | ui/ng_input_window.py | 12 |
-| 1191 | ui/wip_expansion_window.py | 11 |
-| 1186 | ui/production_side_master_window.py | 未集計 |
+| 1472 | ui/ng_wip/ng_input_window.py | 12 |
+| 1191 | ui/ng_wip/wip_expansion_window.py | 11 |
+| 1186 | ui/master/production_side_master_window.py | 未集計 |
 | 1176 | models/kitting_plan.py | 12 |
 | 1112 | services/pdf_ocr_service.py | 未集計 |
-| 1050 | ui/unified_report_window.py | 未集計 |
+| 1050 | ui/reports/unified_report_window.py | 未集計 |
 
 （変更コミット数は上位15件だけを集計した。「未集計」は15位（7コミット）より少ない）
 

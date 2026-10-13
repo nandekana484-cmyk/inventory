@@ -1,6 +1,6 @@
-# 生産実績入力（ui/kitting_production_entry.py）の業務ルールと設計メモ
+# 生産実績入力（ui/kitting/kitting_production_entry.py）の業務ルールと設計メモ
 
-2026-10-09 のコメント軽量化で、`ui/kitting_production_entry.py` のコメント・docstring から移した内容。
+2026-10-09 のコメント軽量化で、`ui/kitting/kitting_production_entry.py` のコメント・docstring から移した内容。
 関数名で参照する（行番号は変わりやすいため）。D番号は CANONICAL_DESIGN_DECISIONS.md / CHANGELOG.md。
 
 ## 業務ルール
@@ -79,7 +79,7 @@
 ### pack の順序
 
 - Tk の pack は、side に関係なく pack を呼んだ順に領域（cavity）を取る。計画一覧は ボタン行→水平スクロールバー→垂直スクロールバー→Treeview の順に pack する。逆にすると水平スクロールバーがボタン行の下に離れて表示される（以前の実装で起きていた）
-- 同じパターンは ui/production_import_staging_window.py・ui/ng_input_window.py・ui/wip_expansion_window.py にもある（`docs/fragile_spots.md` 4）
+- 同じパターンは ui/production/production_import_staging_window.py・ui/ng_wip/ng_input_window.py・ui/ng_wip/wip_expansion_window.py にもある（`docs/fragile_spots.md` 4）
 
 ### 実績CSVステージング一覧との連携
 
@@ -90,6 +90,6 @@
 ### その他
 
 - 計画一覧の選択はデバウンスする（200ms）。矢印キー連打で DB 検索が積み重なるのを避けるため。記入欄へのフォーカス移動はデバウンス確定後に行う（選択イベントの時点で移すと、一覧の矢印キー操作が記入欄に取られる）
-- 実績CSVの解析は別スレッドで行う（LoadingWindow → threading.Thread(daemon=True) → queue.Queue → after(200) でポーリング）。ui/kitting_plan_import.py・ui/main_window.py と同じパターン
+- 実績CSVの解析は別スレッドで行う（LoadingWindow → threading.Thread(daemon=True) → queue.Queue → after(200) でポーリング）。ui/kitting/kitting_plan_import.py・ui/main_window.py と同じパターン
 - 登録直後の計画一覧の部分更新（`_refresh_plan_list_for_lot()`）: `list_active_plan_items(lot_no=...)` は部分一致（LIKE）なので、lot_no の完全一致で絞り直す（例: "100075" で "1100075" も取れてしまう）。絞り込みで非表示の行も `_all_plan_rows` は更新する。既存 iid への set() だけなので、並び順と選択状態は変わらない
 - 最小化中のウインドウに transient のポップアップ・ダイアログを出すと、表示されないまま入力を握る。出す前に deiconify() する（UI_WORKFLOW_FIXES_NOTES.md）

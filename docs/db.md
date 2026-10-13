@@ -39,7 +39,7 @@
    - 引き継がないもの: scrap_records・ng_declarations・wip_board_snapshot・wip_scrap_records
    - 既知の制約: 引き継ぎが終わる前に旧DBのロックが解放される（CANONICAL §22.6、D-75）
 
-## 削除（`MainWindow.on_delete_local_database()` → `ui/db_delete_helper.py` → `services/db_delete_service.py`・`services/db_lifecycle_service.delete_database()`）
+## 削除（`MainWindow.on_delete_local_database()` → `ui/common/db_delete_helper.py` → `services/db_delete_service.py`・`services/db_lifecycle_service.delete_database()`）
 
 1. `check_delete_safety()`: 今つながっているDBなら削除を拒否する。有効なロックがあれば警告する
 2. `db_lifecycle_service.delete_database()` → `delete_database_files()`: DB本体・`.lock`・`.lock.tmp` を消す。フォルダは残す。操作履歴は今の DB に記録する
@@ -124,7 +124,7 @@ SQLite の `ALTER TABLE` でできない変更は、表を作り直す。マイ�
 3. `PRAGMA foreign_key_check` で問題が無いことを確かめる（実行する側が行い、問題があれば巻き戻す）→ 版を書いてコミット
 4. `PRAGMA foreign_keys` を元の値に戻す — トランザクションの外で（実行する側が行う）
 
-- 作り直しは時間がかかることがある。DB を開く処理は同期で実行しているので、大きな表を作り直すマイグレーションを足すときは、`ui/async_task.run_in_background()` で読み込み中の表示を出すことを検討する
+- 作り直しは時間がかかることがある。DB を開く処理は同期で実行しているので、大きな表を作り直すマイグレーションを足すときは、`ui/common/async_task.run_in_background()` で読み込み中の表示を出すことを検討する
 
 ### 001〜013（db/legacy/）
 

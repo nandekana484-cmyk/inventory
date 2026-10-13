@@ -78,7 +78,7 @@
 - バックプレッシャー: 画像化が OCR よりずっと速い場合（ノイズの多いスキャン画像で OCR が遅いときなど）、未回収の Future とその画像が際限なく積み上がり、メモリを圧迫した。pending_futures がワーカー数＋`_BACKPRESSURE_EXTRA_FUTURES` に達したら、`wait(..., return_when=FIRST_COMPLETED)` で1つ終わるまで待つ。`wait()` を呼ぶまで集合を更新しないので、完了済みの Future が残ることがあるが、次の `wait()` ですぐ done として返るので実害は無い
 - 別プロセスには、親の `_configure_tesseract()` の設定（tesseract_cmd・TESSDATA_PREFIX）が引き継がれない（Windows の spawn は新しいインタプリタでモジュールを import し直すだけ）。ワーカーで設定し直す
 - 引数と戻り値は pickle できる型だけにする（PIL Image は pickle できる）
-- UI との関係: `ui.pdf_ocr_import_window` が threading.Thread でこの関数を呼ぶ。スレッドは UI を止めないため、プロセスプールは複数コアに分散するためで、目的が違い両立する。この関数自体は全ページが終わるまで戻らない同期関数
+- UI との関係: `ui.system.pdf_ocr_import_window` が threading.Thread でこの関数を呼ぶ。スレッドは UI を止めないため、プロセスプールは複数コアに分散するためで、目的が違い両立する。この関数自体は全ページが終わるまで戻らない同期関数
 
 ## そのほか
 

@@ -1,4 +1,4 @@
-# 実績レポート（日報・月報の統合、ui/unified_report_window.py）
+# 実績レポート（日報・月報の統合、ui/reports/unified_report_window.py）
 
 2026-10-09 のコメント軽量化で、コメント・docstring から移した内容。関数名で参照する。
 集計の中身（引落・仕掛・確認事項・警告）は `docs/domain/lot_completion.md`。
@@ -28,7 +28,7 @@
 
 - NG一覧・仕掛一覧と同じ「テキスト部分一致＋チェックボックス式ポップアップ」。軸はロットNo.（部分一致）・状態（一致/不足/超過/未登録/構成基板数不一致）・NGの有無（あり/なし）
 - 「状態」と「NGの有無」は Treeview の列には出さない（「確認事項」と同じく、色分けと CSV/PDF 出力だけで表す既存の方針）
-- 状態は `_build_report_rows()` の各行の status を、`ui.lot_progress_window.STATUS_LABELS` と同じ日本語に変えて使う。NG の有無は has_ng（NG 実績か NG 申告があるか）をそのまま使う。絞り込み用の表示キー（status_label・ng_label）は CSV/PDF 出力には使わない
+- 状態は `_build_report_rows()` の各行の status を、`ui.production.lot_progress_window.STATUS_LABELS` と同じ日本語に変えて使う。NG の有無は has_ng（NG 実績か NG 申告があるか）をそのまま使う。絞り込み用の表示キー（status_label・ng_label）は CSV/PDF 出力には使わない
 - 絞り込みは `report_rows`（全件）を Python 側でふるい、絞り込み後の行だけを描き直す。ロット単位の縞模様は絞り込み後の行で計算し直す（消えた行の分だけ境目が変わるのは意図どおり）
 - 絞り込み後にソートの順は保たれない（元の順で描き直す）。NG一覧・仕掛一覧・生産実績入力画面の計画一覧と同じ、アプリ全体で一貫した挙動（「フィルタ適用後にソートを再適用する機能は無い」と v1 の仕様として明記済み）
 

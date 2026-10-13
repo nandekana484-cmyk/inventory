@@ -1,4 +1,4 @@
-# 仕掛（WIP）展開（ui/wip_expansion_window.py）
+# 仕掛（WIP）展開（ui/ng_wip/wip_expansion_window.py）
 
 2026-10-09 のコメント軽量化で、コメント・docstring から移した内容。関数名で参照する。
 NG入力画面（`docs/domain/ng_input.md`）と同じ構成を、仕掛用に複製した画面。
