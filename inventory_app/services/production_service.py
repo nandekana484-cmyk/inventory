@@ -25,6 +25,7 @@ from models.board_structure_master import get_board_structure
 from models.lot_status_history import record_lot_status_snapshot
 from models.scrap_records import list_scrap_summary_by_kitting_no
 from models.ng_declarations import list_ng_declarations_latest
+from services.date_parsing import _parse_plan_start_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -961,13 +962,7 @@ def _pick_representative_plan_item(items: list):
     同じ (setup_file_no, production_side) の複数バッチから、仕掛スナップショットの代表を1件選ぶ。
     生産予定日が最も新しいもの（手元に残る仕掛の実体に近い）。解釈できなければ最後の1件。
     """
-    def parse_dt(value):
-        try:
-            return datetime.strptime(str(value).strip(), "%Y/%m/%d %H:%M:%S")
-        except (TypeError, ValueError):
-            return None
-
-    parseable = [(parse_dt(item.get("plan_start_datetime")), item) for item in items]
+    parseable = [(_parse_plan_start_datetime(item.get("plan_start_datetime")), item) for item in items]
     parseable = [(dt, item) for dt, item in parseable if dt is not None]
     if parseable:
         return max(parseable, key=lambda pair: pair[0])[1]

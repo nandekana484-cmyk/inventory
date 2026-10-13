@@ -44,6 +44,7 @@ from models.production import (
 )
 from models.lot_status_history import record_lot_status_snapshot
 from services.production_service import list_incomplete_lots
+from services.date_parsing import _parse_plan_start_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -65,16 +66,6 @@ _LOT_NO_DUPLICATE_THRESHOLD_DAYS = 365
 # plan_start_datetimeに関わらず常に引き継ぐ。下記_filter_plan_items_for_
 # migration()参照）。
 _UNSTARTED_PLAN_UPCOMING_LIMIT_DAYS = 50
-
-
-def _parse_plan_start_datetime(value):
-    """plan_start_datetimeを日時にパースする。None・空文字・パース不能な場合はNoneを返す。"""
-    if not value:
-        return None
-    try:
-        return datetime.strptime(str(value).strip(), _PLAN_START_DATETIME_FORMAT)
-    except (ValueError, TypeError):
-        return None
 
 
 def _fetch_plan_items_for_lot(lot_no: str) -> list:
