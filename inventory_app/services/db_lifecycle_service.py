@@ -10,6 +10,9 @@ import shutil
 
 import config
 from db.init_db import init_database_at
+from db.schema_version import (  # noqa: F401 （画面がエラーの種類を見分けるために、ここから使う）
+    ensure_schema, SchemaError, DatabaseTooNewError, LegacyDatabaseError, MigrationFailedError,
+)
 from models.db_lifecycle_log import (
     record_db_lifecycle_event,
     OPERATION_TYPE_CREATE,
@@ -77,6 +80,16 @@ def check_new_db_folder(folder):
     if os.path.exists(db_path_for_folder(folder)):
         return NEW_FOLDER_EXISTS
     return None
+
+
+def ensure_db_schema(db_path):
+    """
+    DB の形を確かめ、足りないマイグレーションを適用する（段階7b。db/schema_version.ensure_schema()）。
+    ロックを取った後・config.DB_PATH を切り替える前に呼ぶ。開けないときは SchemaError の子クラスを送出する
+    （DatabaseTooNewError・LegacyDatabaseError・MigrationFailedError）。戻り値は ensure_schema() と同じ。
+    前月からの引き継ぎの途中では呼ばない（作る DB は最新、元の DB は今の DB で確認済み）。
+    """
+    return ensure_schema(db_path)
 
 
 def set_current_db_path(new_path):

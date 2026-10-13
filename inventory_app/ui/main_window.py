@@ -35,6 +35,7 @@ from services.db_lifecycle_service import (
     restore_last_db_path, list_db_folders, db_path_for_folder, check_new_db_folder, set_current_db_path,
     create_db_file, activate_new_db, record_db_created, restore_backup_to_new_folder, discard_restored_folder,
     finish_restore, NEW_FOLDER_EMPTY, NEW_FOLDER_RESERVED, NEW_FOLDER_EXISTS,
+    ensure_db_schema, SchemaError, DatabaseTooNewError, LegacyDatabaseError, MigrationFailedError,
 )
 from ui.window_utils import center_window
 from version import get_version_label
@@ -717,10 +718,13 @@ class MainWindow(tk.Tk):
         if folders:
             self.db_folder_combobox.current(0)
 
-    def _try_switch_db_path(self, new_path: str, error_title: str = "切替不可") -> bool:
+    def _try_switch_db_path(self, new_path: str, error_title: str = "切替不可", check_schema: bool = False,
+                            schema_failure_note: str = "") -> bool:
         """
         new_path のロックを取れたら、今のロックを放して config.DB_PATH を切り替える。失敗したら使用者を表示して False（呼び出し元は先に進まないこと）。
         前月引き継ぎの新規作成は、切り替えのタイミングが carry_over_incomplete_lots() の契約に絡むので、これを使わない。
+        check_schema=True なら、ロックを取った後・切り替える前に DB の形を確かめ、マイグレーションを適用する（段階7b）。
+        開けなければ new_path のロックを放し、今の DB とロックは変えずに False（schema_failure_note は、そのときのメッセージの末尾）。
         """
         if not self._acquire_lock_with_corruption_handling(new_path):
             messagebox.showerror(
@@ -731,10 +735,66 @@ class MainWindow(tk.Tk):
             )
             return False
 
+        if check_schema and not self._ensure_db_schema_or_report(new_path, schema_failure_note):
+            release_lock(new_path)
+            return False
+
         self._release_current_lock()
         set_current_db_path(new_path)
         self._lock_acquired = True
         self._update_current_db_label()
+        return True
+
+    @staticmethod
+    def _schema_error_message(error, failure_note):
+        """DB の形の確認・適用で開けなかったときの (タイトル, 本文)（段階7b）。failure_note は本文の最後に足す、その場面での結果。"""
+        if isinstance(error, DatabaseTooNewError):
+            title = "データベースを開けません"
+            body = (
+                "このデータベースは、新しいバージョンのアプリで更新されています"
+                f"（データベースの版：{error.db_version}／このアプリが扱える版：{error.app_version}）。\n"
+                "アプリを最新版に更新してください。"
+            )
+        elif isinstance(error, LegacyDatabaseError):
+            title = "データベースを開けません"
+            body = (
+                "このデータベースは古い形式のため開けません。新しいデータベースを作成し直してください。\n\n"
+                "足りないもの：\n" + "\n".join(f"・{p}" for p in error.problems)
+            )
+        elif isinstance(error, MigrationFailedError):
+            title = "データベースの更新に失敗"
+            body = (
+                f"データベースを新しい形に更新できませんでした（版 {error.version} の適用中）。\n"
+                f"このデータベースは版 {error.applied_version} まで更新されています。\n\n"
+                f"更新前のバックアップ：\n{error.backup_path}\n\n"
+                "管理者に連絡してください。\n\n"
+                f"詳細：{error.cause}"
+            )
+        else:
+            title = "データベースを開けません"
+            body = f"データベースの形を確認できませんでした。\n\n詳細：{error}"
+        if failure_note:
+            body += f"\n\n{failure_note}"
+        return title, body
+
+    def _ensure_db_schema_or_report(self, db_path, failure_note):
+        """
+        DB の形を確かめ、マイグレーションを適用する（段階7b）。適用したら、その旨とバックアップの場所を知らせる。
+        開けなければエラーを出して False。ロックの扱いは呼び出し元が行う。
+        """
+        try:
+            result = ensure_db_schema(db_path)
+        except SchemaError as e:
+            title, body = self._schema_error_message(e, failure_note)
+            messagebox.showerror(title, body, parent=self.winfo_toplevel())
+            return False
+        if result["applied"]:
+            messagebox.showinfo(
+                "データベースの更新",
+                f"データベースを新しい形に更新しました（版 {result['from_version']} → {result['to_version']}）。\n\n"
+                f"更新前のバックアップ：\n{result['backup_path']}",
+                parent=self.winfo_toplevel(),
+            )
         return True
 
     def on_switch_database(self):
@@ -748,7 +808,9 @@ class MainWindow(tk.Tk):
             messagebox.showinfo("情報", "既にこのデータベースを使用中です。", parent=self.winfo_toplevel())
             return
 
-        if not self._try_switch_db_path(new_path):
+        if not self._try_switch_db_path(
+            new_path, check_schema=True, schema_failure_note="切り替えずに、今のデータベースのまま続けます。",
+        ):
             return
         messagebox.showinfo("完了", "データベースを切り替えました。", parent=self.winfo_toplevel())
 
