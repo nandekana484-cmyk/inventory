@@ -41,8 +41,8 @@ def test_make_sort_key():
     assert sorted(["10", "9"], key=text) == ["10", "9"]
 
 
-def test_judgement_part_does_not_import_tkinter_at_module_level():
-    """判定の関数はウィジェットを使わない（このモジュールの先頭で tkinter を import しない）。"""
-    tree = ast.parse(inspect.getsource(cf))
-    top_imports = [n for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom))]
-    assert not any("tkinter" in ast.unparse(n) for n in top_imports)
+def test_judgement_functions_do_not_use_widgets():
+    """判定の関数（ポップアップ以外）は tk・ttk を参照しない。"""
+    for func in (cf.build_filter_predicates, cf.row_matches, cf.filter_rows, cf.date_range_predicate, cf.make_sort_key):
+        names = {n.id for n in ast.walk(ast.parse(inspect.getsource(func))) if isinstance(n, ast.Name)}
+        assert not names & {"tk", "ttk", "center_window"}, func.__name__

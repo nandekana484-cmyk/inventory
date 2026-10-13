@@ -30,7 +30,7 @@ from ui.daily_drawdown_window import DailyDrawdownWindow
 from ui.production_import_staging_window import open_or_notify
 from ui.loading_window import LoadingWindow
 from ui.window_utils import center_window
-from ui.column_filter import build_filter_predicates, row_matches, filter_rows, date_range_predicate, make_sort_key
+from ui.column_filter import CheckboxFilterPopup, build_filter_predicates, row_matches, filter_rows, date_range_predicate, make_sort_key
 # 段階2で ui/actual_correction_window.py へ移した。他の画面はここから import しているので re-export する。
 from ui.actual_correction_window import ActualCorrectionWindow  # noqa: F401 （re-export）
 
@@ -462,93 +462,19 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
         full_values = sorted({str(row[col_index]) for row in base_rows})
 
-        current_selection = self._plan_checkbox_filters.get(col_key)
-        checked_values = set(full_values) if current_selection is None else set(current_selection)
-
-        # 最小化中だと transient のポップアップが見えないまま入力を握るため、先に元に戻す（UI_WORKFLOW_FIXES_NOTES.md）。
-        if self.state() == "iconic":
-            self.deiconify()
-
-        popup = tk.Toplevel(self)
-        popup.title(f"{label_text} の絞り込み")
-        popup.geometry("280x420")
-        center_window(popup, self)
-        popup.transient(self)
-        popup.grab_set()
-
-        ttk.Label(popup, text="検索：").pack(anchor=tk.W, padx=10, pady=(10, 0))
-        search_var = tk.StringVar()
-        search_entry = ttk.Entry(popup, textvariable=search_var)
-        search_entry.pack(fill=tk.X, padx=10, pady=(0, 5))
-        search_entry.focus_set()
-
-        list_outer = ttk.Frame(popup)
-        list_outer.pack(expand=True, fill=tk.BOTH, padx=10)
-
-        canvas = tk.Canvas(list_outer, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(list_outer, orient="vertical", command=canvas.yview)
-        checklist_frame = ttk.Frame(canvas)
-        checklist_frame.bind(
-            "<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-        canvas.create_window((0, 0), window=checklist_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-        check_vars = {value: tk.BooleanVar(value=(value in checked_values)) for value in full_values}
-        row_widgets = {
-            value: ttk.Checkbutton(checklist_frame, text=value, variable=check_vars[value])
-            for value in full_values
-        }
-
-        def rebuild_visible(*_args):
-            needle = search_var.get().strip().lower()
-            for widget in row_widgets.values():
-                widget.pack_forget()
-            for value in full_values:
-                if needle and needle not in value.lower():
-                    continue
-                row_widgets[value].pack(anchor=tk.W, fill=tk.X)
-
-        rebuild_visible()
-        search_var.trace_add("write", rebuild_visible)
-
-        btn_frame1 = ttk.Frame(popup)
-        btn_frame1.pack(fill=tk.X, padx=10, pady=(5, 0))
-
-        def select_all():
-            for var in check_vars.values():
-                var.set(True)
-
-        def deselect_all():
-            for var in check_vars.values():
-                var.set(False)
-
-        ttk.Button(btn_frame1, text="全選択", command=select_all).pack(side=tk.LEFT)
-        ttk.Button(btn_frame1, text="全解除", command=deselect_all).pack(side=tk.LEFT, padx=(5, 0))
-
-        btn_frame2 = ttk.Frame(popup)
-        btn_frame2.pack(fill=tk.X, padx=10, pady=10)
-
-        def on_ok():
-            selected = {value for value, var in check_vars.items() if var.get()}
-            if selected == set(full_values):
-                # 全選択状態は「絞り込みなし」として扱う
+        def on_selected(selected):
+            # None＝全部チェック＝絞り込みなし
+            if selected is None:
                 self._plan_checkbox_filters.pop(col_key, None)
             else:
                 self._plan_checkbox_filters[col_key] = selected
             self._update_plan_filter_button_style(col_key)
-            popup.destroy()
-            self.apply_plan_filters()
 
-        def on_cancel():
-            popup.destroy()
-
-        ttk.Button(btn_frame2, text="OK", command=on_ok).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 5))
-        ttk.Button(btn_frame2, text="キャンセル", command=on_cancel).pack(side=tk.LEFT, expand=True, fill=tk.X)
-
-        return popup
+        # ポップアップ本体は3画面共通（ui/column_filter.py、段階6）。OK なら on_selected → 閉じる → 絞り込みを適用。
+        return CheckboxFilterPopup(
+            self, label_text, full_values, self._plan_checkbox_filters.get(col_key),
+            on_selected, self.apply_plan_filters,
+        ).popup
 
     @staticmethod
     def _fetch_plan_list_rows():

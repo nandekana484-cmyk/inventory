@@ -2,7 +2,12 @@
 一覧（Treeview）の列ごとの絞り込みと並べ替えの共通部品。生産実績入力の計画一覧・NG 一覧・仕掛一覧で使う。
 段階6で3画面の同じ判定を集めた。この部分はウィジェットを使わない（行が条件に合うか、並べ替えのキー）。
 画面ごとの違いは揃えずに、引数で渡す（数値として並べる列、期間指定の有無など）。
+ポップアップ（CheckboxFilterPopup）は3画面で同じものだったので、そのまま1つにした。
 """
+import tkinter as tk
+from tkinter import ttk
+
+from ui.window_utils import center_window
 
 
 def build_filter_predicates(text_filters, checkbox_filters):
@@ -78,3 +83,96 @@ def make_sort_key(col, numeric_cols):
         return value
 
     return sort_key
+
+
+class CheckboxFilterPopup:
+    """
+    エクセルのオートフィルタ風の、チェックボックス式の絞り込みポップアップ（3画面共通、段階6で共通化した）。
+    values: 候補（並べ替え済みの文字列）。current_selection: 今の選択（None なら絞り込みなし＝全部チェック済みで開く）。
+    OK: on_selected(選んだ値の集合。全部チェックなら None＝絞り込みなし) を呼び、ポップアップを閉じてから after_close() を呼ぶ。
+    キャンセル: 何も呼ばずに閉じる。作ったウィンドウは self.popup。
+    """
+
+    def __init__(self, parent, label_text, values, current_selection, on_selected, after_close):
+        full_values = values
+        checked_values = set(full_values) if current_selection is None else set(current_selection)
+
+        # 最小化中だと transient のポップアップが見えないまま入力を握るため、先に元に戻す（UI_WORKFLOW_FIXES_NOTES.md）。
+        if parent.state() == "iconic":
+            parent.deiconify()
+
+        popup = tk.Toplevel(parent)
+        popup.title(f"{label_text} の絞り込み")
+        popup.geometry("280x420")
+        center_window(popup, parent)
+        popup.transient(parent)
+        popup.grab_set()
+        self.popup = popup
+
+        ttk.Label(popup, text="検索：").pack(anchor=tk.W, padx=10, pady=(10, 0))
+        search_var = tk.StringVar()
+        search_entry = ttk.Entry(popup, textvariable=search_var)
+        search_entry.pack(fill=tk.X, padx=10, pady=(0, 5))
+        search_entry.focus_set()
+
+        list_outer = ttk.Frame(popup)
+        list_outer.pack(expand=True, fill=tk.BOTH, padx=10)
+
+        canvas = tk.Canvas(list_outer, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(list_outer, orient="vertical", command=canvas.yview)
+        checklist_frame = ttk.Frame(canvas)
+        checklist_frame.bind(
+            "<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        canvas.create_window((0, 0), window=checklist_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        check_vars = {value: tk.BooleanVar(value=(value in checked_values)) for value in full_values}
+        row_widgets = {
+            value: ttk.Checkbutton(checklist_frame, text=value, variable=check_vars[value])
+            for value in full_values
+        }
+
+        def rebuild_visible(*_args):
+            needle = search_var.get().strip().lower()
+            for widget in row_widgets.values():
+                widget.pack_forget()
+            for value in full_values:
+                if needle and needle not in value.lower():
+                    continue
+                row_widgets[value].pack(anchor=tk.W, fill=tk.X)
+
+        rebuild_visible()
+        search_var.trace_add("write", rebuild_visible)
+
+        btn_frame1 = ttk.Frame(popup)
+        btn_frame1.pack(fill=tk.X, padx=10, pady=(5, 0))
+
+        def select_all():
+            for var in check_vars.values():
+                var.set(True)
+
+        def deselect_all():
+            for var in check_vars.values():
+                var.set(False)
+
+        ttk.Button(btn_frame1, text="全選択", command=select_all).pack(side=tk.LEFT)
+        ttk.Button(btn_frame1, text="全解除", command=deselect_all).pack(side=tk.LEFT, padx=(5, 0))
+
+        btn_frame2 = ttk.Frame(popup)
+        btn_frame2.pack(fill=tk.X, padx=10, pady=10)
+
+        def on_ok():
+            selected = {value for value, var in check_vars.items() if var.get()}
+            # 全選択状態は「絞り込みなし」として扱う
+            on_selected(None if selected == set(full_values) else selected)
+            popup.destroy()
+            after_close()
+
+        def on_cancel():
+            popup.destroy()
+
+        ttk.Button(btn_frame2, text="OK", command=on_ok).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 5))
+        ttk.Button(btn_frame2, text="キャンセル", command=on_cancel).pack(side=tk.LEFT, expand=True, fill=tk.X)
