@@ -44,3 +44,36 @@ def get_master_connection():
     con = sqlite3.connect(config.MASTER_DB_PATH, timeout=CONNECTION_TIMEOUT_SECONDS)
     con.row_factory = sqlite3.Row
     return con
+
+
+# ---------------------------------------------------------------- DB ファイル全体の検査・汎用の読み取り
+# 段階4で services（backup_service・master_merge_service）から SQL を移した。特定のテーブルに属さないのでここに置く。
+# どれも呼び出し元が開いた接続 con を受け取る（バックアップファイルなど、config.DB_PATH 以外の DB にも使うため）。
+
+def run_integrity_check(con):
+    """PRAGMA integrity_check の最初の行を返す（正常なら ("ok",)）。DB でなければ sqlite3.DatabaseError を送出する。"""
+    cur = con.execute("PRAGMA integrity_check")
+    return cur.fetchone()
+
+
+def list_table_names(con) -> set:
+    """con の DB にあるテーブル名の集合。"""
+    cur = con.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    return {row[0] for row in cur.fetchall()}
+
+
+def table_exists(con, table_name: str) -> bool:
+    cur = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?", (table_name,),
+    )
+    return cur.fetchone() is not None
+
+
+def select_key_column(con, table: str, key_column: str) -> list:
+    """table の key_column 列を全行読む。table・key_column は呼び出し元の定義済みの名前だけを渡すこと（SQL に埋め込むため）。"""
+    return con.execute(f"SELECT {key_column} FROM {table}").fetchall()
+
+
+def select_all_rows(con, table: str) -> list:
+    """table の全行・全列を読む。table は呼び出し元の定義済みの名前だけを渡すこと（SQL に埋め込むため）。"""
+    return con.execute(f"SELECT * FROM {table}").fetchall()

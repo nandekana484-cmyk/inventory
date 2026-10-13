@@ -5,9 +5,9 @@ import traceback
 from typing import Callable, Optional
 
 from models.kitting_plan import (
-    create_plan_batch, create_plan_version, get_connection,
-    upsert_pending_kitting_plan_item, find_pending_kitting_plan_item,
-    delete_pending_kitting_plan_item,
+    create_plan_batch, create_plan_version, upsert_pending_kitting_plan_item, find_pending_kitting_plan_item,
+    delete_pending_kitting_plan_item, update_plan_batch_row_count,
+    list_plan_items_for_batch,  # noqa: F401 （ui/kitting_plan_import.py が ui から models を直接呼ばないよう、ここから使う）
 )
 from models.board_structure_master import normalize_board_name
 
@@ -234,10 +234,8 @@ def import_kitting_plan_csv(
     f.close()
 
     # 5) update batch row_count
-    conn = get_connection()
-    with conn:
-        cur = conn.cursor()
-        cur.execute("UPDATE kitting_plan_batches SET row_count = ? WHERE plan_batch_id = ?", (inserted, batch_id))
+    # 段階4で SQL を models.kitting_plan.update_plan_batch_row_count() へ移した。
+    update_plan_batch_row_count(batch_id, inserted)
 
     # 6) summary log
     if errors:

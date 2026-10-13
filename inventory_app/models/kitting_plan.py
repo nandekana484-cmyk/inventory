@@ -942,3 +942,83 @@ def resolve_plan_by_lot_and_name(lot_no: str, product_name_normalized: str, plan
     if len(unique_kitting_nos) == 1:
         return matched[0]["kitting_list_no"]
     return None
+
+
+# ---------------------------------------------------------------- 段階4で services・ui から移した SQL
+# SQL 文は変えていない。旧位置（services/db_migration_carryover.py・services/kitting_import_service.py・
+# ui/kitting_plan_import.py）には、これを呼ぶだけの関数を残している。
+
+def fetch_plan_items_for_lot(lot_no: str) -> list:
+    """
+    指定lot_noに属する、現在アクティブなkitting_plan_items行を全列（SELECT *）で取得する
+    （list_plan_items_by_lot()と同じWHERE条件。月次DBの引き継ぎ用、services/db_migration_carryover.py）。
+    呼び出し時点でconfig.DB_PATHが指している方のDBから読み取る。
+    """
+    with get_connection() as con:
+        cur = con.execute("""
+            SELECT * FROM kitting_plan_items
+            WHERE lot_no = ? AND delete_flag = 0 AND COALESCE(is_active, 1) = 1
+        """, (lot_no,))
+        return [dict(row) for row in cur.fetchall()]
+
+
+def fetch_plan_start_datetimes_for_lot(lot_no: str) -> list:
+    """
+    指定lot_noを持つkitting_plan_items行のplan_start_datetime（生の文字列）のリスト（無ければ空リスト）。
+    is_active・delete_flagでは絞り込まない（月次DBの引き継ぎの重複疑いの判定用、services/db_migration_carryover.py）。
+    テーブルが無い真っさらな DB でも動くよう、先に init_kitting_plan_tables() を呼ぶ。
+    """
+    init_kitting_plan_tables()
+    with get_connection() as con:
+        cur = con.execute(
+            "SELECT plan_start_datetime FROM kitting_plan_items WHERE lot_no = ?",
+            (lot_no,),
+        )
+        return [row["plan_start_datetime"] for row in cur.fetchall()]
+
+
+def all_active_plan_items_exist(kitting_list_nos: list, lot_no: str) -> bool:
+    """
+    kitting_list_nos のどれにも、lot_no の現在アクティブな計画行があれば True（1つでも無ければ False）。
+    月次DBの引き継ぎが完了済みかの判定用（services/db_migration_carryover.py の _lot_already_migrated()）。
+    """
+    with get_connection() as con:
+        for kitting_list_no in kitting_list_nos:
+            row = con.execute("""
+                SELECT 1 FROM kitting_plan_items
+                WHERE kitting_list_no = ? AND COALESCE(lot_no, '') = ?
+                  AND COALESCE(is_active, 1) = 1
+                LIMIT 1
+            """, (kitting_list_no, lot_no)).fetchone()
+            if row is None:
+                return False
+    return True
+
+
+def update_plan_batch_row_count(batch_id: int, row_count: int):
+    """取り込みが終わったバッチの row_count を更新する（services/kitting_import_service.py）。"""
+    conn = get_connection()
+    with conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE kitting_plan_batches SET row_count = ? WHERE plan_batch_id = ?", (row_count, batch_id))
+
+
+def list_plan_items_for_batch(batch_id: int) -> list:
+    """
+    バッチの計画行を、計画CSV取込画面の明細の列だけ kitting_list_no 順で返す（ui/kitting_plan_import.py）。
+    行は sqlite3.Row。無効化された旧バージョンの行も含む（以前の画面の SQL のまま）。
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT kitting_list_no, lot_no, setup_file_no, board_name, planned_qty,
+               cumulative_qty_external, order_qty, production_side, status,
+               plan_start_datetime, plan_end_datetime, deadline,
+               actual_start_datetime, actual_end_datetime
+        FROM kitting_plan_items
+        WHERE plan_batch_id = ?
+        ORDER BY kitting_list_no
+    """, (batch_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows

@@ -21,7 +21,7 @@ CANONICAL_DESIGN_DECISIONS.md D-38参照）・production_side_master
 import logging
 import sqlite3
 
-from models.db_common import get_master_connection
+from models.db_common import get_master_connection, table_exists, select_key_column, select_all_rows
 from models.board_structure_master import upsert_board_structure
 from models.parts_attributes import upsert_parts_attributes
 from models.workers import upsert_worker
@@ -88,10 +88,8 @@ _TABLE_SPECS = [
 
 
 def _table_exists(con, table_name: str) -> bool:
-    cur = con.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?", (table_name,),
-    )
-    return cur.fetchone() is not None
+    """段階4で SQL を models/db_common.py の table_exists() へ移した。ここはそれを呼ぶだけ。"""
+    return table_exists(con, table_name)
 
 
 def merge_master_from_backup(backup_file_path: str) -> dict:
@@ -119,12 +117,12 @@ def merge_master_from_backup(backup_file_path: str) -> dict:
                 with get_master_connection() as con:
                     if _table_exists(con, table):
                         existing_keys = {
-                            row[0] for row in con.execute(f"SELECT {key_column} FROM {table}").fetchall()
+                            row[0] for row in select_key_column(con, table, key_column)
                         }
                     else:
                         existing_keys = set()
 
-                backup_rows = backup_con.execute(f"SELECT * FROM {table}").fetchall()
+                backup_rows = select_all_rows(backup_con, table)
 
                 added = 0
                 for row in backup_rows:

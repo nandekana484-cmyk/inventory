@@ -3,7 +3,7 @@ import threading
 import queue
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-from services.kitting_import_service import import_kitting_plan_csv
+from services.kitting_import_service import import_kitting_plan_csv, list_plan_items_for_batch
 from services.csv_format_detection import (
     read_csv_header, detect_format_mismatch_warnings,
     PLAN_CSV_SIGNATURE_COLUMNS, PLAN_CSV_FORMAT_LABEL,
@@ -347,19 +347,8 @@ class KittingPlanImportWindow(tk.Toplevel):
         self._load_items_for_batch(batch_id)
 
     def _load_items_for_batch(self, batch_id):
-        conn = self._get_db_connection()
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT kitting_list_no, lot_no, setup_file_no, board_name, planned_qty,
-                   cumulative_qty_external, order_qty, production_side, status,
-                   plan_start_datetime, plan_end_datetime, deadline,
-                   actual_start_datetime, actual_end_datetime
-            FROM kitting_plan_items
-            WHERE plan_batch_id = ?
-            ORDER BY kitting_list_no
-        """, (batch_id,))
-        rows = cur.fetchall()
-        conn.close()
+        # 段階4で SQL を models.kitting_plan.list_plan_items_for_batch() へ移した。
+        rows = list_plan_items_for_batch(batch_id)
 
         # 右Tree をクリアして全件表示
         for iid in self.tree_items.get_children():

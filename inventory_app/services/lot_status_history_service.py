@@ -30,6 +30,7 @@ D-29改訂（過去に表示した引落の数字が後から変わらない、�
 結果は何度計算しても完全に同じになる（都度の再計算が同じ入力から同じ
 計算を行うだけのため）。
 """
+from models.production import get_report_date_range
 from services.production_service import evaluate_all_lot_status
 
 
@@ -174,12 +175,8 @@ def get_drawdown_date_range():
     戻り値："YYYY-MM-DD"形式の(最初の日, 最後の日)のタプル。production_daily
     に実績が1件も無い場合は(None, None)。
     """
-    from models.db_common import get_connection
-    with get_connection() as con:
-        row = con.execute(
-            "SELECT MIN(report_date) AS min_date, MAX(report_date) AS max_date FROM production_daily"
-        ).fetchone()
-        return row["min_date"], row["max_date"]
+    # 段階4で SQL を models.production.get_report_date_range() へ移した。
+    return get_report_date_range()
 
 
 # get_incomplete_lots_from_history()を実装しなかった理由（判断根拠、D-115以前の

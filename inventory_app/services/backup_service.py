@@ -13,6 +13,7 @@ import sqlite3
 from datetime import datetime
 
 import config
+from models.db_common import run_integrity_check, list_table_names
 
 
 def _generate_unique_path(destination_folder: str, base_name: str, timestamp: str) -> str:
@@ -157,16 +158,14 @@ def validate_monthly_db_backup(file_path: str) -> dict:
 
     try:
         try:
-            cur = con.execute("PRAGMA integrity_check")
-            result = cur.fetchone()
+            result = run_integrity_check(con)
         except sqlite3.DatabaseError as e:
             return {"ok": False, "reason": f"SQLiteデータベースとして開けませんでした：{e}"}
 
         if not result or result[0] != "ok":
             return {"ok": False, "reason": f"データベースの整合性チェックに失敗しました：{result}"}
 
-        cur = con.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        tables = {row[0] for row in cur.fetchall()}
+        tables = list_table_names(con)
     finally:
         con.close()
 

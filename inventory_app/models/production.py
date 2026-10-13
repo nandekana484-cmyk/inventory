@@ -350,3 +350,53 @@ def apply_daily_production_changes(changes: list):
             else:
                 raise ValueError(f"未対応のaction: {action}")
         con.commit()
+
+
+# ---------------------------------------------------------------- 段階4で services から移した SQL
+# SQL 文は変えていない。旧位置（services/db_migration_carryover.py・services/lot_status_history_service.py）には、
+# これを呼ぶだけの関数を残している。
+
+def fetch_production_daily_for_lot(lot_no: str, kitting_list_nos: list) -> list:
+    """
+    指定lot_noに属するkitting_list_no一覧に対応するproduction_daily行を全列（SELECT *）で取得する（月次DBの引き継ぎ用）。
+    kitting_list_noは lot_no をまたいで重複するので、lot_id（=lot_no）も条件に含める。
+    """
+    if not kitting_list_nos:
+        return []
+    with get_connection() as con:
+        placeholders = ", ".join("?" for _ in kitting_list_nos)
+        cur = con.execute(f"""
+            SELECT * FROM production_daily
+            WHERE kitting_list_no IN ({placeholders})
+              AND COALESCE(lot_id, '') = COALESCE(?, '')
+        """, (*kitting_list_nos, lot_no))
+        return [dict(row) for row in cur.fetchall()]
+
+
+def all_production_daily_exist(kitting_list_nos, lot_no: str) -> bool:
+    """
+    kitting_list_nos のどれにも、lot_no の production_daily 行があれば True（1つでも無ければ False）。
+    月次DBの引き継ぎが完了済みかの判定用（services/db_migration_carryover.py の _lot_already_migrated()）。
+    """
+    with get_connection() as con:
+        for kitting_list_no in kitting_list_nos:
+            row = con.execute("""
+                SELECT 1 FROM production_daily
+                WHERE kitting_list_no = ? AND COALESCE(lot_id, '') = COALESCE(?, '')
+                LIMIT 1
+            """, (kitting_list_no, lot_no)).fetchone()
+            if row is None:
+                return False
+    return True
+
+
+def get_report_date_range():
+    """
+    production_daily.report_date の最小値・最大値。"YYYY-MM-DD"形式の(最初の日, 最後の日)のタプル。
+    実績が1件も無い場合は(None, None)。日々の引落一覧の対象日選択用（services/lot_status_history_service.py）。
+    """
+    with get_connection() as con:
+        row = con.execute(
+            "SELECT MIN(report_date) AS min_date, MAX(report_date) AS max_date FROM production_daily"
+        ).fetchone()
+        return row["min_date"], row["max_date"]

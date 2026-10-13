@@ -36,11 +36,13 @@ from datetime import datetime
 
 import config
 from models.kitting_plan import (
-    get_connection as get_plan_connection, create_plan_batch, create_plan_version,
+    create_plan_batch, create_plan_version,
     init_kitting_plan_tables,
+    fetch_plan_items_for_lot, fetch_plan_start_datetimes_for_lot, all_active_plan_items_exist,
 )
 from models.production import (
-    get_connection as get_production_connection, replace_daily_result,
+    replace_daily_result,
+    fetch_production_daily_for_lot, all_production_daily_exist,
 )
 from services.production_service import list_incomplete_lots, record_lot_status_snapshot
 from services.date_parsing import _parse_plan_start_datetime
@@ -75,12 +77,8 @@ def _fetch_plan_items_for_lot(lot_no: str) -> list:
     呼び出し時点でconfig.DB_PATHが指している方のDBから読み取る
     （carry_over_incomplete_lots()内では旧DB接続時に呼ぶ）。
     """
-    with get_plan_connection() as con:
-        cur = con.execute("""
-            SELECT * FROM kitting_plan_items
-            WHERE lot_no = ? AND delete_flag = 0 AND COALESCE(is_active, 1) = 1
-        """, (lot_no,))
-        return [dict(row) for row in cur.fetchall()]
+    # 段階4で SQL を models.kitting_plan.fetch_plan_items_for_lot() へ移した。
+    return fetch_plan_items_for_lot(lot_no)
 
 
 def _fetch_existing_plan_start_datetimes_for_lot(lot_no: str) -> list:
@@ -97,13 +95,8 @@ def _fetch_existing_plan_start_datetimes_for_lot(lot_no: str) -> list:
     kitting_plan_itemsテーブル自体が存在しないため、create_plan_batch()と
     同様にinit_kitting_plan_tables()で事前に存在を保証する。
     """
-    init_kitting_plan_tables()
-    with get_plan_connection() as con:
-        cur = con.execute(
-            "SELECT plan_start_datetime FROM kitting_plan_items WHERE lot_no = ?",
-            (lot_no,),
-        )
-        return [row["plan_start_datetime"] for row in cur.fetchall()]
+    # 段階4で SQL（と init_kitting_plan_tables() の呼び出し）を models.kitting_plan.fetch_plan_start_datetimes_for_lot() へ移した。
+    return fetch_plan_start_datetimes_for_lot(lot_no)
 
 
 def _check_lot_no_duplicate(lot_no: str, old_plan_start_datetimes: list) -> dict:
@@ -215,28 +208,15 @@ def _lot_already_migrated(lot_no: str, plan_items: list, production_rows: list) 
     # 誤っていたため、合わせて修正した）。
     init_kitting_plan_tables()
 
-    with get_plan_connection() as con:
-        for item in plan_items:
-            row = con.execute("""
-                SELECT 1 FROM kitting_plan_items
-                WHERE kitting_list_no = ? AND COALESCE(lot_no, '') = ?
-                  AND COALESCE(is_active, 1) = 1
-                LIMIT 1
-            """, (item["kitting_list_no"], lot_no)).fetchone()
-            if row is None:
-                return False
+    # 段階4で SQL を models（all_active_plan_items_exist()・all_production_daily_exist()）へ移した。
+    # ジェネレーターで渡す（以前と同じく、1件ずつ確かめて、見つからなければそこで止める）。
+    if not all_active_plan_items_exist((item["kitting_list_no"] for item in plan_items), lot_no):
+        return False
 
     if production_rows:
         expected_kitting_list_nos = {row["kitting_list_no"] for row in production_rows}
-        with get_production_connection() as con:
-            for kitting_list_no in expected_kitting_list_nos:
-                row = con.execute("""
-                    SELECT 1 FROM production_daily
-                    WHERE kitting_list_no = ? AND COALESCE(lot_id, '') = COALESCE(?, '')
-                    LIMIT 1
-                """, (kitting_list_no, lot_no)).fetchone()
-                if row is None:
-                    return False
+        if not all_production_daily_exist(expected_kitting_list_nos, lot_no):
+            return False
 
     return True
 
@@ -251,16 +231,8 @@ def _fetch_production_daily_for_lot(lot_no: str, kitting_list_nos: list) -> list
     されており、kitting_list_noだけで絞り込むと別ロットの実績まで誤って
     含めてしまうため（models.production.get_app_cumulative_qty()等と同じ理由）。
     """
-    if not kitting_list_nos:
-        return []
-    with get_production_connection() as con:
-        placeholders = ", ".join("?" for _ in kitting_list_nos)
-        cur = con.execute(f"""
-            SELECT * FROM production_daily
-            WHERE kitting_list_no IN ({placeholders})
-              AND COALESCE(lot_id, '') = COALESCE(?, '')
-        """, (*kitting_list_nos, lot_no))
-        return [dict(row) for row in cur.fetchall()]
+    # 段階4で SQL を models.production.fetch_production_daily_for_lot() へ移した。
+    return fetch_production_daily_for_lot(lot_no, kitting_list_nos)
 
 
 def _filter_plan_items_for_migration(plan_items: list, production_rows: list, reference_date) -> dict:
