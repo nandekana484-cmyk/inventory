@@ -45,6 +45,11 @@ def restore_last_db_path():
     return None
 
 
+def default_db_path():
+    """既定DB（未選択）のパス（APP_DATA_DIR/db/inventory.db。config.DB_PATH の初期値と同じ）。"""
+    return os.path.join(config.APP_DATA_DIR, config.DB_ROOT_FOLDER_NAME, "inventory.db")
+
+
 def db_folder_path(folder):
     """月次DB のフォルダ（APP_DATA_DIR/db/<folder>）。"""
     return os.path.join(config.APP_DATA_DIR, "db", folder)

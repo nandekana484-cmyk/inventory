@@ -245,3 +245,104 @@ def test_restore_migration_failure_removes_folder(host, current_db, backup_file,
     assert config.DB_PATH == current_db
     assert [m[:2] for m in _messages(host)] == [("showerror", "データベースの更新に失敗")]
     assert _version(backup_file) == 13
+
+
+# ---------------------------------------------------------------- 起動時のつなぎ直し
+
+from services.app_settings_service import load_last_db_path, save_last_db_path  # noqa: E402
+
+
+@pytest.fixture
+def default_db(monkeypatch):
+    """起動したときの状態（config.DB_PATH は既定DB）。"""
+    path = os.path.join(config.APP_DATA_DIR, "db", "inventory.db")
+    monkeypatch.setattr(config, "DB_PATH", path)
+    return path
+
+
+def _startup(host):
+    ok = host._connect_db_at_startup()
+    host._report_startup_db_problems()
+    return ok
+
+
+def test_startup_reconnects_to_current_version_db(host, default_db):
+    last = _make_db("LAST")
+    save_last_db_path(last)
+    assert _startup(host) is True
+    assert config.DB_PATH == last and host._lock_acquired is True
+    assert get_lock_info(last)["worker_name"] == "作業者A"
+    assert _messages(host) == []
+
+
+def test_startup_without_last_db_stays_default(host, default_db):
+    assert _startup(host) is True
+    assert config.DB_PATH == default_db and host._lock_acquired is False
+    assert not os.path.exists(default_db + ".lock")
+    assert _messages(host) == []
+
+
+def test_startup_missing_last_db_warns_as_before(host, default_db):
+    missing = _db_path("GONE")
+    save_last_db_path(missing)
+    assert _startup(host) is True
+    assert config.DB_PATH == default_db
+    assert _messages(host) == [("showwarning", "データベース接続の復元に失敗",
+                                f"前回使用していたデータベースが見つかりませんでした：\n{missing}\n\n"
+                                "デフォルトのローカルデータベースに接続しました。")]
+
+
+def test_startup_locked_by_other_stops(host, default_db):
+    last = _make_db("BUSY")
+    acquire_lock(last, "他の人", "PC9")
+    save_last_db_path(last)
+    assert host._connect_db_at_startup() is False
+    (kind, title, message), = _messages(host)
+    assert (kind, title) == ("showerror", "データベース使用中")
+    assert message.startswith("このデータベースは他の利用者が使用中のため起動できません。\n\n作業者：他の人")
+
+
+def test_startup_applies_migration_and_reports_after_ui(host, default_db, with_test_014):
+    last = _make_db("OLDLAST")
+    _create_ng_declarations(last)
+    _set_version(last, 13)
+    save_last_db_path(last)
+    assert host._connect_db_at_startup() is True
+    assert _messages(host) == []                                    # UI を作り終えるまでは出さない
+    host._report_startup_db_problems()
+    assert config.DB_PATH == last and _version(last) == 14
+    (kind, title, message), = _messages(host)
+    assert (kind, title) == ("showinfo", "データベースの更新")
+    assert message.startswith("データベースを新しい形に更新しました（版 13 → 14）。")
+
+
+@pytest.mark.parametrize("make_problem, title, phrase", [
+    (lambda path: _legacy(path), "データベースを開けません", "古い形式のため開けません"),
+    (lambda path: (_make_db("TOONEW"), _set_version(path, 50)), "データベースを開けません", "アプリを最新版に更新してください。"),
+])
+def test_startup_unopenable_db_falls_back_to_default(host, default_db, make_problem, title, phrase):
+    folder = "TOONEW" if "アプリ" in phrase else "OLDFMT"
+    last = _db_path(folder)
+    make_problem(last)
+    save_last_db_path(last)
+    assert host._connect_db_at_startup() is True
+    assert config.DB_PATH == default_db                              # 既定DB（未選択）で起動する
+    assert host._lock_acquired is False and get_lock_info(last) is None
+    assert load_last_db_path() == default_db                         # 次の起動も未選択から
+    assert _messages(host) == []
+    host._report_startup_db_problems()
+    (kind, got_title, message), = _messages(host)
+    assert (kind, got_title) == ("showerror", title)
+    assert phrase in message
+    assert message.endswith("データベースを選択していない状態で起動しました。データベースを選び直すか、新しく作成してください。")
+
+
+def test_startup_migration_failure_falls_back_to_default(host, default_db, with_failing_015):
+    last = _make_db("FAILLAST")
+    _set_version(last, 13)
+    save_last_db_path(last)
+    host._connect_db_at_startup()
+    host._report_startup_db_problems()
+    assert config.DB_PATH == default_db and get_lock_info(last) is None
+    assert [m[:2] for m in _messages(host)] == [("showerror", "データベースの更新に失敗")]
+    assert _version(last) == 14

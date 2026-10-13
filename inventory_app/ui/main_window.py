@@ -35,7 +35,7 @@ from services.db_lifecycle_service import (
     restore_last_db_path, list_db_folders, db_path_for_folder, check_new_db_folder, set_current_db_path,
     create_db_file, activate_new_db, record_db_created, restore_backup_to_new_folder, discard_restored_folder,
     finish_restore, NEW_FOLDER_EMPTY, NEW_FOLDER_RESERVED, NEW_FOLDER_EXISTS,
-    ensure_db_schema, SchemaError, DatabaseTooNewError, LegacyDatabaseError, MigrationFailedError,
+    ensure_db_schema, SchemaError, DatabaseTooNewError, LegacyDatabaseError, MigrationFailedError, default_db_path,
 )
 from ui.window_utils import center_window
 from version import get_version_label
@@ -51,24 +51,11 @@ class MainWindow(tk.Tk):
         # 前回の DB の復元に失敗したときの通知は、UI を作り終えてから出す（途中でダイアログが割り込まないように）。
         self._restore_last_db_failed_path = None
 
-        # 前回選んでいた DB があれば切り替える。無ければ既定DB のまま。記憶したパスが今は無ければ、
-        # 既定DB で起動し、UI を作り終えてから知らせる。
-        self._restore_last_db_failed_path = restore_last_db_path()
-
-        # 既定DB（未選択）の間は、ロックファイルにも一切触れない（D-56・D-57 の「既定DB は読み書きしない」を .lock にも広げた）。
-        # 既定DB 以外でロックを取れなければ、ほかの PC・利用者が使用中とみなして起動を中断する
+        # ロックを取れなければ、ほかの PC・利用者が使用中とみなして起動を中断する
         # （LoginWindow は winfo_exists() を見てから mainloop() する）。
-        if not config.is_default_db():
-            if not self._acquire_lock_with_corruption_handling(config.DB_PATH):
-                messagebox.showerror(
-                    "データベース使用中",
-                    "このデータベースは他の利用者が使用中のため起動できません。\n\n"
-                    + self._format_lock_info(get_lock_info(config.DB_PATH)),
-                    parent=self,
-                )
-                self.destroy()
-                return
-            self._lock_acquired = True
+        if not self._connect_db_at_startup():
+            self.destroy()
+            return
 
         self.title(f"部品在庫管理アプリ - メインメニュー {get_version_label()}")
         # 幅1020: 「データベース選択」行の必要幅（実測986px）に余白を足した値。高さ620: admin 表示の必要高さが599pxまで迫ったため、余裕を持たせた。
@@ -340,12 +327,62 @@ class MainWindow(tk.Tk):
         # LOCK_STALE_SECONDS（30分）以上更新が無いロックとして自動解除されるのを防ぐ。
         self.after(300000, self._heartbeat)
 
+        self._report_startup_db_problems()
+
+    def _connect_db_at_startup(self):
+        """
+        起動時に、前回の DB につなぎ直す（__init__() から、UI を作る前に呼ぶ）。False なら起動を中断する（ロックが取れない）。
+        前回選んでいた DB があれば切り替える。無ければ既定DB のまま。記憶したパスが今は無ければ、既定DB で起動し、UI を作り終えてから知らせる。
+        既定DB（未選択）の間は、ロックファイルにも一切触れない（D-56・D-57 の「既定DB は読み書きしない」を .lock にも広げた）。
+        段階7b: ロックを取った後に DB の形を確かめ、マイグレーションを適用する。開けなければロックを放して既定DB（未選択）で起動し、
+        UI を作り終えてから知らせる（_report_startup_db_problems()）。
+        """
+        self._restore_last_db_failed_path = restore_last_db_path()
+        self._startup_schema_error = None
+        self._startup_schema_result = None
+
+        if not config.is_default_db():
+            if not self._acquire_lock_with_corruption_handling(config.DB_PATH):
+                messagebox.showerror(
+                    "データベース使用中",
+                    "このデータベースは他の利用者が使用中のため起動できません。\n\n"
+                    + self._format_lock_info(get_lock_info(config.DB_PATH)),
+                    parent=self,
+                )
+                return False
+            self._lock_acquired = True
+
+            try:
+                self._startup_schema_result = ensure_db_schema(config.DB_PATH)
+            except SchemaError as e:
+                self._startup_schema_error = e
+                self._release_current_lock()
+                set_current_db_path(default_db_path())
+        return True
+
+    def _report_startup_db_problems(self):
+        """起動時のつなぎ直しで起きたことを、UI を作り終えてから知らせる（__init__() の最後に呼ぶ）。"""
         if self._restore_last_db_failed_path:
             messagebox.showwarning(
                 "データベース接続の復元に失敗",
                 "前回使用していたデータベースが見つかりませんでした：\n"
                 f"{self._restore_last_db_failed_path}\n\n"
                 "デフォルトのローカルデータベースに接続しました。",
+                parent=self,
+            )
+
+        if self._startup_schema_error is not None:
+            title, body = self._schema_error_message(
+                self._startup_schema_error,
+                "データベースを選択していない状態で起動しました。データベースを選び直すか、新しく作成してください。",
+            )
+            messagebox.showerror(title, body, parent=self)
+        elif self._startup_schema_result and self._startup_schema_result["applied"]:
+            result = self._startup_schema_result
+            messagebox.showinfo(
+                "データベースの更新",
+                f"データベースを新しい形に更新しました（版 {result['from_version']} → {result['to_version']}）。\n\n"
+                f"更新前のバックアップ：\n{result['backup_path']}",
                 parent=self,
             )
 
