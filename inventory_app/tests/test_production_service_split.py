@@ -33,3 +33,16 @@ def test_lot_status_service_does_not_import_production_service():
     imported = _imported_modules(lot_status_service)
     assert "services.production_service" not in imported
     assert not {m.split(".")[0] for m in imported} & {"ui", "tkinter", "tkcalendar"}
+
+
+@pytest.mark.parametrize("name", ["_build_report_rows", "build_daily_report", "build_monthly_report"])
+def test_production_service_reexports_report(name):
+    from services import production_report_service
+    assert getattr(production_service, name) is getattr(production_report_service, name)
+
+
+def test_report_service_does_not_import_production_service():
+    from services import production_report_service
+    imported = _imported_modules(production_report_service)
+    assert "services.production_service" not in imported
+    assert not {m.split(".")[0] for m in imported} & {"ui", "tkinter", "tkcalendar"}
