@@ -65,5 +65,6 @@
 - `docs/refactoring_plan.md` — リファクタリングの段階表と進捗
 - `docs/db.md` — DB切替・バックアップ・マイグレーションの手順
 - `docs/setup.md` — 開発環境の構築（.venv・依存パッケージ・Tesseract/Poppler）
+- `docs/migrate_to_refactored.md` — リファクタリング前の環境（別のPC）から今の main へ移る手順と、旧→新の対応表
 - `docs/domain/rule_index.md` — 業務ルール（コメントから抽出した一覧と出典。本文はまだ移していない）
 - `docs/fragile_spots.md` — 壊しやすい箇所の根拠
