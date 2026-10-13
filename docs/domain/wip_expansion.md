@@ -11,7 +11,7 @@ NG入力画面（`docs/domain/ng_input.md`）と同じ構成を、仕掛用に�
 - 消費数量の列だけ編集できる（96コード列は編集不可）
 - 注意: 以前のクラスの docstring には「本画面は確認・閲覧のみで DB への登録は行わない（仕掛の部品はまだ消費されていない在庫なので、NG のように登録して確定する対象ではない）」とあったが、現在は `on_confirm()` と一括展開・登録で wip_scrap_records に登録している。登録を足したときに docstring が更新されなかったと思われる（経緯は未確認）
 
-## 仕掛一覧（`_fetch_wip_list_rows()`）
+## 仕掛一覧（`services/wip_list_service.py` の `_fetch_wip_list_rows()`。段階4で画面から移した）
 
 - スナップショットと確定済みの展開結果（`list_wip_scrap_summary()`）を (kitting_list_no, lot_no, production_side) で合わせ、「確定済み」「未確定」を付ける（NG 一覧の未展開／展開済みと同じ考え方）
 - production_side はスナップショットが TEXT、確定済みが INTEGER なので、`str()` にそろえて比べる

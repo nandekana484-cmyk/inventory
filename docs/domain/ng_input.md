@@ -23,7 +23,7 @@
 - scrap_records.kitting_list_no は NOT NULL なので、計画外では file_no をそのまま入れる。実在の kitting_list_no の命名規則（`{file_no}-{side}-{種別}-{日付}-{連番}`）と形が違うので、実データとぶつからない
 - 計画外の行は lot_no を持たない（NG 申告も lot_no=NULL のものだけを使う）
 
-## NG 一覧（`_fetch_ng_list_rows()`）
+## NG 一覧（`services/ng_list_service.py` の `_fetch_ng_list_rows()`。段階4で画面から移した）
 
 - NG 申告（`list_ng_declarations_latest()`）と展開済み（`list_scrap_summary_by_kitting_no()`）を、(kitting_list_no, lot_no, production_side) で合わせる。lot_no を含めないと、別ロットの申告と展開済みが1行に混ざる（kitting_list_no は lot_no をまたいで重複する。実データで478件）
 - 状態: 未展開（申告だけ）／展開済み（両方）／展開済み（申告記録なし）（展開済みだけ。この機能の導入前に登録されたデータなど）

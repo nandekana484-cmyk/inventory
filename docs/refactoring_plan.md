@@ -68,49 +68,28 @@ D-9x と同じく、D番号が決まる前に書かれた仮番号。どれに�
 
 ## 既知の違反
 
-2026-10-09 時点（HEAD c08a88a）。どれも既存コード。新しく増やさず、そのファイルを触るときに直す（CLAUDE.md「層のルール」）。
+2026-10-13（段階4の後）の時点。新しく増やさず、そのファイルを触るときに直す（CLAUDE.md「層のルール」）。
 行番号は変わりやすいので、関数名で参照する。
 
-### services → ui の import
+### 残っているもの
 
-| ファイル | 内容 |
-|---|---|
-| `services/unprocessed_check_service.py` | トップレベルで `ui.ng_input_window.NgInputWindow`・`ui.wip_expansion_window.WipExpansionWindow` を import し、`check_unprocessed_items()` から `_fetch_ng_list_rows()`・`_fetch_wip_list_rows()` を呼んでいる |
-
-### models → services の import（すべて関数内での import）
-
-| ファイル | 関数 | import しているもの |
+| 種類 | ファイル | 内容 |
 |---|---|---|
-| `models/kitting_plan.py` | `find_matching_plan_items()` | `services.production_import_service.normalize_product_name` |
-| `models/production_import_staging.py` | `upsert_pending_csv_import_row()` | `services.production_import_service.normalize_product_name` |
-| `models/lot_status_history.py` | `record_lot_status_snapshot()` | `services.production_service.evaluate_lot_status` |
+| 他モジュールの `_` 始まりの関数 | `ui/production_import_staging_window.py` | `ui/plan_candidate_dialog.py` の `_sort_candidates_by_closeness`・`_is_large_qty_diff`・`_is_large_date_diff` などを import |
+| 他モジュールの `_` 始まりの関数 | `services/unprocessed_check_service.py` | `services/ng_list_service.py` の `_fetch_ng_list_rows()`・`services/wip_list_service.py` の `_fetch_wip_list_rows()`。段階4で ui から移したとき「名前を変えない」ルールに従ったため。公開名への改名は未決定 |
 
-### SQL が models/ の外にある（services/ と ui/）
+ui → models の直接呼び出し（ui/ のほぼ全画面）は「既存コードは触るときだけ直す」の対象で、この一覧には数えていない（`docs/architecture.md` の表を参照）。
 
-`db/`（init_db・マイグレーション）と単発スクリプトは、ルール上の例外として扱う。
+### 解消したもの（段階4、2026-10-13）
 
-| ファイル | 関数 | SQL の内容 |
+一方向以外の import と models/ の外の SQL 実行は、`ast` による機械的な検査で 0 件。
+
+| 種類 | ファイル | どう解消したか |
 |---|---|---|
-| `services/backup_service.py` | `validate_monthly_db_backup()` | `PRAGMA integrity_check` と `sqlite_master` の参照（バックアップファイルの検査） |
-| `services/db_migration_carryover.py` | `_fetch_plan_items_for_lot()`、`_fetch_existing_plan_start_datetimes_for_lot()`、`_lot_already_migrated()`、`_fetch_production_daily_for_lot()` | kitting_plan_items・production_daily の SELECT（5か所） |
-| `services/master_merge_service.py` | `_table_exists()`、`merge_master_from_backup()` | `sqlite_master` の参照と、バックアップ側・現在側テーブルの SELECT（3か所） |
-| `services/kitting_import_service.py` | `import_kitting_plan_csv()` | kitting_plan_batches の UPDATE（1か所） |
-| `services/lot_status_history.py` | `get_drawdown_date_range()` | production_daily の MIN/MAX（1か所） |
-| `ui/kitting_plan_import.py` | `_load_items_for_batch()` | kitting_plan_items の SELECT（1か所）。ui に SQL がある唯一の箇所 |
-
-### 他の画面・モジュールの `_` 始まりの属性やメソッドを使っている
-
-ステージング画面が親画面（生産実績入力）の内部を直接使っていた件は、段階3b（2026-10-13）で公開メソッドに置き換えて解消した。`_parse_flexible_date` の import は段階2で削除した。
-
-| ファイル | 相手 | 使っているもの |
-|---|---|---|
-| `ui/production_import_staging_window.py` | `ui/plan_candidate_dialog.py` | `_sort_candidates_by_closeness`・`_is_large_qty_diff`・`_is_large_date_diff` などを import |
-| `services/unprocessed_check_service.py` | `ui/ng_input_window.py`・`ui/wip_expansion_window.py` | `_fetch_ng_list_rows()`・`_fetch_wip_list_rows()` |
-
-### 層をまたいだ同じファイル名
-
-- `services/lot_status_history.py` と `models/lot_status_history.py`
-
-### 業務ロジックが ui/ にある
-
-- `ui/production_import_staging_window.py`: `is_auto_confirmable()`、`evaluate_auto_register_eligibility()`（自動登録の判定）
+| services → ui の import | `services/unprocessed_check_service.py` | NG 一覧・仕掛一覧の行の組み立てを `services/ng_list_service.py`・`services/wip_list_service.py` へ移した。画面には呼ぶだけの staticmethod を残した |
+| models → services の import | `models/kitting_plan.py`・`models/production_import_staging.py` | `normalize_product_name()` を `models/kitting_plan.py` へ移した（`services/production_import_service.py` は re-export） |
+| models → services の import | `models/lot_status_history.py` | `record_lot_status_snapshot()` を、評価して記録する本体（`services/production_service.py`）と INSERT（`models.lot_status_history.insert_lot_status_snapshot()`）に分けた。呼び出し側3ファイルの import を書き換えた |
+| SQL が models/ の外にある | `services/backup_service.py`・`db_migration_carryover.py`・`master_merge_service.py`・`kitting_import_service.py`・`lot_status_history_service.py`・`ui/kitting_plan_import.py` | SQL 文を変えずに `models/db_common.py`（DB ファイル全体の検査・汎用の読み取り）・`models/kitting_plan.py`・`models/production.py` へ移した。旧位置の関数は名前を変えずに残し、models を呼ぶだけにした |
+| 層をまたいだ同じファイル名 | `services/lot_status_history.py` | `services/lot_status_history_service.py` に改名した。旧ファイルは re-export だけ |
+| 他の画面の `_` 属性・メソッド | `ui/production_import_staging_window.py` → 親画面 | 段階3bで公開メソッドに置き換えた |
+| 業務ロジックが ui/ にある | `ui/production_import_staging_window.py` | 段階1で自動登録の判定を `services/staging_eligibility.py` へ移した（旧位置は re-export） |
