@@ -1,7 +1,5 @@
 # ui/daily_drawdown_window.py
 import csv
-import os
-import tempfile
 from datetime import datetime
 
 import tkinter as tk

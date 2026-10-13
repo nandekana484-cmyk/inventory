@@ -18,12 +18,10 @@ from services.production_import_service import (
 )
 from models.kitting_plan import (
     find_matching_plan_items, classify_side1_only_plan,
-    SIDE1_ONLY_CLASS_SINGLE_SIDE, SIDE1_ONLY_CLASS_WAITING_SIDE2, SIDE1_ONLY_CLASS_UNREGISTERED,
-    SIDE1_ONLY_CLASS_LABELS,
+    SIDE1_ONLY_CLASS_WAITING_SIDE2, SIDE1_ONLY_CLASS_UNREGISTERED,
 )
 from models.production import list_daily_production_by_kitting_no
 from models.production_import_staging import (
-    list_pending_csv_import_rows,
     delete_pending_csv_import_row,
     upsert_pending_csv_import_row,
 )
@@ -35,8 +33,6 @@ from ui.plan_candidate_dialog import (
     _sort_candidates_by_closeness,
     _is_large_qty_diff,
     _is_large_date_diff,
-    _parse_flexible_date,
-    _parse_plan_start_datetime,
     _format_qty,
     _format_planned_qty_cell,
     _format_side,
@@ -79,7 +75,7 @@ def _confirm_side1_only_if_applicable(parent, candidate):
 
 
 # 段階1で services/staging_eligibility.py へ移した。呼び出し側を変えないよう、ここから re-export する。
-from services.staging_eligibility import (  # noqa: E402,F401
+from services.staging_eligibility import (  # noqa: E402,F401 （re-export）
     AUTO_REGISTER_MAX_DAYS_SHIFT_S,
     AUTO_REGISTER_MAX_DAYS_SHIFT_Q,
     AUTO_REGISTER_ELIGIBLE,

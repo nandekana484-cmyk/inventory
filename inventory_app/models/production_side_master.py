@@ -19,7 +19,6 @@ BOM）からは区別できない（CANONICAL_DESIGN_DECISIONS.md D-9x参照）�
 models.board_structure_master.py・models.parts_attributes.py と同じ
 「CSVをマスタとした差分同期」パターン（upsert + 差分同期関数）を踏襲する。
 """
-import re
 import unicodedata
 
 from models.db_common import get_master_connection

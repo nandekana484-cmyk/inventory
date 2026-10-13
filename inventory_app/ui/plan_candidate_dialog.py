@@ -13,7 +13,6 @@ ui.ng_input_window.NgInputWindow.on_expand()/_expand_from_kitting_no()の
 経路が無くなった）ため、現在使っているのはui.ng_input_window.NgInputWindowの
 みである。
 """
-from datetime import datetime
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -256,7 +255,7 @@ def select_plan_candidate(parent, kitting_list_no, candidates):
 
 
 # 段階1で services/date_parsing.py へ移した。呼び出し側を変えないよう、ここから re-export する。
-from services.date_parsing import (  # noqa: E402,F401
+from services.date_parsing import (  # noqa: E402,F401 （re-export）
     _parse_plan_start_datetime,
     _REPORT_DATE_FORMATS,
     _parse_flexible_date,

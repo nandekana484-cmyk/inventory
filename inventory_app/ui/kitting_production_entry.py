@@ -12,10 +12,6 @@ from services.production_service import (
     register_opposite_side_daily_result,
     get_daily_history,
     calculate_lot_completion,
-    update_daily_result,
-    delete_daily_result,
-    build_linked_correction_preview,
-    apply_linked_correction,
 )
 from services.production_import_service import parse_production_csv_for_staging
 from services.csv_format_detection import (
@@ -37,14 +33,13 @@ from ui.lot_progress_window import LotProgressWindow
 from ui.daily_drawdown_window import DailyDrawdownWindow
 from ui.production_import_staging_window import open_or_notify
 from ui.loading_window import LoadingWindow
-from ui.plan_candidate_dialog import _parse_flexible_date
 from ui.window_utils import center_window
 # 段階2で ui/actual_correction_window.py へ移した。他の画面はここから import しているので re-export する。
-from ui.actual_correction_window import ActualCorrectionWindow
+from ui.actual_correction_window import ActualCorrectionWindow  # noqa: F401 （re-export）
 
 
 # 段階1で services/production_entry_service.py へ移した。_resolve_csv_report_date はここから re-export する。
-from services.production_entry_service import (  # noqa: E402,F401
+from services.production_entry_service import (  # noqa: E402,F401 （re-export）
     _resolve_csv_report_date,
     compute_ng_save_qty,
     is_plan_row_completed,
