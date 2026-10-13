@@ -53,7 +53,7 @@
 
 ## 壊しやすい箇所
 - 実績CSV取込の照合・自動登録判定（production_import_staging_window / production_import_service）
-- ロット完成数の集計キー。代入ではなく加算する（production_service `_compute_lot_completion()`）
+- ロット完成数の集計キー。代入ではなく加算する（lot_status_service `_compute_lot_completion()`）
 - グローバルな `config.DB_PATH` の切り替え（開いている画面・前月引き継ぎ・既定DB）
 - Tk の pack 順序。Treeview を先に pack するとスクロールバーやボタンが潰れる
 - スキーマのドリフト（migration の未適用、`CREATE TABLE IF NOT EXISTS` では列が増えない）

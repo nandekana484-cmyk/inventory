@@ -73,12 +73,18 @@ D-9x と同じく、D番号が決まる前に書かれた仮番号。どれに�
 
 ### 残っているもの
 
+段階5（2026-10-13）で、それまでの一覧の2件（ステージング画面の `plan_candidate_dialog` の `_` 関数、`unprocessed_check_service` の `_fetch_*_list_rows()`）は公開名を付けて解消した（旧名は同じものを指す別名として残している）。
+
+同じときに、他のモジュールの `_` 始まりの名前の import を機械的に調べたところ、一覧に無かったものが8件（5種類）見つかった。どれも未対応。
+
 | 種類 | ファイル | 内容 |
 |---|---|---|
-| 他モジュールの `_` 始まりの関数 | `ui/production_import_staging_window.py` | `ui/plan_candidate_dialog.py` の `_sort_candidates_by_closeness`・`_is_large_qty_diff`・`_is_large_date_diff` などを import |
-| 他モジュールの `_` 始まりの関数 | `services/unprocessed_check_service.py` | `services/ng_list_service.py` の `_fetch_ng_list_rows()`・`services/wip_list_service.py` の `_fetch_wip_list_rows()`。段階4で ui から移したとき「名前を変えない」ルールに従ったため。公開名への改名は未決定 |
+| 他モジュールの `_` 始まりの関数 | `services/db_migration_carryover.py`・`services/production_service.py`・`services/staging_eligibility.py`・`services/production_entry_service.py` | `services/date_parsing.py` の `_parse_plan_start_datetime`・`_parse_flexible_date` を import（5か所）。段階1で ui から移したとき、名前を変えなかった |
+| 他モジュールの `_` 始まりの関数 | `ui/production_import_staging_window.py` | `services/production_entry_service.py` の `_resolve_csv_report_date` を import（段階3bで追加した） |
+| 他モジュールの `_` 始まりの関数 | `ui/production_side_master_window.py` | `services/csv_parsing_common.py` の `_open_csv_with_fallback` を import（以前から） |
+| 他モジュールの `_` 始まりの関数 | `ui/unified_report_window.py` | `ui/daily_report_window.py` の `_row_to_values` を import（以前から） |
 
-ui → models の直接呼び出し（ui/ のほぼ全画面）は「既存コードは触るときだけ直す」の対象で、この一覧には数えていない（`docs/architecture.md` の表を参照）。
+re-export の行（`# noqa: F401 （re-export）`）は数えていない。
 
 ### 解消したもの（段階4、2026-10-13）
 

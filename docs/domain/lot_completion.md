@@ -1,4 +1,6 @@
-# 実績の登録とロットの完成数・引落（services/production_service.py）
+# 実績の登録とロットの完成数・引落（services/production_service.py・lot_status_service.py・production_report_service.py）
+
+段階5（2026-10-13）で、ロット状態の評価を `services/lot_status_service.py`、日報・月報の表示データを `services/production_report_service.py` に分けた。登録・連動修正・仕掛数量の抽出は `services/production_service.py` に残っている（移した関数は production_service.py からも re-export している）。
 
 2026-10-09 のコメント軽量化で、コメント・docstring から移した内容。関数名で参照する。
 集計キー（2要素・加算）の決定は CANONICAL_DESIGN_DECISIONS.md §5 と BOM_MIGRATION_NOTES.md §4。

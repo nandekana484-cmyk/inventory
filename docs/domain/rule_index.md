@@ -24,15 +24,15 @@
 | R6 | 面1だけの計画は、生産面マスターで「片面の製品／面2待ち／生産面マスター未登録」(a/b/c) に分ける。b と c は確認ダイアログを出すが、登録は禁止しない | `ui/kitting_production_entry.py` `_build_registration_preview()`、`ui/production_import_staging_window.py` `_register_candidate_immediately()`・`_confirm_side1_only_if_applicable()` |
 | R7 | 後行面（面2）があるかどうかはセットアップファイルNo単位で判定する（実装ラインは問わない）（D-104、D-107） | `models/kitting_plan.py` `classify_side1_only_plan()` |
 | R8 | 両面の計画があるロットで実績を修正・削除するときは、反対側の面の実績も連動させる。確定の前に必ず確認ダイアログを出す（D-112） | `ui/kitting_production_entry.py` `ActualCorrectionWindow.on_update()` |
-| R9 | 面1/面2 の不整合は、ロットNo・ファイルNoごとの合計で比べる（D-111） | `services/production_service.py` `_build_report_rows()` のコメント |
+| R9 | 面1/面2 の不整合は、ロットNo・ファイルNoごとの合計で比べる（D-111） | `services/production_report_service.py` `_build_report_rows()` のコメント |
 
 ## 実績・完成数
 
 | # | ルール | 出典 |
 |---|---|---|
-| R10 | ロット完成数は (setup_file_no, production_side) ごとに実績を**加算**する（同じファイルNo・同じ面に複数のバッチがある：222件） | `services/production_service.py` `_compute_lot_completion()` |
-| R11 | ファイルNoによって order_qty が食い違うロットがある（301件中3件）。食い違ったときの扱いは docstring に書かれている | `services/production_service.py` `_compute_lot_completion()` |
-| R12 | 構成基板数のチェックとロット進捗の判定は、`_evaluate_lot_status()` に一本化してある（日報・月報、仕掛数量の抽出、ロット進捗チェック） | `services/production_service.py` `_evaluate_lot_status()` |
+| R10 | ロット完成数は (setup_file_no, production_side) ごとに実績を**加算**する（同じファイルNo・同じ面に複数のバッチがある：222件） | `services/lot_status_service.py` `_compute_lot_completion()` |
+| R11 | ファイルNoによって order_qty が食い違うロットがある（301件中3件）。食い違ったときの扱いは docstring に書かれている | `services/lot_status_service.py` `_compute_lot_completion()` |
+| R12 | 構成基板数のチェックとロット進捗の判定は、`_evaluate_lot_status()` に一本化してある（日報・月報、仕掛数量の抽出、ロット進捗チェック） | `services/lot_status_service.py` `_evaluate_lot_status()` |
 | R13 | report_date は必ず `YYYY-MM-DD` に正規化して保存する（DBでは文字列のまま範囲比較するため） | `ui/kitting_production_entry.py` `_resolve_csv_report_date()` |
 | R14 | NG を入力せずに実績だけを登録してもよい | `ui/kitting_production_entry.py` `_validate_ng_inputs()` |
 

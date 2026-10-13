@@ -21,7 +21,7 @@ CLAUDE.md「壊しやすい箇所」の根拠。2026-10-09 時点（HEAD c08a88a
 
 ## 2. ロット完成数の集計キー
 
-- 場所: `inventory_app/services/production_service.py`: `_compute_lot_completion()`, `calculate_lot_completion()`, `_evaluate_lot_status()`
+- 場所: `inventory_app/services/lot_status_service.py`: `_compute_lot_completion()`, `calculate_lot_completion()`, `_evaluate_lot_status()`（段階5で services/production_service.py から移した。production_service.py からも re-export している）
 - 根拠
   - CANONICAL_DESIGN_DECISIONS.md §5: 2拠点のマージで `calculate_lot_completion()` のキーが単一キーに2回巻き戻った。単一キーでも例外は出ず、計算結果だけが静かに誤る
   - `_compute_lot_completion()` docstring: 同じ file_no・同じ面にアクティブなバッチが複数ある（実データで222件）。代入にすると実績が消えるため、必ず加算にする

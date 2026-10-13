@@ -70,25 +70,27 @@ import の向きだけを見ているので、実際の呼び出し回数や呼�
 | kitting_import_service.py | board_structure_master, kitting_plan | — | — |
 | lot_status_history.py | — | lot_status_history_service | — |
 | lot_status_history_service.py | production | production_service | — |
+| lot_status_service.py | board_structure_master, kitting_plan, lot_status_history, production | — | — |
 | master_merge_service.py | board_structure_master, db_common, master, parts_attributes, production_side_master, workers | — | — |
 | ng_list_service.py | kitting_plan, ng_declarations, ng_exclusion_list, scrap_records | — | — |
 | pdf_ocr_service.py | inventory | — | — |
 | production_entry_service.py | ng_declarations, operation_log | date_parsing, production_service | — |
 | production_import_service.py | kitting_plan, production, production_import_staging | csv_parsing_common, production_service | — |
-| production_service.py | board_structure_master, kitting_plan, lot_status_history, ng_declarations, production, scrap_records | date_parsing | — |
+| production_report_service.py | kitting_plan, ng_declarations, production, scrap_records | lot_status_service | — |
+| production_service.py | kitting_plan, production | date_parsing, lot_status_service, production_report_service | — |
 | staging_eligibility.py | kitting_plan, production, production_import_staging | date_parsing, production_import_service | — |
 | unprocessed_check_service.py | — | ng_list_service, wip_list_service | — |
 | wip_list_service.py | wip_board_snapshot, wip_exclusion_list, wip_scrap_records | — | — |
 
 ## 層のルールと実態が食い違っている箇所（実測）
 
-CLAUDE.md「層のルール」との食い違い。2026-10-13（段階4の後）の時点。
-ui → services → models の一方向以外の import と、models/ の外の SQL 実行は 0 件（段階4で解消。一覧は `docs/refactoring_plan.md`「既知の違反」）。
+CLAUDE.md「層のルール」との食い違い。2026-10-13（段階5の後）の時点。
+ui → services → models の一方向以外の import と、models/ の外の SQL 実行は 0 件（段階4で解消）。
+他のモジュールの `_` 始まりの名前の import が8件残っている（一覧は `docs/refactoring_plan.md`「既知の違反」）。
 
 | 種類 | 箇所 | 内容 |
 |---|---|---|
-| 他モジュールの `_` 関数 | `ui/production_import_staging_window.py` の import 文 | `ui.plan_candidate_dialog` の `_sort_candidates_by_closeness`・`_is_large_qty_diff`・`_is_large_date_diff` などを import |
-| 他モジュールの `_` 関数 | `services/unprocessed_check_service.py` | `services.ng_list_service._fetch_ng_list_rows()`・`services.wip_list_service._fetch_wip_list_rows()` を呼ぶ（段階4で ui から移したとき、名前を変えなかった） |
+| 他モジュールの `_` 関数 | services 4ファイル・ui 3ファイル | `docs/refactoring_plan.md`「既知の違反」の表のとおり（8件） |
 | ui → models の直接呼び出し | ui/ のほぼ全画面 | 上の表のとおり。「既存コードは触るときだけ直す」の対象 |
 
 ## 命名規則と実態が食い違っている箇所
