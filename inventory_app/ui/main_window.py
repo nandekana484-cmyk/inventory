@@ -1,8 +1,6 @@
 ﻿import os
-import queue
 import shutil
 import socket
-import threading
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
 import tkinter.font as tkfont
@@ -15,7 +13,7 @@ from services.db_lock_service import (
 )
 from ui.kitting_plan_import import KittingPlanImportWindow
 from ui.kitting_production_entry import KittingProductionEntryWindow
-from ui.loading_window import LoadingWindow
+from ui.async_task import run_in_background
 from ui.inventory_input_window import InventoryInputWindow
 from ui.theoretical_inventory_import_window import TheoreticalInventoryImportWindow
 from ui.inventory_diff_window import InventoryDiffWindow
@@ -131,17 +129,15 @@ class MainWindow(tk.Tk):
         )
         self.btn_create_database.pack(side=tk.LEFT)
 
+        # 別スレッドで実行する処理（ui/async_task.py の run_in_background()）の読み込み中の表示。
         # on_create_database()の引き継ぎ処理（非同期）用
-        self._create_db_result_queue = queue.Queue()
         self._create_db_loading_window = None
 
         # on_backup_databases() 用（同じ非同期パターン）
-        self._backup_result_queue = queue.Queue()
         self._backup_loading_window = None
         self._backup_destination_folder = None
 
         # on_merge_master_from_backup() 用（同じ非同期パターン）
-        self._merge_master_result_queue = queue.Queue()
         self._merge_master_loading_window = None
 
         # ヘッダー領域
@@ -507,35 +503,16 @@ class MainWindow(tk.Tk):
             return
         self._kitting_entry_loading = True
 
-        loading = LoadingWindow(self)
-        result_queue = queue.Queue()
-
-        def _fetch_in_thread():
-            try:
-                rows = KittingProductionEntryWindow._fetch_plan_list_rows()
-                result_queue.put((True, rows))
-            except Exception as e:
-                result_queue.put((False, e))
-
-        threading.Thread(target=_fetch_in_thread, daemon=True).start()
-
-        def _poll():
-            try:
-                success, payload = result_queue.get_nowait()
-            except queue.Empty:
-                self.after(200, _poll)
-                return
-
+        def _on_error(error, _traceback_text):
             self._kitting_entry_loading = False
-            loading.destroy()
-            if not success:
-                messagebox.showerror(
-                    "エラー", f"生産実績入力画面の読み込みに失敗しました：\n{payload}",
-                    parent=self,
-                )
-                return
+            messagebox.showerror(
+                "エラー", f"生産実績入力画面の読み込みに失敗しました：\n{error}",
+                parent=self,
+            )
 
-            window = KittingProductionEntryWindow(self, self.current_worker, preloaded_plan_rows=payload)
+        def _on_success(rows):
+            self._kitting_entry_loading = False
+            window = KittingProductionEntryWindow(self, self.current_worker, preloaded_plan_rows=rows)
             self._open_windows[key] = window
 
             def _on_close(w=window):
@@ -546,7 +523,10 @@ class MainWindow(tk.Tk):
             if on_ready is not None:
                 on_ready(window)
 
-        self.after(200, _poll)
+        # 読み込み中の表示・別スレッド・ポーリングは ui/async_task.py（段階6）。エラーは例外の文字列をそのまま出す。
+        run_in_background(
+            self, None, lambda: KittingProductionEntryWindow._fetch_plan_list_rows(), _on_success, _on_error,
+        )
 
     def open_inventory_input(self):
         if not self._confirm_proceed_despite_exported_db():
@@ -948,39 +928,26 @@ class MainWindow(tk.Tk):
 
         # 引き継ぎありでは、新しい DB のテーブルは引き継ぎ処理の中で作られるので、ここで init_kitting_plan_tables() は呼ばない。
         self._set_menu_enabled(False)
-        self._create_db_loading_window = LoadingWindow(self, message="前月からの未完了分を引き継いでいます…")
         # 完了時に master.db の履歴へ、引き継ぎ元として記録するフォルダ名。
         self._create_db_old_db_folder = os.path.basename(os.path.dirname(old_db_path))
 
-        t = threading.Thread(
-            target=self._run_carry_over_in_thread,
-            args=(old_db_path, new_db_path, folder),
-            daemon=True,
+        # 読み込み中の表示・別スレッド・ポーリングは ui/async_task.py（段階6）。エラーは「例外の文字列＋改行＋traceback」で渡す。
+        self._create_db_loading_window = run_in_background(
+            self, "前月からの未完了分を引き継いでいます…",
+            lambda: self._run_carry_over_in_thread(old_db_path, new_db_path, folder),
+            lambda payload: self._on_create_db_finished(True, payload),
+            lambda error, traceback_text: self._on_create_db_finished(False, f"{error}\n{traceback_text}"),
         )
-        t.start()
-        self.after(200, self._poll_create_db_queue)
 
     def _run_carry_over_in_thread(self, old_db_path, new_db_path, folder):
-        try:
-            worker_id = self.current_worker.get("worker_id", "SYSTEM")
-            summary = carry_over_incomplete_lots(old_db_path, new_db_path, imported_by=worker_id)
-            self._create_db_result_queue.put((True, {"summary": summary, "folder": folder}))
-        except Exception as e:
-            import traceback
-            tb = traceback.format_exc()
-            self._create_db_result_queue.put((False, f"{e}\n{tb}"))
+        """別スレッドで実行する本体（run_in_background() から呼ぶ）。例外はそのまま投げる。"""
+        worker_id = self.current_worker.get("worker_id", "SYSTEM")
+        summary = carry_over_incomplete_lots(old_db_path, new_db_path, imported_by=worker_id)
+        return {"summary": summary, "folder": folder}
 
-    def _poll_create_db_queue(self):
-        try:
-            result = self._create_db_result_queue.get_nowait()
-        except queue.Empty:
-            self.after(200, self._poll_create_db_queue)
-            return
-
-        success, payload = result
-        if self._create_db_loading_window is not None:
-            self._create_db_loading_window.destroy()
-            self._create_db_loading_window = None
+    def _on_create_db_finished(self, success, payload):
+        """引き継ぎが終わったとき（UI スレッド）。読み込み中の表示は run_in_background() が閉じている。"""
+        self._create_db_loading_window = None
         self._set_menu_enabled(True)
         # carry_over_incomplete_lots() は成否に関わらず config.DB_PATH を新しい DB にして戻るので、どちらの場合もラベルを更新する。
         self._update_current_db_label()
@@ -1072,41 +1039,26 @@ class MainWindow(tk.Tk):
         if not destination_folder:
             return
 
-        # _poll_backup_queue()はこのメソッドのローカル変数を参照できないため、
+        # _on_backup_finished()はこのメソッドのローカル変数を参照できないため、
         # インスタンス属性に保持しておく（log_operation()の詳細欄で使う）。
         self._backup_destination_folder = destination_folder
 
         self._set_menu_enabled(False)
-        self._backup_loading_window = LoadingWindow(self, message="データベースをバックアップしています…")
-
-        t = threading.Thread(
-            target=self._run_backup_in_thread,
-            args=(destination_folder,),
-            daemon=True,
+        # 読み込み中の表示・別スレッド・ポーリングは ui/async_task.py（段階6）。エラーは「例外の文字列＋改行＋traceback」で渡す。
+        self._backup_loading_window = run_in_background(
+            self, "データベースをバックアップしています…",
+            lambda: self._run_backup_in_thread(destination_folder),
+            lambda payload: self._on_backup_finished(True, payload),
+            lambda error, traceback_text: self._on_backup_finished(False, f"{error}\n{traceback_text}"),
         )
-        t.start()
-        self.after(200, self._poll_backup_queue)
 
     def _run_backup_in_thread(self, destination_folder):
-        try:
-            result = backup_databases(destination_folder)
-            self._backup_result_queue.put((True, result))
-        except Exception as e:
-            import traceback
-            tb = traceback.format_exc()
-            self._backup_result_queue.put((False, f"{e}\n{tb}"))
+        """別スレッドで実行する本体（run_in_background() から呼ぶ）。例外はそのまま投げる。"""
+        return backup_databases(destination_folder)
 
-    def _poll_backup_queue(self):
-        try:
-            result = self._backup_result_queue.get_nowait()
-        except queue.Empty:
-            self.after(200, self._poll_backup_queue)
-            return
-
-        success, payload = result
-        if self._backup_loading_window is not None:
-            self._backup_loading_window.destroy()
-            self._backup_loading_window = None
+    def _on_backup_finished(self, success, payload):
+        """バックアップが終わったとき（UI スレッド）。読み込み中の表示は run_in_background() が閉じている。"""
+        self._backup_loading_window = None
         self._set_menu_enabled(True)
 
         if success:
@@ -1164,38 +1116,21 @@ class MainWindow(tk.Tk):
             return
 
         self._set_menu_enabled(False)
-        self._merge_master_loading_window = LoadingWindow(
-            self, message="マスタデータを取り込んでいます…",
+        # 読み込み中の表示・別スレッド・ポーリングは ui/async_task.py（段階6）。エラーは「例外の文字列＋改行＋traceback」で渡す。
+        self._merge_master_loading_window = run_in_background(
+            self, "マスタデータを取り込んでいます…",
+            lambda: self._run_merge_master_in_thread(backup_file_path),
+            lambda payload: self._on_merge_master_finished(True, payload),
+            lambda error, traceback_text: self._on_merge_master_finished(False, f"{error}\n{traceback_text}"),
         )
-
-        t = threading.Thread(
-            target=self._run_merge_master_in_thread,
-            args=(backup_file_path,),
-            daemon=True,
-        )
-        t.start()
-        self.after(200, self._poll_merge_master_queue)
 
     def _run_merge_master_in_thread(self, backup_file_path):
-        try:
-            result = merge_master_from_backup(backup_file_path)
-            self._merge_master_result_queue.put((True, result))
-        except Exception as e:
-            import traceback
-            tb = traceback.format_exc()
-            self._merge_master_result_queue.put((False, f"{e}\n{tb}"))
+        """別スレッドで実行する本体（run_in_background() から呼ぶ）。例外はそのまま投げる。"""
+        return merge_master_from_backup(backup_file_path)
 
-    def _poll_merge_master_queue(self):
-        try:
-            result = self._merge_master_result_queue.get_nowait()
-        except queue.Empty:
-            self.after(200, self._poll_merge_master_queue)
-            return
-
-        success, payload = result
-        if self._merge_master_loading_window is not None:
-            self._merge_master_loading_window.destroy()
-            self._merge_master_loading_window = None
+    def _on_merge_master_finished(self, success, payload):
+        """取り込みが終わったとき（UI スレッド）。読み込み中の表示は run_in_background() が閉じている。"""
+        self._merge_master_loading_window = None
         self._set_menu_enabled(True)
 
         if success:
