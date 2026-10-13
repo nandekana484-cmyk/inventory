@@ -7,7 +7,9 @@ CLAUDE.md「壊しやすい箇所」の根拠。2026-10-09 時点（HEAD c08a88a
 ## 1. 実績CSV取込の照合・自動登録判定
 
 - 場所
-  - `inventory_app/ui/production_import_staging_window.py`: `evaluate_auto_register_eligibility()`, `is_auto_confirmable()`, `_load_staged_rows_from_db()`, `_execute_bulk_register()`, `_register_candidate_immediately()`
+  - `inventory_app/services/staging_eligibility.py`: `evaluate_auto_register_eligibility()`, `is_auto_confirmable()`, `_load_staged_rows_from_db()`（段階1で ui/production_import_staging_window.py から移した。旧位置から re-export している）
+  - `inventory_app/ui/production_import_staging_window.py`: `_execute_bulk_register()`, `_register_candidate_immediately()`
+  - `inventory_app/services/production_entry_service.py`: `register_actual_and_ng()`（登録の DB への書き込み。書き込みの順序は `docs/domain/production_entry.md`「実績CSVの保留行を消すタイミング」）
   - `inventory_app/services/production_import_service.py`: `is_already_registered()`
 - 根拠
   - CHANGELOG 1.0.0〜1.0.2 で、同じ領域を立て続けに修正している（D-78 → D-81/D-82 → D-83）。どれも「実績の行が消える」「登録済みと誤って判定する」不具合

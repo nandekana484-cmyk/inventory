@@ -12,7 +12,7 @@
   - CSV の日付は `"2026/3/18"` のようにスラッシュ区切りでゼロ埋めされていないことがある。`_resolve_csv_report_date()` で必ず `"YYYY-MM-DD"` に正規化する。表記ゆれが残ると、`report_date` の文字列比較による範囲検索（`WHERE report_date >= ? AND report_date <= ?`）が壊れる
   - 解釈できない日付は None として渡し、登録側（`register_daily_result()` / `overwrite_daily_result()`）で実行日を使う
   - 反対側の面への連動登録にも、主たる面と同じ日付を渡す。以前は反対側だけ実行日になる不具合があった（2026-09-29 の調査）
-- NG の日付（`ng_declarations.report_date`）は、登録した当日にする（`_perform_registration()`）
+- NG の日付（`ng_declarations.report_date`）は、登録した当日にする（`services/production_entry_service.py` の `register_actual_and_ng()`）
 
 ### 1計画＝1レコード
 
@@ -22,7 +22,7 @@
 
 ### NG の保存値と表示（面1・面2）
 
-- 保存値（`_compute_ng_save_qty()`）
+- 保存値（`services/production_entry_service.py` の `compute_ng_save_qty()`。画面の `_compute_ng_save_qty()` はこれを呼ぶだけ）
   - 面1の保存値 ＝ 面1欄の入力値 ＋ 面2欄の入力値（片方が空でももう片方の値が入る。例: 面1欄=空・面2欄=5 → 面1へ5）
   - 面2の保存値 ＝ 面2欄の入力値のみ（面1欄の値は面2に影響しない）
   - 合計が0の面は保存しない（既存の NG 申告に触れない）
@@ -34,8 +34,9 @@
 
 ### 実績CSVの保留行を消すタイミング
 
-- 実績CSVステージング一覧から転記した行は、**実績の登録が成功した直後**に一覧から消す（`_perform_registration()` で `_pending_csv_row_removal` を呼ぶ）
+- 実績CSVステージング一覧から転記した行は、**実績の登録が成功したら**一覧から消す。`_perform_registration()` が `register_actual_and_ng()` の戻り値（`actual_registered`）を見て `_pending_csv_row_removal` を呼ぶ
 - NG 申告・反対側連動の成否は問わない（CSV 行が表すのは実績数量だけで、NG は別枠のため）
+- 書き込みの順序: 実績 → 操作履歴 → 反対側の面 → NG（ここまで `register_actual_and_ng()`）→ 保留行の削除（画面側）。段階3a（2026-10-13）で、保留行の削除を最後にした。以前は操作履歴の直後で、反対側と NG より前だった
 - `search_plan()` は `_pending_csv_row_removal`・`_pending_csv_report_date` をクリアする。CSV を経ずに別の計画へ切り替えたとき、古い CSV 行の情報が無関係な登録に使われないようにするため。CSV 経由のときは、ステージング一覧（`_confirm_candidate()`）が `search_plan()` の直後に改めてセットする
 
 ### 反対側の面の実績
