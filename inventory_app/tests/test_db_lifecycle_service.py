@@ -63,3 +63,15 @@ def test_service_does_not_import_ui_or_gui():
         elif isinstance(node, ast.ImportFrom) and node.module:
             modules.add(node.module.split(".")[0])
     assert not modules & {"ui", "tkinter", "tkcalendar"}
+
+
+# ---------------------------------------------------------------- 段階7b: 新規作成した DB の版
+
+def test_new_db_is_stamped_latest_version():
+    import sqlite3
+    from db.migrations import LATEST_VERSION
+    from db.schema_version import ensure_schema
+    path = _make_db("NEWVER")
+    assert sqlite3.connect(path).execute("PRAGMA user_version").fetchone()[0] == LATEST_VERSION == 13
+    result = ensure_schema(path)          # 開くときの確認では何もしない
+    assert result["stamped_baseline"] is False and result["applied"] == [] and result["backup_path"] is None

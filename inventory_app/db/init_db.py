@@ -6,6 +6,8 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from config import DB_PATH
+from db.migrations import LATEST_VERSION
+from db.schema_version import write_user_version
 
 def init_database():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -62,6 +64,9 @@ def init_database_at(db_path: str):
             CREATE INDEX IF NOT EXISTS idx_production_daily_kitting_list_no
             ON production_daily(kitting_list_no)
         """)
+
+        # 新しく作る DB は最新の形なので、最新の版を書く（段階7b。開くときの確認で、マイグレーションの適用が要らない）。
+        write_user_version(con, LATEST_VERSION)
 
         con.commit()
     finally:
