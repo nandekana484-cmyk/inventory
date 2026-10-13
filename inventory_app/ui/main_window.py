@@ -882,7 +882,11 @@ class MainWindow(tk.Tk):
             )
             return
 
-        if not self._try_switch_db_path(new_db_path, error_title="切替不可"):
+        if not self._try_switch_db_path(
+            new_db_path, error_title="切替不可", check_schema=True,
+            schema_failure_note="取り込んだデータベース（このフォルダの中のバックアップを含む）は削除しました。"
+                                "元のバックアップのファイルは変わっていません。",
+        ):
             # ロック取得失敗：_try_switch_db_path()は失敗時に現在のDB・ロックを
             # 変更しない契約のため、コピー済みの新フォルダだけを後始末する。
             discard_restored_folder(folder_name)

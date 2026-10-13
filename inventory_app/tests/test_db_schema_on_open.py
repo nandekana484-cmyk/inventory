@@ -179,3 +179,69 @@ def test_switch_migration_failure_keeps_current_db(host, current_db, with_failin
     assert len(backups) == 1 and backups[0] in message
     assert "詳細：015 で失敗" in message
     assert _version(target) == 14
+
+
+# ---------------------------------------------------------------- バックアップからの取り込み
+
+from tests.test_db_lifecycle_main_window import backup_file, _lifecycle  # noqa: E402,F401 （fixture）
+
+
+def _restore(host, backup_path, folder):
+    host.answers["askopenfilename"] = [backup_path]
+    host.answers["askstring"] = [folder]
+    host.on_restore_from_backup()
+
+
+def test_restore_current_version_backup(host, current_db, backup_file):
+    _restore(host, backup_file, "R13")
+    target = _db_path("R13")
+    assert config.DB_PATH == target
+    assert _version(target) == 13
+    assert [m[:2] for m in _messages(host)] == [("showinfo", "取り込み完了")]
+
+
+def test_restore_applies_migration_to_the_copy_only(host, current_db, backup_file, with_test_014):
+    _create_ng_declarations(backup_file)
+    _set_version(backup_file, 13)
+    _restore(host, backup_file, "R14")
+    target = _db_path("R14")
+    assert config.DB_PATH == target
+    assert _version(target) == 14 and "test_dummy" in _columns(target, "ng_declarations")
+    assert _version(backup_file) == 13 and "test_dummy" not in _columns(backup_file, "ng_declarations")  # 原本は変えない
+    assert [m[:2] for m in _messages(host)] == [("showinfo", "データベースの更新"), ("showinfo", "取り込み完了")]
+    assert len(sv.list_migration_backups(target)) == 1
+
+
+def test_restore_legacy_backup_removes_folder(host, current_db, tmp_path):
+    acquire_lock(current_db, "作業者A", "PC1")
+    host._lock_acquired = True
+    legacy = str(tmp_path / "legacy_backup.db")
+    with sqlite3.connect(legacy) as con:
+        con.execute("CREATE TABLE production_daily (prod_log_id INTEGER PRIMARY KEY, report_date TEXT)")
+        con.execute("CREATE TABLE kitting_plan_items (id INTEGER PRIMARY KEY, kitting_list_no TEXT)")
+    _restore(host, legacy, "RLEGACY")
+    assert not os.path.exists(os.path.join(config.APP_DATA_DIR, "db", "RLEGACY"))
+    assert config.DB_PATH == current_db and get_lock_info(current_db)["worker_name"] == "作業者A"
+    (kind, title, message), = _messages(host)
+    assert (kind, title) == ("showerror", "データベースを開けません")
+    assert message.endswith("取り込んだデータベース（このフォルダの中のバックアップを含む）は削除しました。元のバックアップのファイルは変わっていません。")
+    assert _lifecycle() == []
+
+
+def test_restore_too_new_backup_removes_folder(host, current_db, backup_file):
+    _set_version(backup_file, 20)
+    _restore(host, backup_file, "RNEW")
+    assert not os.path.exists(os.path.join(config.APP_DATA_DIR, "db", "RNEW"))
+    assert config.DB_PATH == current_db
+    (kind, title, message), = _messages(host)
+    assert (kind, title) == ("showerror", "データベースを開けません")
+    assert "アプリを最新版に更新してください。" in message
+
+
+def test_restore_migration_failure_removes_folder(host, current_db, backup_file, with_failing_015):
+    _set_version(backup_file, 13)
+    _restore(host, backup_file, "RFAIL")
+    assert not os.path.exists(os.path.join(config.APP_DATA_DIR, "db", "RFAIL"))
+    assert config.DB_PATH == current_db
+    assert [m[:2] for m in _messages(host)] == [("showerror", "データベースの更新に失敗")]
+    assert _version(backup_file) == 13
