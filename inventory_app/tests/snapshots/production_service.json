@@ -1,0 +1,1489 @@
+{
+ "build_daily_report": [
+  [
+   {
+    "app_cumulative_qty": 30,
+    "board_name": "BoardA",
+    "confirmation_note": "",
+    "daily_qty": 30,
+    "file_no": "F5",
+    "has_ng": false,
+    "kitting_list_no": "K7",
+    "lot_completed": 30,
+    "lot_no": "L5",
+    "lot_remaining": 0.0,
+    "mounting_line": "A",
+    "order_qty": 30.0,
+    "production_side": "2",
+    "report_date": "<TODAY>",
+    "seq": 1,
+    "status": "match",
+    "status_color_category": null,
+    "surplus_qty": 0
+   }
+  ],
+  [],
+  [],
+  [],
+  [],
+  []
+ ],
+ "build_monthly_report_all": [
+  [
+   {
+    "app_cumulative_qty": 60,
+    "board_name": "BoardB",
+    "confirmation_note": "",
+    "daily_qty": 60,
+    "file_no": "F2",
+    "has_ng": false,
+    "kitting_list_no": "K3",
+    "lot_completed": 100,
+    "lot_no": "L2",
+    "lot_remaining": 0.0,
+    "mounting_line": "A",
+    "order_qty": 100.0,
+    "production_side": "2",
+    "report_date": "2026-07-20",
+    "seq": 1,
+    "status": "match",
+    "status_color_category": null,
+    "surplus_qty": 0
+   },
+   {
+    "app_cumulative_qty": 40,
+    "board_name": "BoardB",
+    "confirmation_note": "",
+    "daily_qty": 40,
+    "file_no": "F2",
+    "has_ng": false,
+    "kitting_list_no": "K4",
+    "lot_completed": 100,
+    "lot_no": "L2",
+    "lot_remaining": 0.0,
+    "mounting_line": "A",
+    "order_qty": 100.0,
+    "production_side": "2",
+    "report_date": "2026-07-21",
+    "seq": 2,
+    "status": "match",
+    "status_color_category": null,
+    "surplus_qty": 0
+   },
+   {
+    "app_cumulative_qty": 80,
+    "board_name": "BoardA",
+    "confirmation_note": "",
+    "daily_qty": 80,
+    "file_no": "F1",
+    "has_ng": false,
+    "kitting_list_no": "K2",
+    "lot_completed": 80,
+    "lot_no": "L1",
+    "lot_remaining": 20.0,
+    "mounting_line": "A",
+    "order_qty": 100.0,
+    "production_side": "2",
+    "report_date": "2026-07-23",
+    "seq": 3,
+    "status": "match",
+    "status_color_category": null,
+    "surplus_qty": 0
+   },
+   {
+    "app_cumulative_qty": 90,
+    "board_name": "BoardC",
+    "confirmation_note": "構成基板数不足: 未確定1件(引落0)",
+    "daily_qty": 90,
+    "file_no": "F3",
+    "has_ng": true,
+    "kitting_list_no": "K5",
+    "lot_completed": 0,
+    "lot_no": "L3",
+    "lot_remaining": 100.0,
+    "mounting_line": "A",
+    "order_qty": 100.0,
+    "production_side": "2",
+    "report_date": "2026-07-24",
+    "seq": 4,
+    "status": "shortfall",
+    "status_color_category": "shortfall",
+    "surplus_qty": 90
+   },
+   {
+    "app_cumulative_qty": 30,
+    "board_name": "BoardA",
+    "confirmation_note": "",
+    "daily_qty": 30,
+    "file_no": "F5",
+    "has_ng": false,
+    "kitting_list_no": "K7",
+    "lot_completed": 30,
+    "lot_no": "L5",
+    "lot_remaining": 0.0,
+    "mounting_line": "A",
+    "order_qty": 30.0,
+    "production_side": "2",
+    "report_date": "<TODAY>",
+    "seq": 5,
+    "status": "match",
+    "status_color_category": null,
+    "surplus_qty": 0
+   },
+   {
+    "app_cumulative_qty": 0,
+    "board_name": "BoardC",
+    "confirmation_note": "構成基板数不足: 未確定1件(引落0)",
+    "daily_qty": 0,
+    "file_no": "未確定",
+    "has_ng": false,
+    "kitting_list_no": "",
+    "lot_completed": 0,
+    "lot_no": "L3",
+    "lot_remaining": 100.0,
+    "mounting_line": null,
+    "order_qty": 0,
+    "production_side": null,
+    "report_date": null,
+    "seq": 6,
+    "status": "shortfall",
+    "status_color_category": "shortfall",
+    "surplus_qty": 0
+   }
+  ],
+  [
+   {
+    "diff": 20,
+    "lot_no": "L1",
+    "setup_file_no": "F1",
+    "side1_kitting_list_nos": [
+     "K1"
+    ],
+    "side1_total": 100,
+    "side2_kitting_list_nos": [
+     "K2"
+    ],
+    "side2_total": 80
+   }
+  ],
+  [],
+  [],
+  [],
+  []
+ ],
+ "build_monthly_report_part": [
+  [
+   {
+    "app_cumulative_qty": 40,
+    "board_name": "BoardB",
+    "confirmation_note": "",
+    "daily_qty": 40,
+    "file_no": "F2",
+    "has_ng": false,
+    "kitting_list_no": "K4",
+    "lot_completed": 100,
+    "lot_no": "L2",
+    "lot_remaining": 0.0,
+    "mounting_line": "A",
+    "order_qty": 100.0,
+    "production_side": "2",
+    "report_date": "2026-07-21",
+    "seq": 1,
+    "status": "match",
+    "status_color_category": null,
+    "surplus_qty": 0
+   },
+   {
+    "app_cumulative_qty": 80,
+    "board_name": "BoardA",
+    "confirmation_note": "",
+    "daily_qty": 80,
+    "file_no": "F1",
+    "has_ng": false,
+    "kitting_list_no": "K2",
+    "lot_completed": 80,
+    "lot_no": "L1",
+    "lot_remaining": 20.0,
+    "mounting_line": "A",
+    "order_qty": 100.0,
+    "production_side": "2",
+    "report_date": "2026-07-23",
+    "seq": 2,
+    "status": "match",
+    "status_color_category": null,
+    "surplus_qty": 0
+   }
+  ],
+  [
+   {
+    "diff": 20,
+    "lot_no": "L1",
+    "setup_file_no": "F1",
+    "side1_kitting_list_nos": [
+     "K1"
+    ],
+    "side1_total": 100,
+    "side2_kitting_list_nos": [
+     "K2"
+    ],
+    "side2_total": 80
+   }
+  ],
+  [],
+  [],
+  [],
+  []
+ ],
+ "build_wip_extraction_rows": [
+  {
+   "board_name": "BoardC",
+   "file_no": "F3",
+   "kitting_list_no": "K5",
+   "lot_no": "L3",
+   "mounting_line": "A",
+   "production_side": "2",
+   "surplus_qty": 90
+  }
+ ],
+ "calculate_lot_completion": {
+  "L1": {
+   "completed_quantity": 80,
+   "cutoff_date": null,
+   "file_actuals": {
+    "('F1', '1')": 100,
+    "('F1', '2')": 80
+   },
+   "lot_no": "L1",
+   "order_qty_inconsistent": false,
+   "order_qty_values": [
+    100.0
+   ],
+   "order_quantity": 100.0,
+   "remaining_quantity": 20.0
+  },
+  "L2": {
+   "completed_quantity": 100,
+   "cutoff_date": null,
+   "file_actuals": {
+    "('F2', '2')": 100
+   },
+   "lot_no": "L2",
+   "order_qty_inconsistent": false,
+   "order_qty_values": [
+    100.0
+   ],
+   "order_quantity": 100.0,
+   "remaining_quantity": 0.0
+  },
+  "L3": {
+   "completed_quantity": 90,
+   "cutoff_date": null,
+   "file_actuals": {
+    "('F3', '2')": 90
+   },
+   "lot_no": "L3",
+   "order_qty_inconsistent": false,
+   "order_qty_values": [
+    100.0
+   ],
+   "order_quantity": 100.0,
+   "remaining_quantity": 10.0
+  },
+  "L4": {
+   "completed_quantity": 0.0,
+   "cutoff_date": null,
+   "file_actuals": {
+    "('F4', '2')": 0.0
+   },
+   "lot_no": "L4",
+   "order_qty_inconsistent": false,
+   "order_qty_values": [
+    100.0
+   ],
+   "order_quantity": 100.0,
+   "remaining_quantity": 100.0
+  },
+  "L5": {
+   "completed_quantity": 30,
+   "cutoff_date": null,
+   "file_actuals": {
+    "('F5', '2')": 30
+   },
+   "lot_no": "L5",
+   "order_qty_inconsistent": false,
+   "order_qty_values": [
+    30.0
+   ],
+   "order_quantity": 30.0,
+   "remaining_quantity": 0.0
+  }
+ },
+ "check_lot_progress": [
+  {
+   "board_count": 1.0,
+   "board_count_values": null,
+   "boards": [
+    {
+     "board_count": 1.0,
+     "board_name": "BoardA",
+     "files": [
+      {
+       "file_actual": 80,
+       "lot_completed": 80,
+       "not_produced_qty": 20.0,
+       "order_qty": 100.0,
+       "production_side": "2",
+       "setup_file_no": "F1",
+       "surplus_qty": 0
+      }
+     ]
+    }
+   ],
+   "cutoff_date": null,
+   "excess_file_nos": null,
+   "file_actuals": {
+    "('F1', '1')": 100,
+    "('F1', '2')": 80
+   },
+   "lot_completed": 80,
+   "lot_no": "L1",
+   "missing_file_entries": [],
+   "order_qty_inconsistent": false,
+   "order_qty_values": [
+    100.0
+   ],
+   "order_quantity": 100.0,
+   "shortfall_count": null,
+   "status": "match",
+   "status_color_category": null,
+   "status_remarks": "",
+   "unregistered_board_names": [],
+   "visible_file_nos": [
+    "F1"
+   ]
+  },
+  {
+   "board_count": 1.0,
+   "board_count_values": null,
+   "boards": [
+    {
+     "board_count": 1.0,
+     "board_name": "BoardB",
+     "files": [
+      {
+       "file_actual": 100,
+       "lot_completed": 100,
+       "not_produced_qty": 100.0,
+       "order_qty": 200.0,
+       "production_side": "2",
+       "setup_file_no": "F2",
+       "surplus_qty": 0
+      }
+     ]
+    }
+   ],
+   "cutoff_date": null,
+   "excess_file_nos": null,
+   "file_actuals": {
+    "('F2', '2')": 100
+   },
+   "lot_completed": 100,
+   "lot_no": "L2",
+   "missing_file_entries": [],
+   "order_qty_inconsistent": false,
+   "order_qty_values": [
+    100.0
+   ],
+   "order_quantity": 100.0,
+   "shortfall_count": null,
+   "status": "match",
+   "status_color_category": null,
+   "status_remarks": "",
+   "unregistered_board_names": [],
+   "visible_file_nos": [
+    "F2"
+   ]
+  },
+  {
+   "board_count": 2.0,
+   "board_count_values": null,
+   "boards": [
+    {
+     "board_count": 2.0,
+     "board_name": "BoardC",
+     "files": [
+      {
+       "file_actual": 90,
+       "lot_completed": 0,
+       "not_produced_qty": 10.0,
+       "order_qty": 100.0,
+       "production_side": "2",
+       "setup_file_no": "F3",
+       "surplus_qty": 90
+      }
+     ]
+    }
+   ],
+   "cutoff_date": null,
+   "excess_file_nos": null,
+   "file_actuals": {
+    "('F3', '2')": 90
+   },
+   "lot_completed": 0,
+   "lot_no": "L3",
+   "missing_file_entries": [
+    {
+     "file_actual": null,
+     "lot_completed": 0,
+     "not_produced_qty": 100.0,
+     "order_qty": null,
+     "production_side": null,
+     "setup_file_no": "未確定",
+     "surplus_qty": 0
+    }
+   ],
+   "order_qty_inconsistent": false,
+   "order_qty_values": [
+    100.0
+   ],
+   "order_quantity": 100.0,
+   "shortfall_count": 1,
+   "status": "shortfall",
+   "status_color_category": "shortfall",
+   "status_remarks": "構成基板数不足: 未確定1件(引落0)",
+   "unregistered_board_names": [],
+   "visible_file_nos": [
+    "F3"
+   ]
+  },
+  {
+   "board_count": null,
+   "board_count_values": null,
+   "boards": [
+    {
+     "board_count": null,
+     "board_name": "BoardD",
+     "files": [
+      {
+       "file_actual": 0.0,
+       "lot_completed": 0.0,
+       "not_produced_qty": 100.0,
+       "order_qty": 100.0,
+       "production_side": "2",
+       "setup_file_no": "F4",
+       "surplus_qty": 0.0
+      }
+     ]
+    }
+   ],
+   "cutoff_date": null,
+   "excess_file_nos": null,
+   "file_actuals": {
+    "('F4', '2')": 0.0
+   },
+   "lot_completed": 0.0,
+   "lot_no": "L4",
+   "missing_file_entries": [],
+   "order_qty_inconsistent": false,
+   "order_qty_values": [
+    100.0
+   ],
+   "order_quantity": 100.0,
+   "shortfall_count": null,
+   "status": "unregistered",
+   "status_color_category": "needs_review",
+   "status_remarks": "構成基板数マスタ未登録(引落は未検証)",
+   "unregistered_board_names": [
+    "BoardD"
+   ],
+   "visible_file_nos": [
+    "F4"
+   ]
+  },
+  {
+   "board_count": 1.0,
+   "board_count_values": null,
+   "boards": [
+    {
+     "board_count": 1.0,
+     "board_name": "BoardA",
+     "files": [
+      {
+       "file_actual": 30,
+       "lot_completed": 30,
+       "not_produced_qty": 0.0,
+       "order_qty": 30.0,
+       "production_side": "2",
+       "setup_file_no": "F5",
+       "surplus_qty": 0
+      }
+     ]
+    }
+   ],
+   "cutoff_date": null,
+   "excess_file_nos": null,
+   "file_actuals": {
+    "('F5', '2')": 30
+   },
+   "lot_completed": 30,
+   "lot_no": "L5",
+   "missing_file_entries": [],
+   "order_qty_inconsistent": false,
+   "order_qty_values": [
+    30.0
+   ],
+   "order_quantity": 30.0,
+   "shortfall_count": null,
+   "status": "match",
+   "status_color_category": null,
+   "status_remarks": "",
+   "unregistered_board_names": [],
+   "visible_file_nos": [
+    "F5"
+   ]
+  }
+ ],
+ "evaluate_all_lot_status": [
+  {
+   "board_count": 1.0,
+   "board_count_values": null,
+   "boards": [
+    {
+     "board_count": 1.0,
+     "board_name": "BoardA",
+     "files": [
+      {
+       "file_actual": 80,
+       "lot_completed": 80,
+       "not_produced_qty": 20.0,
+       "order_qty": 100.0,
+       "production_side": "2",
+       "setup_file_no": "F1",
+       "surplus_qty": 0
+      }
+     ]
+    }
+   ],
+   "cutoff_date": null,
+   "excess_file_nos": null,
+   "file_actuals": {
+    "('F1', '1')": 100,
+    "('F1', '2')": 80
+   },
+   "lot_completed": 80,
+   "lot_no": "L1",
+   "missing_file_entries": [],
+   "order_qty_inconsistent": false,
+   "order_qty_values": [
+    100.0
+   ],
+   "order_quantity": 100.0,
+   "shortfall_count": null,
+   "status": "match",
+   "status_color_category": null,
+   "status_remarks": "",
+   "unregistered_board_names": [],
+   "visible_file_nos": [
+    "F1"
+   ]
+  },
+  {
+   "board_count": 1.0,
+   "board_count_values": null,
+   "boards": [
+    {
+     "board_count": 1.0,
+     "board_name": "BoardB",
+     "files": [
+      {
+       "file_actual": 100,
+       "lot_completed": 100,
+       "not_produced_qty": 100.0,
+       "order_qty": 200.0,
+       "production_side": "2",
+       "setup_file_no": "F2",
+       "surplus_qty": 0
+      }
+     ]
+    }
+   ],
+   "cutoff_date": null,
+   "excess_file_nos": null,
+   "file_actuals": {
+    "('F2', '2')": 100
+   },
+   "lot_completed": 100,
+   "lot_no": "L2",
+   "missing_file_entries": [],
+   "order_qty_inconsistent": false,
+   "order_qty_values": [
+    100.0
+   ],
+   "order_quantity": 100.0,
+   "shortfall_count": null,
+   "status": "match",
+   "status_color_category": null,
+   "status_remarks": "",
+   "unregistered_board_names": [],
+   "visible_file_nos": [
+    "F2"
+   ]
+  },
+  {
+   "board_count": 2.0,
+   "board_count_values": null,
+   "boards": [
+    {
+     "board_count": 2.0,
+     "board_name": "BoardC",
+     "files": [
+      {
+       "file_actual": 90,
+       "lot_completed": 0,
+       "not_produced_qty": 10.0,
+       "order_qty": 100.0,
+       "production_side": "2",
+       "setup_file_no": "F3",
+       "surplus_qty": 90
+      }
+     ]
+    }
+   ],
+   "cutoff_date": null,
+   "excess_file_nos": null,
+   "file_actuals": {
+    "('F3', '2')": 90
+   },
+   "lot_completed": 0,
+   "lot_no": "L3",
+   "missing_file_entries": [
+    {
+     "file_actual": null,
+     "lot_completed": 0,
+     "not_produced_qty": 100.0,
+     "order_qty": null,
+     "production_side": null,
+     "setup_file_no": "未確定",
+     "surplus_qty": 0
+    }
+   ],
+   "order_qty_inconsistent": false,
+   "order_qty_values": [
+    100.0
+   ],
+   "order_quantity": 100.0,
+   "shortfall_count": 1,
+   "status": "shortfall",
+   "status_color_category": "shortfall",
+   "status_remarks": "構成基板数不足: 未確定1件(引落0)",
+   "unregistered_board_names": [],
+   "visible_file_nos": [
+    "F3"
+   ]
+  },
+  {
+   "board_count": null,
+   "board_count_values": null,
+   "boards": [
+    {
+     "board_count": null,
+     "board_name": "BoardD",
+     "files": [
+      {
+       "file_actual": 0.0,
+       "lot_completed": 0.0,
+       "not_produced_qty": 100.0,
+       "order_qty": 100.0,
+       "production_side": "2",
+       "setup_file_no": "F4",
+       "surplus_qty": 0.0
+      }
+     ]
+    }
+   ],
+   "cutoff_date": null,
+   "excess_file_nos": null,
+   "file_actuals": {
+    "('F4', '2')": 0.0
+   },
+   "lot_completed": 0.0,
+   "lot_no": "L4",
+   "missing_file_entries": [],
+   "order_qty_inconsistent": false,
+   "order_qty_values": [
+    100.0
+   ],
+   "order_quantity": 100.0,
+   "shortfall_count": null,
+   "status": "unregistered",
+   "status_color_category": "needs_review",
+   "status_remarks": "構成基板数マスタ未登録(引落は未検証)",
+   "unregistered_board_names": [
+    "BoardD"
+   ],
+   "visible_file_nos": [
+    "F4"
+   ]
+  },
+  {
+   "board_count": 1.0,
+   "board_count_values": null,
+   "boards": [
+    {
+     "board_count": 1.0,
+     "board_name": "BoardA",
+     "files": [
+      {
+       "file_actual": 30,
+       "lot_completed": 30,
+       "not_produced_qty": 0.0,
+       "order_qty": 30.0,
+       "production_side": "2",
+       "setup_file_no": "F5",
+       "surplus_qty": 0
+      }
+     ]
+    }
+   ],
+   "cutoff_date": null,
+   "excess_file_nos": null,
+   "file_actuals": {
+    "('F5', '2')": 30
+   },
+   "lot_completed": 30,
+   "lot_no": "L5",
+   "missing_file_entries": [],
+   "order_qty_inconsistent": false,
+   "order_qty_values": [
+    30.0
+   ],
+   "order_quantity": 30.0,
+   "shortfall_count": null,
+   "status": "match",
+   "status_color_category": null,
+   "status_remarks": "",
+   "unregistered_board_names": [],
+   "visible_file_nos": [
+    "F5"
+   ]
+  }
+ ],
+ "evaluate_all_lot_status_cutoff_0722": [
+  {
+   "board_count": 1.0,
+   "board_count_values": null,
+   "boards": [
+    {
+     "board_count": 1.0,
+     "board_name": "BoardA",
+     "files": [
+      {
+       "file_actual": 0.0,
+       "lot_completed": 0.0,
+       "not_produced_qty": 100.0,
+       "order_qty": 100.0,
+       "production_side": "2",
+       "setup_file_no": "F1",
+       "surplus_qty": 0.0
+      }
+     ]
+    }
+   ],
+   "cutoff_date": "2026-07-22",
+   "excess_file_nos": null,
+   "file_actuals": {
+    "('F1', '1')": 100,
+    "('F1', '2')": 0.0
+   },
+   "lot_completed": 0.0,
+   "lot_no": "L1",
+   "missing_file_entries": [],
+   "order_qty_inconsistent": false,
+   "order_qty_values": [
+    100.0
+   ],
+   "order_quantity": 100.0,
+   "shortfall_count": null,
+   "status": "match",
+   "status_color_category": null,
+   "status_remarks": "",
+   "unregistered_board_names": [],
+   "visible_file_nos": [
+    "F1"
+   ]
+  },
+  {
+   "board_count": 1.0,
+   "board_count_values": null,
+   "boards": [
+    {
+     "board_count": 1.0,
+     "board_name": "BoardB",
+     "files": [
+      {
+       "file_actual": 100,
+       "lot_completed": 100,
+       "not_produced_qty": 100.0,
+       "order_qty": 200.0,
+       "production_side": "2",
+       "setup_file_no": "F2",
+       "surplus_qty": 0
+      }
+     ]
+    }
+   ],
+   "cutoff_date": "2026-07-22",
+   "excess_file_nos": null,
+   "file_actuals": {
+    "('F2', '2')": 100
+   },
+   "lot_completed": 100,
+   "lot_no": "L2",
+   "missing_file_entries": [],
+   "order_qty_inconsistent": false,
+   "order_qty_values": [
+    100.0
+   ],
+   "order_quantity": 100.0,
+   "shortfall_count": null,
+   "status": "match",
+   "status_color_category": null,
+   "status_remarks": "",
+   "unregistered_board_names": [],
+   "visible_file_nos": [
+    "F2"
+   ]
+  },
+  {
+   "board_count": 2.0,
+   "board_count_values": null,
+   "boards": [
+    {
+     "board_count": 2.0,
+     "board_name": "BoardC",
+     "files": [
+      {
+       "file_actual": 0.0,
+       "lot_completed": 0,
+       "not_produced_qty": 100.0,
+       "order_qty": 100.0,
+       "production_side": "2",
+       "setup_file_no": "F3",
+       "surplus_qty": 0.0
+      }
+     ]
+    }
+   ],
+   "cutoff_date": "2026-07-22",
+   "excess_file_nos": null,
+   "file_actuals": {
+    "('F3', '2')": 0.0
+   },
+   "lot_completed": 0,
+   "lot_no": "L3",
+   "missing_file_entries": [
+    {
+     "file_actual": null,
+     "lot_completed": 0,
+     "not_produced_qty": 100.0,
+     "order_qty": null,
+     "production_side": null,
+     "setup_file_no": "未確定",
+     "surplus_qty": 0
+    }
+   ],
+   "order_qty_inconsistent": false,
+   "order_qty_values": [
+    100.0
+   ],
+   "order_quantity": 100.0,
+   "shortfall_count": 1,
+   "status": "shortfall",
+   "status_color_category": "shortfall",
+   "status_remarks": "構成基板数不足: 未確定1件(引落0)",
+   "unregistered_board_names": [],
+   "visible_file_nos": [
+    "F3"
+   ]
+  },
+  {
+   "board_count": null,
+   "board_count_values": null,
+   "boards": [
+    {
+     "board_count": null,
+     "board_name": "BoardD",
+     "files": [
+      {
+       "file_actual": 0.0,
+       "lot_completed": 0.0,
+       "not_produced_qty": 100.0,
+       "order_qty": 100.0,
+       "production_side": "2",
+       "setup_file_no": "F4",
+       "surplus_qty": 0.0
+      }
+     ]
+    }
+   ],
+   "cutoff_date": "2026-07-22",
+   "excess_file_nos": null,
+   "file_actuals": {
+    "('F4', '2')": 0.0
+   },
+   "lot_completed": 0.0,
+   "lot_no": "L4",
+   "missing_file_entries": [],
+   "order_qty_inconsistent": false,
+   "order_qty_values": [
+    100.0
+   ],
+   "order_quantity": 100.0,
+   "shortfall_count": null,
+   "status": "unregistered",
+   "status_color_category": "needs_review",
+   "status_remarks": "構成基板数マスタ未登録(引落は未検証)",
+   "unregistered_board_names": [
+    "BoardD"
+   ],
+   "visible_file_nos": [
+    "F4"
+   ]
+  },
+  {
+   "board_count": 1.0,
+   "board_count_values": null,
+   "boards": [
+    {
+     "board_count": 1.0,
+     "board_name": "BoardA",
+     "files": [
+      {
+       "file_actual": 0.0,
+       "lot_completed": 0.0,
+       "not_produced_qty": 30.0,
+       "order_qty": 30.0,
+       "production_side": "2",
+       "setup_file_no": "F5",
+       "surplus_qty": 0.0
+      }
+     ]
+    }
+   ],
+   "cutoff_date": "2026-07-22",
+   "excess_file_nos": null,
+   "file_actuals": {
+    "('F5', '2')": 0.0
+   },
+   "lot_completed": 0.0,
+   "lot_no": "L5",
+   "missing_file_entries": [],
+   "order_qty_inconsistent": false,
+   "order_qty_values": [
+    30.0
+   ],
+   "order_quantity": 30.0,
+   "shortfall_count": null,
+   "status": "match",
+   "status_color_category": null,
+   "status_remarks": "",
+   "unregistered_board_names": [],
+   "visible_file_nos": [
+    "F5"
+   ]
+  }
+ ],
+ "evaluate_lot_status": {
+  "L1": {
+   "board_count": 1.0,
+   "board_count_values": null,
+   "boards": [
+    {
+     "board_count": 1.0,
+     "board_name": "BoardA",
+     "files": [
+      {
+       "file_actual": 80,
+       "lot_completed": 80,
+       "not_produced_qty": 20.0,
+       "order_qty": 100.0,
+       "production_side": "2",
+       "setup_file_no": "F1",
+       "surplus_qty": 0
+      }
+     ]
+    }
+   ],
+   "cutoff_date": null,
+   "excess_file_nos": null,
+   "file_actuals": {
+    "('F1', '1')": 100,
+    "('F1', '2')": 80
+   },
+   "lot_completed": 80,
+   "lot_no": "L1",
+   "missing_file_entries": [],
+   "order_qty_inconsistent": false,
+   "order_qty_values": [
+    100.0
+   ],
+   "order_quantity": 100.0,
+   "shortfall_count": null,
+   "status": "match",
+   "status_color_category": null,
+   "status_remarks": "",
+   "unregistered_board_names": [],
+   "visible_file_nos": [
+    "F1"
+   ]
+  },
+  "L2": {
+   "board_count": 1.0,
+   "board_count_values": null,
+   "boards": [
+    {
+     "board_count": 1.0,
+     "board_name": "BoardB",
+     "files": [
+      {
+       "file_actual": 100,
+       "lot_completed": 100,
+       "not_produced_qty": 100.0,
+       "order_qty": 200.0,
+       "production_side": "2",
+       "setup_file_no": "F2",
+       "surplus_qty": 0
+      }
+     ]
+    }
+   ],
+   "cutoff_date": null,
+   "excess_file_nos": null,
+   "file_actuals": {
+    "('F2', '2')": 100
+   },
+   "lot_completed": 100,
+   "lot_no": "L2",
+   "missing_file_entries": [],
+   "order_qty_inconsistent": false,
+   "order_qty_values": [
+    100.0
+   ],
+   "order_quantity": 100.0,
+   "shortfall_count": null,
+   "status": "match",
+   "status_color_category": null,
+   "status_remarks": "",
+   "unregistered_board_names": [],
+   "visible_file_nos": [
+    "F2"
+   ]
+  },
+  "L3": {
+   "board_count": 2.0,
+   "board_count_values": null,
+   "boards": [
+    {
+     "board_count": 2.0,
+     "board_name": "BoardC",
+     "files": [
+      {
+       "file_actual": 90,
+       "lot_completed": 0,
+       "not_produced_qty": 10.0,
+       "order_qty": 100.0,
+       "production_side": "2",
+       "setup_file_no": "F3",
+       "surplus_qty": 90
+      }
+     ]
+    }
+   ],
+   "cutoff_date": null,
+   "excess_file_nos": null,
+   "file_actuals": {
+    "('F3', '2')": 90
+   },
+   "lot_completed": 0,
+   "lot_no": "L3",
+   "missing_file_entries": [
+    {
+     "file_actual": null,
+     "lot_completed": 0,
+     "not_produced_qty": 100.0,
+     "order_qty": null,
+     "production_side": null,
+     "setup_file_no": "未確定",
+     "surplus_qty": 0
+    }
+   ],
+   "order_qty_inconsistent": false,
+   "order_qty_values": [
+    100.0
+   ],
+   "order_quantity": 100.0,
+   "shortfall_count": 1,
+   "status": "shortfall",
+   "status_color_category": "shortfall",
+   "status_remarks": "構成基板数不足: 未確定1件(引落0)",
+   "unregistered_board_names": [],
+   "visible_file_nos": [
+    "F3"
+   ]
+  },
+  "L4": {
+   "board_count": null,
+   "board_count_values": null,
+   "boards": [
+    {
+     "board_count": null,
+     "board_name": "BoardD",
+     "files": [
+      {
+       "file_actual": 0.0,
+       "lot_completed": 0.0,
+       "not_produced_qty": 100.0,
+       "order_qty": 100.0,
+       "production_side": "2",
+       "setup_file_no": "F4",
+       "surplus_qty": 0.0
+      }
+     ]
+    }
+   ],
+   "cutoff_date": null,
+   "excess_file_nos": null,
+   "file_actuals": {
+    "('F4', '2')": 0.0
+   },
+   "lot_completed": 0.0,
+   "lot_no": "L4",
+   "missing_file_entries": [],
+   "order_qty_inconsistent": false,
+   "order_qty_values": [
+    100.0
+   ],
+   "order_quantity": 100.0,
+   "shortfall_count": null,
+   "status": "unregistered",
+   "status_color_category": "needs_review",
+   "status_remarks": "構成基板数マスタ未登録(引落は未検証)",
+   "unregistered_board_names": [
+    "BoardD"
+   ],
+   "visible_file_nos": [
+    "F4"
+   ]
+  },
+  "L5": {
+   "board_count": 1.0,
+   "board_count_values": null,
+   "boards": [
+    {
+     "board_count": 1.0,
+     "board_name": "BoardA",
+     "files": [
+      {
+       "file_actual": 30,
+       "lot_completed": 30,
+       "not_produced_qty": 0.0,
+       "order_qty": 30.0,
+       "production_side": "2",
+       "setup_file_no": "F5",
+       "surplus_qty": 0
+      }
+     ]
+    }
+   ],
+   "cutoff_date": null,
+   "excess_file_nos": null,
+   "file_actuals": {
+    "('F5', '2')": 30
+   },
+   "lot_completed": 30,
+   "lot_no": "L5",
+   "missing_file_entries": [],
+   "order_qty_inconsistent": false,
+   "order_qty_values": [
+    30.0
+   ],
+   "order_quantity": 30.0,
+   "shortfall_count": null,
+   "status": "match",
+   "status_color_category": null,
+   "status_remarks": "",
+   "unregistered_board_names": [],
+   "visible_file_nos": [
+    "F5"
+   ]
+  }
+ },
+ "evaluate_lot_status_cutoff_0721": {
+  "L1": {
+   "board_count": 1.0,
+   "board_count_values": null,
+   "boards": [
+    {
+     "board_count": 1.0,
+     "board_name": "BoardA",
+     "files": [
+      {
+       "file_actual": 0.0,
+       "lot_completed": 0.0,
+       "not_produced_qty": 100.0,
+       "order_qty": 100.0,
+       "production_side": "2",
+       "setup_file_no": "F1",
+       "surplus_qty": 0.0
+      }
+     ]
+    }
+   ],
+   "cutoff_date": "2026-07-21",
+   "excess_file_nos": null,
+   "file_actuals": {
+    "('F1', '1')": 0.0,
+    "('F1', '2')": 0.0
+   },
+   "lot_completed": 0.0,
+   "lot_no": "L1",
+   "missing_file_entries": [],
+   "order_qty_inconsistent": false,
+   "order_qty_values": [
+    100.0
+   ],
+   "order_quantity": 100.0,
+   "shortfall_count": null,
+   "status": "match",
+   "status_color_category": null,
+   "status_remarks": "",
+   "unregistered_board_names": [],
+   "visible_file_nos": [
+    "F1"
+   ]
+  },
+  "L2": {
+   "board_count": 1.0,
+   "board_count_values": null,
+   "boards": [
+    {
+     "board_count": 1.0,
+     "board_name": "BoardB",
+     "files": [
+      {
+       "file_actual": 100,
+       "lot_completed": 100,
+       "not_produced_qty": 100.0,
+       "order_qty": 200.0,
+       "production_side": "2",
+       "setup_file_no": "F2",
+       "surplus_qty": 0
+      }
+     ]
+    }
+   ],
+   "cutoff_date": "2026-07-21",
+   "excess_file_nos": null,
+   "file_actuals": {
+    "('F2', '2')": 100
+   },
+   "lot_completed": 100,
+   "lot_no": "L2",
+   "missing_file_entries": [],
+   "order_qty_inconsistent": false,
+   "order_qty_values": [
+    100.0
+   ],
+   "order_quantity": 100.0,
+   "shortfall_count": null,
+   "status": "match",
+   "status_color_category": null,
+   "status_remarks": "",
+   "unregistered_board_names": [],
+   "visible_file_nos": [
+    "F2"
+   ]
+  },
+  "L3": {
+   "board_count": 2.0,
+   "board_count_values": null,
+   "boards": [
+    {
+     "board_count": 2.0,
+     "board_name": "BoardC",
+     "files": [
+      {
+       "file_actual": 0.0,
+       "lot_completed": 0,
+       "not_produced_qty": 100.0,
+       "order_qty": 100.0,
+       "production_side": "2",
+       "setup_file_no": "F3",
+       "surplus_qty": 0.0
+      }
+     ]
+    }
+   ],
+   "cutoff_date": "2026-07-21",
+   "excess_file_nos": null,
+   "file_actuals": {
+    "('F3', '2')": 0.0
+   },
+   "lot_completed": 0,
+   "lot_no": "L3",
+   "missing_file_entries": [
+    {
+     "file_actual": null,
+     "lot_completed": 0,
+     "not_produced_qty": 100.0,
+     "order_qty": null,
+     "production_side": null,
+     "setup_file_no": "未確定",
+     "surplus_qty": 0
+    }
+   ],
+   "order_qty_inconsistent": false,
+   "order_qty_values": [
+    100.0
+   ],
+   "order_quantity": 100.0,
+   "shortfall_count": 1,
+   "status": "shortfall",
+   "status_color_category": "shortfall",
+   "status_remarks": "構成基板数不足: 未確定1件(引落0)",
+   "unregistered_board_names": [],
+   "visible_file_nos": [
+    "F3"
+   ]
+  },
+  "L4": {
+   "board_count": null,
+   "board_count_values": null,
+   "boards": [
+    {
+     "board_count": null,
+     "board_name": "BoardD",
+     "files": [
+      {
+       "file_actual": 0.0,
+       "lot_completed": 0.0,
+       "not_produced_qty": 100.0,
+       "order_qty": 100.0,
+       "production_side": "2",
+       "setup_file_no": "F4",
+       "surplus_qty": 0.0
+      }
+     ]
+    }
+   ],
+   "cutoff_date": "2026-07-21",
+   "excess_file_nos": null,
+   "file_actuals": {
+    "('F4', '2')": 0.0
+   },
+   "lot_completed": 0.0,
+   "lot_no": "L4",
+   "missing_file_entries": [],
+   "order_qty_inconsistent": false,
+   "order_qty_values": [
+    100.0
+   ],
+   "order_quantity": 100.0,
+   "shortfall_count": null,
+   "status": "unregistered",
+   "status_color_category": "needs_review",
+   "status_remarks": "構成基板数マスタ未登録(引落は未検証)",
+   "unregistered_board_names": [
+    "BoardD"
+   ],
+   "visible_file_nos": [
+    "F4"
+   ]
+  },
+  "L5": {
+   "board_count": 1.0,
+   "board_count_values": null,
+   "boards": [
+    {
+     "board_count": 1.0,
+     "board_name": "BoardA",
+     "files": [
+      {
+       "file_actual": 0.0,
+       "lot_completed": 0.0,
+       "not_produced_qty": 30.0,
+       "order_qty": 30.0,
+       "production_side": "2",
+       "setup_file_no": "F5",
+       "surplus_qty": 0.0
+      }
+     ]
+    }
+   ],
+   "cutoff_date": "2026-07-21",
+   "excess_file_nos": null,
+   "file_actuals": {
+    "('F5', '2')": 0.0
+   },
+   "lot_completed": 0.0,
+   "lot_no": "L5",
+   "missing_file_entries": [],
+   "order_qty_inconsistent": false,
+   "order_qty_values": [
+    30.0
+   ],
+   "order_quantity": 30.0,
+   "shortfall_count": null,
+   "status": "match",
+   "status_color_category": null,
+   "status_remarks": "",
+   "unregistered_board_names": [],
+   "visible_file_nos": [
+    "F5"
+   ]
+  }
+ },
+ "list_incomplete_lots": [
+  {
+   "completed_quantity": 80,
+   "kitting_list_nos": [
+    "K1",
+    "K2"
+   ],
+   "lot_no": "L1",
+   "order_quantity": 100.0,
+   "remaining_quantity": 20.0,
+   "status": "match"
+  },
+  {
+   "completed_quantity": 0,
+   "kitting_list_nos": [
+    "K5"
+   ],
+   "lot_no": "L3",
+   "order_quantity": 100.0,
+   "remaining_quantity": 100.0,
+   "status": "shortfall"
+  },
+  {
+   "completed_quantity": 0.0,
+   "kitting_list_nos": [
+    "K6"
+   ],
+   "lot_no": "L4",
+   "order_quantity": 100.0,
+   "remaining_quantity": 100.0,
+   "status": "unregistered"
+  }
+ ],
+ "status_constants": {
+  "DRAWDOWN_ZERO_STATUSES": [
+   "shortfall"
+  ],
+  "NEEDS_REVIEW_STATUSES": [
+   "board_count_inconsistent",
+   "excess",
+   "unregistered"
+  ]
+ }
+}
