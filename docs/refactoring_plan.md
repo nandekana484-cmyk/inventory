@@ -47,6 +47,14 @@ CANONICAL_DESIGN_DECISIONS.md §7（実行環境・依存パッケージのド�
 - run_app.bat と `docs/setup.md` が使うのは `inventory_app\requirements.txt`。版の固定は `inventory_app\requirements.lock.txt` で行う
 - 削除するか、整理する（どちらにするかは未決定）
 
+### 発注数0・実績0の行が「入力済み」になる
+
+`services/production_entry_service.py` の `is_plan_row_completed()` は「実績合計 >= 発注数」で判定するため、発注数0・実績0の行は 0 >= 0 で「入力済み」と判定され、「入力済みを隠す」で隠れる。段階1で移す前からの挙動（テストでは現在の挙動として固定している）。業務上これで正しいかは未確認。
+
+### find_opposite_side_plan の parse_dt だけ前後の空白を除かない
+
+`models/kitting_plan.py` の `find_opposite_side_plan()` 内の `parse_dt` は `datetime.strptime(value, ...)` を直接呼ぶので、前後に空白がある plan_start_datetime は解釈できず None になる。ほかの複製（`services/date_parsing.py` の `_parse_plan_start_datetime()` など）は `str(value).strip()` してから解釈する。どちらに揃えるべきかは未確認（揃えると挙動が変わるので、リファクタリングとは別に扱う）。
+
 ### D-5x・D-8x の仮番号
 
 D-9x と同じく、D番号が決まる前に書かれた仮番号。どれに当たるかは未確認（2026-10-09 時点、計11か所）。
