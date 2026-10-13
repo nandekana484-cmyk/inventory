@@ -1066,7 +1066,7 @@ class NgInputWindow(tk.Toplevel):
     @staticmethod
     def _fetch_ng_list_rows():
         """段階4で services/ng_list_service.py へ移した。ここからはそれを呼ぶだけ（unprocessed_check_service も services 側を使う）。"""
-        return ng_list_service._fetch_ng_list_rows()
+        return ng_list_service.fetch_ng_list_rows()
 
     def _populate_ng_tree(self, rows):
         for item in self.tree_ng_list.get_children():

@@ -854,7 +854,7 @@ class WipExpansionWindow(tk.Toplevel):
     @staticmethod
     def _fetch_wip_list_rows():
         """段階4で services/wip_list_service.py へ移した。ここからはそれを呼ぶだけ（unprocessed_check_service も services 側を使う）。"""
-        return wip_list_service._fetch_wip_list_rows()
+        return wip_list_service.fetch_wip_list_rows()
 
     def _populate_wip_tree(self, rows):
         status_index = self._wip_col_index["status"]

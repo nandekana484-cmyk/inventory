@@ -20,9 +20,9 @@ from tkinter import ttk, messagebox
 from ui.window_utils import center_window
 from ui.highlight_colors import MISMATCH_RED
 
-_COLS = ("lot_no", "board_name", "setup_file_no", "production_side", "plan_start_datetime",
+CANDIDATE_COLS = ("lot_no", "board_name", "setup_file_no", "production_side", "plan_start_datetime",
          "planned_qty", "order_qty")
-_HEADERS = {
+CANDIDATE_HEADERS = {
     "lot_no": "ロットNo.",
     "board_name": "基板名",
     "setup_file_no": "ファイルNo.",
@@ -31,16 +31,16 @@ _HEADERS = {
     "planned_qty": "計画数",
     "order_qty": "注文数",
 }
-_RIGHT_ALIGNED = {"planned_qty", "order_qty"}
+CANDIDATE_RIGHT_ALIGNED = {"planned_qty", "order_qty"}
 
 
-def _format_side(side):
+def format_side(side):
     if side in (1, 2):
         return f"面{side}"
     return "" if side is None else str(side)
 
 
-def _format_qty(value):
+def format_qty(value):
     if value is None:
         return ""
     try:
@@ -65,7 +65,7 @@ def _compute_qty_diff(candidate, daily_qty):
         return None
 
 
-def _is_large_qty_diff(candidate, daily_qty):
+def is_large_qty_diff(candidate, daily_qty):
     """候補一覧で背景色を変えて注意喚起すべきほど数量差が大きいか。"""
     diff = _compute_qty_diff(candidate, daily_qty)
     if diff is None or daily_qty is None:
@@ -74,7 +74,7 @@ def _is_large_qty_diff(candidate, daily_qty):
     return diff > threshold
 
 
-def _format_planned_qty_cell(planned_qty, daily_qty):
+def format_planned_qty_cell(planned_qty, daily_qty):
     """
     候補一覧の「計画数」（planned_qty）セルの表示文字列を組み立てる。
 
@@ -282,7 +282,7 @@ def _compute_date_diff_days(report_date, plan_start_datetime):
     return abs((dt - reference).days)
 
 
-def _is_large_date_diff(report_date, plan_start_datetime, threshold_days=_DATE_DIFF_WARN_DAYS):
+def is_large_date_diff(report_date, plan_start_datetime, threshold_days=_DATE_DIFF_WARN_DAYS):
     """候補一覧で背景色を変えて注意喚起すべきほど、払い出し日と生産予定日の差が大きいか。"""
     diff = _compute_date_diff_days(report_date, plan_start_datetime)
     if diff is None:
@@ -301,7 +301,7 @@ def _normalize(value, lo, hi):
     return (value - lo) / (hi - lo)
 
 
-def _sort_candidates_by_closeness(candidates, report_date, daily_qty=None):
+def sort_candidates_by_closeness(candidates, report_date, daily_qty=None):
     """
     候補一覧を、(1) report_date（CSVの払い出し日）とplan_start_datetimeの日数差、
     (2) daily_qty（CSVの当日実績数）とplanned_qty（計画数）の差、の2軸を
@@ -427,3 +427,15 @@ def select_plan_candidate_by_lot(parent, lot_no, product_name, candidates, match
         parent, "計画の選択", description, effective_candidates,
         daily_qty=daily_qty, report_date=report_date,
     )
+
+
+# 段階5で公開名を付けた。旧名は同じものを指す別名として残す（呼び出し側は新しい名前を使う）。
+_COLS = CANDIDATE_COLS
+_HEADERS = CANDIDATE_HEADERS
+_RIGHT_ALIGNED = CANDIDATE_RIGHT_ALIGNED
+_format_side = format_side
+_format_qty = format_qty
+_is_large_qty_diff = is_large_qty_diff
+_format_planned_qty_cell = format_planned_qty_cell
+_is_large_date_diff = is_large_date_diff
+_sort_candidates_by_closeness = sort_candidates_by_closeness

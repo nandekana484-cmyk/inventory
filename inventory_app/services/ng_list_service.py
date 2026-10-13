@@ -15,7 +15,7 @@ NG_LIST_COLUMNS = (
 )
 
 
-def _fetch_ng_list_rows():
+def fetch_ng_list_rows():
     """
     NG 一覧の DB アクセスだけを行う（ウィジェットに触れない）。
     NG 申告と展開済み（scrap_records）を (kitting_list_no, lot_no, production_side) で合わせ、状態を付ける:
@@ -81,3 +81,7 @@ def _fetch_ng_list_rows():
         ))
 
     return rows
+
+
+# 段階5で公開名を付けた。旧名は同じものを指す別名として残す（呼び出し側は新しい名前を使う）。
+_fetch_ng_list_rows = fetch_ng_list_rows

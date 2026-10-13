@@ -16,7 +16,7 @@ WIP_LIST_COLUMNS = (
 STATUS_CONFIRMED_ORPHAN = "確定済み(スナップショットなし)"
 
 
-def _fetch_wip_list_rows():
+def fetch_wip_list_rows():
     """
     仕掛一覧の DB アクセスだけを行う（ウィジェットに触れない）。
     スナップショットと確定済みの展開結果を (kitting_list_no, lot_no, production_side) で合わせ、「確定済み」「未確定」を付ける。
@@ -71,3 +71,7 @@ def _fetch_wip_list_rows():
             "対象外" if exclusion_key in excluded_keys else "",
         ))
     return rows
+
+
+# 段階5で公開名を付けた。旧名は同じものを指す別名として残す（呼び出し側は新しい名前を使う）。
+_fetch_wip_list_rows = fetch_wip_list_rows

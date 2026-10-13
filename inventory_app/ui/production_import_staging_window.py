@@ -33,17 +33,17 @@ from models.production_import_staging import (
 )
 
 logger = logging.getLogger(__name__)
-# ui.plan_candidate_dialog の並べ替え・ハイライト判定を、重複させないためにそのまま使う（_ 始まりだが意図的な再利用）。
+# ui.plan_candidate_dialog の並べ替え・ハイライト判定を、重複させないためにそのまま使う。
 from ui.plan_candidate_dialog import (
-    _sort_candidates_by_closeness,
-    _is_large_qty_diff,
-    _is_large_date_diff,
-    _format_qty,
-    _format_planned_qty_cell,
-    _format_side,
-    _COLS as _CANDIDATE_COLS,
-    _HEADERS as _CANDIDATE_HEADERS,
-    _RIGHT_ALIGNED as _CANDIDATE_RIGHT_ALIGNED,
+    sort_candidates_by_closeness,
+    is_large_qty_diff,
+    is_large_date_diff,
+    format_qty,
+    format_planned_qty_cell,
+    format_side,
+    CANDIDATE_COLS,
+    CANDIDATE_HEADERS,
+    CANDIDATE_RIGHT_ALIGNED,
 )
 from ui.window_utils import center_window
 from ui.highlight_colors import MISMATCH_RED
@@ -220,14 +220,14 @@ class ProductionImportStagingWindow(tk.Toplevel):
         tree_frame.pack(expand=True, fill=tk.BOTH)
 
         self.tree_candidates = ttk.Treeview(
-            tree_frame, columns=_CANDIDATE_COLS, show="headings", selectmode="browse",
+            tree_frame, columns=CANDIDATE_COLS, show="headings", selectmode="browse",
         )
-        for col in _CANDIDATE_COLS:
-            self.tree_candidates.heading(col, text=_CANDIDATE_HEADERS[col])
+        for col in CANDIDATE_COLS:
+            self.tree_candidates.heading(col, text=CANDIDATE_HEADERS[col])
             # 計画数のセルには差分表記（例: "450（差-50）"）が付くので、幅を広めに取る。
             width = 160 if col == "planned_qty" else 100
             self.tree_candidates.column(
-                col, width=width, anchor=tk.E if col in _CANDIDATE_RIGHT_ALIGNED else tk.W,
+                col, width=width, anchor=tk.E if col in CANDIDATE_RIGHT_ALIGNED else tk.W,
             )
         # 数量差・日付差が大きい候補の背景色（閾値と配色は ui.plan_candidate_dialog と同じ）。両方に該当すれば large_diff_both だけを付ける。
         # auto_confirmable（緑）は large_diff 系と閾値が重ならず同時には該当しないが、念のため最優先で判定する。
@@ -440,7 +440,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
         using_fallback = not matched
         effective_candidates = candidates if using_fallback else matched
-        effective_candidates = _sort_candidates_by_closeness(effective_candidates, report_date, daily_qty)
+        effective_candidates = sort_candidates_by_closeness(effective_candidates, report_date, daily_qty)
 
         if not effective_candidates:
             hint = f"ロットNo. {row.get('lot_no')} に該当する計画が見つかりません。"
@@ -450,7 +450,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
                 f"の候補：{len(effective_candidates)}件"
             )
             if daily_qty is not None:
-                hint += f"　当日実績数：{_format_qty(daily_qty)}（計画数と見比べてご確認ください）"
+                hint += f"　当日実績数：{format_qty(daily_qty)}（計画数と見比べてご確認ください）"
             if using_fallback:
                 hint += "\n※ 製品名が完全一致する候補が無いため、ロットNo.が一致する全ての候補を表示しています。"
         self.lbl_candidate_hint.config(text=hint)
@@ -461,8 +461,8 @@ class ProductionImportStagingWindow(tk.Toplevel):
                 candidate.get("planned_qty"), daily_qty,
                 candidate.get("plan_start_datetime"), report_date,
             )
-            qty_flag = _is_large_qty_diff(candidate, daily_qty)
-            date_flag = _is_large_date_diff(report_date, candidate.get("plan_start_datetime"))
+            qty_flag = is_large_qty_diff(candidate, daily_qty)
+            date_flag = is_large_date_diff(report_date, candidate.get("plan_start_datetime"))
             side1_only_classification = classify_side1_only_plan(candidate)
             if using_fallback:
                 # この分岐の候補はすべて製品名不一致（matched が空のフォールバック）。ほかのどの条件よりも優先する。
@@ -488,10 +488,10 @@ class ProductionImportStagingWindow(tk.Toplevel):
                 candidate.get("lot_no") or "",
                 candidate.get("board_name") or "",
                 candidate.get("setup_file_no") or "",
-                _format_side(candidate.get("production_side")),
+                format_side(candidate.get("production_side")),
                 candidate.get("plan_start_datetime") or "",
-                _format_planned_qty_cell(candidate.get("planned_qty"), daily_qty),
-                _format_qty(candidate.get("order_qty")),
+                format_planned_qty_cell(candidate.get("planned_qty"), daily_qty),
+                format_qty(candidate.get("order_qty")),
             ))
             self._candidates_by_iid[iid] = candidate
 

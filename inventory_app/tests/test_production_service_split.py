@@ -46,3 +46,27 @@ def test_report_service_does_not_import_production_service():
     imported = _imported_modules(production_report_service)
     assert "services.production_service" not in imported
     assert not {m.split(".")[0] for m in imported} & {"ui", "tkinter", "tkcalendar"}
+
+
+# ---------------------------------------------------------------- 段階5の作業4: _ 始まりの名前に公開名を付けた
+
+@pytest.mark.parametrize("old, new", [
+    ("_sort_candidates_by_closeness", "sort_candidates_by_closeness"),
+    ("_is_large_qty_diff", "is_large_qty_diff"),
+    ("_is_large_date_diff", "is_large_date_diff"),
+    ("_format_qty", "format_qty"),
+    ("_format_planned_qty_cell", "format_planned_qty_cell"),
+    ("_format_side", "format_side"),
+    ("_COLS", "CANDIDATE_COLS"),
+    ("_HEADERS", "CANDIDATE_HEADERS"),
+    ("_RIGHT_ALIGNED", "CANDIDATE_RIGHT_ALIGNED"),
+])
+def test_plan_candidate_dialog_old_names_are_aliases(old, new):
+    from ui import plan_candidate_dialog
+    assert getattr(plan_candidate_dialog, old) is getattr(plan_candidate_dialog, new)
+
+
+def test_list_services_old_names_are_aliases():
+    from services import ng_list_service, wip_list_service
+    assert ng_list_service._fetch_ng_list_rows is ng_list_service.fetch_ng_list_rows
+    assert wip_list_service._fetch_wip_list_rows is wip_list_service.fetch_wip_list_rows
