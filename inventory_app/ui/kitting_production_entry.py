@@ -1500,6 +1500,39 @@ class KittingProductionEntryWindow(tk.Toplevel):
         )
         return messagebox.askyesno("既存の実績を置き換えます", message, parent=self.winfo_toplevel())
 
+    def load_staged_row(self, kitting_list_no, lot_no, daily_qty=None, report_date=None, on_registered=None,
+                        focus_entry=False):
+        """
+        ステージング画面から呼ばれる。CSV の行の計画を表示し、実績数を記入欄に転記する（登録はしない）。
+        report_date・on_registered は、この画面で登録するときに使う払い出し日と、実績の登録が成功したら保留行を消すコールバック。
+        daily_qty が None なら、記入欄は search_plan() が入れた登録済みの値のままにする。
+        """
+        self.search_plan(kitting_list_no, lot_no=lot_no)
+        if daily_qty is not None:
+            self.entry_daily_qty.delete(0, tk.END)
+            self.entry_daily_qty.insert(0, f"{daily_qty:g}")
+        self._pending_csv_row_removal = on_registered
+        self._pending_csv_report_date = report_date
+        if focus_entry:
+            self.entry_daily_qty.focus_set()
+
+    def refresh_after_external_registration(self, lot_nos, new_cumulative=None):
+        """
+        ステージング画面から呼ばれる。この画面を通さずに登録した後、表示中の計画と、lot_nos の計画一覧の行を更新する。
+        CSV 由来の登録待ちはクリアする。new_cumulative は表示中の計画の登録後の累計（None ならその表示は変えない）。
+        更新の順序は _perform_registration() と同じ。
+        """
+        self._pending_csv_row_removal = None
+        self._pending_csv_report_date = None
+        if new_cumulative is not None:
+            self.lbl_app_cum.config(text=f"{new_cumulative:.0f}")
+        self.load_today_log()
+        if self.current_plan:
+            self._load_current_daily_qty(self.current_plan["kitting_list_no"], self.current_plan["lot_no"])
+            self._setup_ng_side_ui(self.current_plan)
+        for lot_no in lot_nos:
+            self._refresh_plan_list_for_lot(lot_no)
+
     def _perform_registration(self, daily_qty, preview, record_history=True):
         """
         確認ダイアログで「登録」が選ばれた後、実績→反対側の面→NG の順に登録する（書き込みは register_actual_and_ng()）。
