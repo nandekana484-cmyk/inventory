@@ -2,6 +2,7 @@
 
 2026-10-09 時点（HEAD c08a88a）のコードから読み取れた範囲だけを書く。
 パスは `inventory_app/` からの相対パス。
+段階7a（2026-10-13）で、DB の作成・切り替え・復元・削除のうち画面に依存しない処理を `services/db_lifecycle_service.py` に移した。ロックの取得・解放と、壊れたロックの確認ダイアログは `ui/main_window.py` に残っている。
 コードから読み取れなかった点は「未確認」と書いた。
 
 ## DB の種類と置き場所
@@ -20,27 +21,28 @@
 
 1. 切り替えの入口は `config.set_db_path(path)` だけ。`config.DB_PATH` に直接代入しない
 2. `set_db_path()` は `services/app_settings_service.save_last_db_path()` を呼び、`<APP_DATA_DIR>/app_settings.json` に保存する
-3. 次に起動したとき、`ui/main_window.MainWindow.__init__()` が `load_last_db_path()` で前回のDBにつなぎ直す
-4. 画面からの切り替えは `MainWindow._try_switch_db_path()` で行う。新しいDBのロックを取る → 今のロックを放す → `set_db_path()`
+3. 次に起動したとき、`ui/main_window.MainWindow.__init__()` が `db_lifecycle_service.restore_last_db_path()`（中で `load_last_db_path()`）で前回のDBにつなぎ直す。ファイルが無ければ既定DB のまま起動し、知らせる
+4. 画面からの切り替えは `MainWindow._try_switch_db_path()` で行う。新しいDBのロックを取る → 今のロックを放す → `db_lifecycle_service.set_current_db_path()`（= `set_db_path()`）
    - ロックは `services/db_lock_service.py`。`<DBファイル名>.lock`（JSON）をDBと同じフォルダに置く。30分更新がなければ自動で解除される。ファイルが壊れているときは自動で上書きせず、ユーザーに確認する（`_acquire_lock_with_corruption_handling()`）
    - 既定DB（未選択）の間は、ロックファイルに一切触れない（CHANGELOG 1.0.0、D-59）
 5. 注意: 開いている画面は DB パスを持っておらず、操作のたびに `config.DB_PATH` を読む。画面を開いたまま切り替えると、その画面の操作対象も変わる（CANONICAL §10、D-19、未解消）
 
 ## 新規作成（`MainWindow.on_create_database()`）
 
-1. `db/init_db.init_database_at(new_db_path)` で、`db/schema.sql` のテーブルと production_daily の追加列を作る
-2. 引き継ぎなしの場合: `set_db_path(new_db_path)` → `models.kitting_plan.init_kitting_plan_tables()`
-3. 引き継ぎありの場合: `services/db_migration_carryover.carry_over_incomplete_lots(old, new)`
+1. フォルダ名の確認（空・予約語・既存）は `db_lifecycle_service.check_new_db_folder()`
+2. `db_lifecycle_service.create_db_file()`（= `db/init_db.init_database_at(new_db_path)`）で、`db/schema.sql` のテーブルと production_daily の追加列を作る。その後、画面がロックを取る
+3. 引き継ぎなしの場合: `db_lifecycle_service.activate_new_db()`（`set_db_path(new_db_path)` → `models.kitting_plan.init_kitting_plan_tables()`）→ `record_db_created()`
+4. 引き継ぎありの場合: `services/db_migration_carryover.carry_over_incomplete_lots(old, new)`（別スレッド。終わった後の記録は `MainWindow._on_create_db_finished()`）
    - 処理中に `config.DB_PATH` を旧DB→新DBへ一時的に切り替える。成功しても失敗しても、戻るときは必ず新DBになっている
    - 実行中はメインメニューの操作をまとめて無効にする（`_set_menu_enabled()`）
    - 引き継ぐもの: 未完了ロットの kitting_plan_items（アクティブな行）と production_daily。まだ着手していない計画は、実装開始予定日が50日以内のものだけ
    - 引き継がないもの: scrap_records・ng_declarations・wip_board_snapshot・wip_scrap_records
    - 既知の制約: 引き継ぎが終わる前に旧DBのロックが解放される（CANONICAL §22.6、D-75）
 
-## 削除（`MainWindow.on_delete_local_database()` → `ui/db_delete_helper.py` → `services/db_delete_service.py`）
+## 削除（`MainWindow.on_delete_local_database()` → `ui/db_delete_helper.py` → `services/db_delete_service.py`・`services/db_lifecycle_service.delete_database()`）
 
 1. `check_delete_safety()`: 今つながっているDBなら削除を拒否する。有効なロックがあれば警告する
-2. `delete_database_files()`: DB本体・`.lock`・`.lock.tmp` を消す。フォルダは残す
+2. `db_lifecycle_service.delete_database()` → `delete_database_files()`: DB本体・`.lock`・`.lock.tmp` を消す。フォルダは残す。操作履歴は今の DB に記録する
 3. 作成・削除・バックアップ呼び出しの履歴は master.db の db_lifecycle_log に残る（`models/db_lifecycle_log.py`、D-87）
 
 ## バックアップ（`MainWindow.on_backup_databases()` → `services/backup_service.backup_databases(dest)`）
@@ -51,9 +53,9 @@
 ## バックアップの呼び出し（`MainWindow.on_restore_from_backup()`）
 
 1. `validate_monthly_db_backup()`: 読み取り専用で開き、`integrity_check` と月次DB専用のテーブルがあるかを確認する
-2. `restore_backup_as_new_local_db()`: 新しいフォルダ `<APP_DATA_DIR>/db/<フォルダ名>/inventory.db` にコピーする。元のファイルは変えない
-3. 失敗したら、呼び出し側が作りかけのフォルダを消す。今のDBとロックは変えない
-4. 切り替えた後に `init_kitting_plan_tables()` を呼び、古いバックアップでもテーブルがそろうようにする（main_window.py `on_restore_from_backup()`）
+2. `db_lifecycle_service.restore_backup_to_new_folder()` → `restore_backup_as_new_local_db()`: 新しいフォルダ `<APP_DATA_DIR>/db/<フォルダ名>/inventory.db` にコピーする。元のファイルは変えない
+3. コピーに失敗したら、作りかけのフォルダを消してから例外を送出する（`restore_backup_to_new_folder()`）。切り替えのロックが取れなければ `discard_restored_folder()` でフォルダを消す。どちらも今のDBとロックは変えない
+4. 切り替えた後に `db_lifecycle_service.finish_restore()` で `init_kitting_plan_tables()` を呼び、古いバックアップでもテーブルがそろうようにする。操作履歴と master.db の履歴もここで記録する
 5. master.db は復元しない。マスタは `on_merge_master_from_backup()` → `services/master_merge_service.merge_master_from_backup()` で、足りない行だけを追加する（既存の行は上書きしない）
 
 ## 既知の制約（2026-10-09 確認）

@@ -22,7 +22,7 @@ import の向きだけを見ているので、実際の呼び出し回数や呼�
 | column_filter.py | — | — | window_utils |
 | daily_drawdown_window.py | lot_status_history | — | window_utils |
 | daily_report_window.py | — | board_structure_master | window_utils |
-| db_delete_helper.py | db_delete_service | db_lifecycle_log, operation_log | — |
+| db_delete_helper.py | db_delete_service, db_lifecycle_service | — | — |
 | highlight_colors.py | — | — | — |
 | inventory_diff_window.py | inventory_diff_service | operation_log | daily_report_window, window_utils |
 | inventory_input_window.py | — | inventory, operation_log | loading_window, window_utils |
@@ -31,7 +31,7 @@ import の向きだけを見ているので、実際の呼び出し回数や呼�
 | loading_window.py | — | — | window_utils |
 | login_window.py | — | workers | main_window, window_utils, worker_registration_window |
 | lot_progress_window.py | production_service | — | daily_report_window, loading_window, window_utils |
-| main_window.py | app_settings_service, backup_service, db_lock_service, db_migration_carryover, master_merge_service, unprocessed_check_service | db_lifecycle_log, kitting_plan, operation_log | async_task, board_structure_import_window, db_delete_helper, inventory_diff_window, inventory_input_window, kitting_plan_import, kitting_production_entry, login_window※, ng_input_window, operation_log_window, parts_attributes_import_window, pdf_ocr_import_window※, production_side_master_window, theoretical_inventory_import_window, window_utils, wip_expansion_window, worker_management_window, worker_registration_window |
+| main_window.py | backup_service, db_lifecycle_service, db_lock_service, db_migration_carryover, master_merge_service, unprocessed_check_service | db_lifecycle_log, operation_log | async_task, board_structure_import_window, db_delete_helper, inventory_diff_window, inventory_input_window, kitting_plan_import, kitting_production_entry, login_window※, ng_input_window, operation_log_window, parts_attributes_import_window, pdf_ocr_import_window※, production_side_master_window, theoretical_inventory_import_window, window_utils, wip_expansion_window, worker_management_window, worker_registration_window |
 | ng_input_window.py | bom_service, ng_list_service, production_service | ng_declarations, ng_exclusion_list, operation_log, scrap_records | checkable_treeview, column_filter, loading_window, parts_ng_report_window※, plan_candidate_dialog※, product_ng_report_window※, scrap_correction_window, window_utils |
 | operation_log_window.py | — | db_lifecycle_log, operation_log | window_utils |
 | parts_attributes_import_window.py | — | operation_log, parts_attributes | loading_window, warnings_list_window, window_utils |
@@ -66,6 +66,7 @@ import の向きだけを見ているので、実際の呼び出し回数や呼�
 | csv_parsing_common.py | — | — | — |
 | date_parsing.py | — | — | — |
 | db_delete_service.py | — | db_lock_service | — |
+| db_lifecycle_service.py | db_lifecycle_log, kitting_plan, operation_log | app_settings_service, backup_service, db_delete_service | — |
 | db_lock_service.py | — | — | — |
 | db_migration_carryover.py | kitting_plan, production | date_parsing, production_service | — |
 | inventory_diff_service.py | inventory, scrap_records, theoretical_inventory, wip_board_snapshot, wip_scrap_records | — | — |
