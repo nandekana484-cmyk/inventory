@@ -71,6 +71,26 @@
 
 ## 進捗
 
+段階1〜8はすべて完了した（2026-10-13）。各段階の後に、利用者が画面で手動確認した（段階1〜7は問題なし。段階8は全メニューを一通り開く確認を依頼した）。
+別のPCを移す手順と旧→新の対応表は `docs/migrate_to_refactored.md`、設計判断は CANONICAL_DESIGN_DECISIONS.md §50（D-137〜D-142）と §45（段階7b・8と v1.2.2 のビルド）、変更点の一覧は CHANGELOG.md「1.2.2」。
+
+| 段階 | 日付 | コミット（最初〜最後） | 内容 | テスト |
+|---|---|---|---|---|
+| 準備 | 2026-10-09 | `5b06e31`〜`1e52b8c` | CLAUDE.md・docs/ の作成、コメントの軽量化（業務ルールを docs/domain/ へ） | 1件 |
+| 1 | 2026-10-09 | `3ce2b87`〜`7024939` | 画面に依存しない計算・判定を services へ（date_parsing・staging_eligibility・production_entry_service） | 102件 |
+| （環境） | 2026-10-09 | `56f4347`〜`74cc5d5` | requirements.txt のコメントを英数字だけに、requirements.lock.txt、docs/setup.md | ― |
+| 2 | 2026-10-13 | `f5167b8`〜`d578452` | ActualCorrectionWindow の分離、日付の解釈の共通化、未使用の import の削除 | 189件 |
+| 3a | 2026-10-13 | `4d0a8d2`〜`698fc4c` | 登録の書き込みを register_actual_and_ng() へ（保留行の削除を最後に） | 216件 |
+| 3b | 2026-10-13 | `64b7736`〜`562259a` | ステージング画面を親画面の公開メソッドと register_actual_and_ng() に切り替え | 239件 |
+| 4 | 2026-10-13 | `42af2e6`〜`a978b17` | 層の違反の解消（services → ui、models → services、models/ の外の SQL）、services の同名ファイルの改名 | 289件 |
+| 5 | 2026-10-13 | `c71ed28`〜`a2cdb97` | production_service.py の分割（lot_status_service・production_report_service）、「既知の違反」の残り2件 | 318件 |
+| 6 | 2026-10-13 | `190068e`〜`80adfeb` | `_` 始まりの名前の公開名、一覧の絞り込み・並べ替えとポップアップの共通化、run_in_background() | 394件 |
+| 7a | 2026-10-13 | `fd2dc34`〜`0832e1a` | DB の作成・切り替え・復元・削除の、画面に依存しない処理を db_lifecycle_service へ | 422件 |
+| 7b | 2026-10-13 | `137f994`〜`96dfd52` | DB の版（user_version、基準 13）の確認とマイグレーションの仕組み、001〜013 を db/legacy/ へ | 460件 |
+| 8 | 2026-10-13 | `83c7848`〜`5b7572c` | フォルダの整理（ui/ のサブフォルダ化、scripts/・tests/ への移動、古い requirements.txt の削除）、.exe のビルド確認 | 461件 |
+| （v1.2.2・v1.3.0） | 2026-10-15 | `8e3a16f` | もう一方のPCで、リファクタリング後のコードの上に機能の修正（D-120〜D-136）。リファクタリングの段階ではない | 501件 |
+| 引き継ぎ | 2026-10-15 | （このブランチ） | 開発記録（CHANGELOG「1.2.2」・CANONICAL §50）、他のPCへ移る手順（docs/migrate_to_refactored.md）、check_db_versions.py | 504件 |
+
 ## 未解決の宿題
 
 ### D-9x の仮番号
