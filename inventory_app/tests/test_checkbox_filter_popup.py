@@ -88,11 +88,24 @@ def _button(popup, text):
 
 
 def _open(host, p, col_key):
-    return getattr(host, f"open_{p}_checkbox_filter_popup")(col_key)
+    popup = getattr(host, f"open_{p}_checkbox_filter_popup")(col_key)
+    # アプリでは表示・grab のイベントを処理してから閉じる。処理前に閉じると、OS のフォーカスが無いときに
+    # 次の update() で Tk が access violation で落ちる（D-143）。
+    popup.update()
+    return popup
 
 
 @pytest.mark.parametrize("p", ["plan", "ng", "wip"])
-def test_popup_layout_and_values(root, p):
+def test_popup_layout_and_values(root, p, monkeypatch):
+    # focus_get() は OS のフォーカスがこのプロセスに無いと None になるので、検索欄に focus_set() したことを確かめる（D-143）。
+    focused = []
+    original_focus_set = ttk.Entry.focus_set
+
+    def recording_focus_set(self):
+        focused.append(self)
+        original_focus_set(self)
+
+    monkeypatch.setattr(ttk.Entry, "focus_set", recording_focus_set)
     host = _host(root, p)
     popup = _open(host, p, "lot_no")
     try:
@@ -106,7 +119,7 @@ def test_popup_layout_and_values(root, p):
         assert _checked_texts(popup) == ["", "L1", "L10", "L2"]
         assert [b.cget("text") for b in _widgets(popup, ttk.Button)] == ["全選択", "全解除", "OK", "キャンセル"]
         assert [l.cget("text") for l in _widgets(popup, ttk.Label)] == ["検索："]
-        assert popup.focus_get() is _widgets(popup, ttk.Entry)[0]
+        assert focused == [_widgets(popup, ttk.Entry)[0]]
     finally:
         popup.destroy()
 

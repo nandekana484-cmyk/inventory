@@ -1405,6 +1405,8 @@ D-81の修正（候補が複数ある場合も、いずれか1件の実績合計
 | D-140 | 月次DB の版を `PRAGMA user_version` で管理する。001〜013 を適用済みの形を基準の版 13 とし、マイグレーション（014 以降、`db/migrations/m0NN_*.py`）は DB を開くとき（起動時のつなぎ直し・切り替え・バックアップからの取り込み）に、ロックを取った後・`config.DB_PATH` を切り替える前に、自動でバックアップ（直近3世代）を取ってから1つずつトランザクションで当てる。版の記録が無い DB は形を確かめて 13 を書き、足りなければ開かない（そろえない）（今ある DB はテストデータで救済は不要という判断）。アプリより新しい版は開かない。新しく作る DB には最新の版を書く。前月からの引き継ぎの途中では確認しない。001〜013 のスクリプトは `db/legacy/` に記録として残し、実行しない。月別DB・master.db は各PCのローカルだけ（共有していない） | docs/db.md「マイグレーション」、docs/refactoring_plan.md 段階7、本ファイル §50 |
 | D-141 | フォルダ構成を整理した。`ui/` は main_window・login_window・loading_window だけを直下に置き、ほかを common・kitting・production・inventory・ng_wip・reports・master・system に分けた。旧位置に互換用のファイルは残さない（ファイルが二重になり、読む人や AI が迷うため）。段階1〜5で別のファイルへ移した関数は、旧位置に re-export か別名を残した（例外は `docs/migrate_to_refactored.md`）。単発スクリプトは `inventory_app/scripts/`、マイグレーションの記録は `db/legacy/` | CLAUDE.md「フォルダの役割」、docs/architecture.md、docs/migrate_to_refactored.md |
 | D-142 | 開発の進め方を `CLAUDE.md`（Claude Code が毎回読む。80行以内）と `docs/` にまとめた。リファクタリングでは挙動を変えず、移す前の動きをテストで固定してから移す。「コメント整理」「ファイル移動」「挙動変更」を同じコミットに混ぜない。コミットはテストが全件成功したときだけ行う（段階6で、テストが1件失敗したままコミットしたことがあったため追加） | CLAUDE.md「作業ルール」 |
+| D-143 | `tests/test_checkbox_filter_popup.py` がまれに「Windows fatal exception: access violation」で強制終了した件（§49.4）の原因と直し方（2026-10-15）。原因：テストがポップアップを開いた直後に、Tk のイベントを処理しないまま（`invoke()` で）閉じていたこと。このプロセスに OS のフォーカスが無い状態（新しいウィンドウが前面に出られない状態。いつ起きるかは利用者の操作に左右され、テストからは選べない）でだけ、次の `update()` の中で Tk が落ちる。同じ状態で、`popup.focus_get()` が None になり、最初の3件（`test_popup_layout_and_values`）も失敗していた（強制終了の原因ではない。最初の3件を外しても落ちた）。直し方（テストだけ。`ui/common/column_filter.py` は変えていない）：(1) ポップアップを開いた後に `popup.update()` を呼ぶ（アプリではイベントループが回っているので、処理前に閉じることは起きない）。(2) フォーカスの確認を、OS のフォーカスに左右されない「検索欄に `focus_set()` したか」に変えた（`focus_lastfor()` も同じ状態で失敗したため使わない）。確認：直す前はこのPCで、このファイル単独 40回中32回・全体 5回中4回が強制終了。直した後はこのファイル単独 50回・全体 10回で、強制終了・失敗とも0件（各回の直前に直す前のコピーを流し、単独では50回中48回、全体では10回すべてで、そのコピーが落ちる状態だったことを確かめた） | 本ファイル §51.1 |
+| D-144 | 今後の課題（2026-10-15、未着手）：`inventory_app/scripts/` の古い単発スクリプト10本（check_*・delete_*・dump_schema・list_plan_batches_detail・verify_failed_batch_deletion）は、`if __name__ == "__main__"` が無く、import しただけで `config.DB_PATH` の DB につないで SQL を実行する。うち `delete_failed_batches.py`・`delete_test_batches.py` は DELETE して commit する。誤って実行しないための整理（削除、または実行時に対象の DB を示して確認を求める形への変更）を検討する。`check_code_unchanged.py`・`check_db_versions.py` は対象外（import しただけでは何もしない） | 本ファイル §51.2 |
 
 ### 30.1 Shift+Sの検証結果（D-84）
 
@@ -2758,3 +2760,58 @@ D-136の10項目を参照。前回の調査（ロットの統合の設計案、�
 ### 50.5 残っている宿題
 
 `docs/refactoring_plan.md`「未解決の宿題」に記録した（D-9x・D-5x・D-8x の仮番号、§7 の `C:\python310` とPCの状態の食い違い、opencv 5 系、発注数0・実績0の「入力済み」判定、`find_opposite_side_plan` の空白の扱い）。
+
+## 51. テストの強制終了（access violation）の原因と直し方、単発スクリプトの課題（2026-10-15、D-143・D-144）
+
+### 51.1 `test_checkbox_filter_popup.py` の強制終了（D-143）
+
+§49.4 で記録した「Windows fatal exception: access violation」を、`C:\work\inventory` のPCで再現し、原因を確かめて直した。アプリのコード（`ui/common/column_filter.py`）は変えていない。
+
+**再現（直す前、各回の全出力をファイルに残した）**
+
+| 実行 | 結果 |
+|---|---|
+| このファイル単独 40回 | 1〜8回目は成功、9〜40回目の32回は強制終了。強制終了した回はすべて、最初の3件（`test_popup_layout_and_values`）が `focus_get()` が None で失敗していた |
+| 全体 5回 | 1回目は504件成功、2〜5回目の4回は強制終了（同じ3件が失敗した後） |
+
+強制終了の場所は毎回 `_host()` の `host.update()`。このファイル単独では `test_popup_all_selected_means_no_filter[ng]`（1回だけ `test_popup_deiconifies_minimized_parent[ng]`）の準備で落ちた。
+
+**原因の切り分け（テストのコピーを一時フォルダに作って試した）**
+
+- 落ちる状態と落ちない状態が、数十秒〜数分の単位で入れ替わる。落ちる状態では、新しく作ったウインドウにこのプロセスが OS のフォーカスを取れない（`focus_get()` が None）。どちらの状態になるかは利用者の操作に左右され、テストの側からは選べない（推定。Windows の前面ウインドウの制限 `ForegroundLockTimeout`＝200000 ミリ秒が関わると考えているが、確かめていない）
+- 最初の3件の失敗は原因ではない：最初の3件を外して15回流しても、落ちる状態になった3回はすべて同じ場所で落ちた
+- 落ちる状態で、テストのコピーを交互に8回ずつ流した結果：
+
+| 変えたところ | 強制終了 |
+|---|---|
+| 変えない | 8回中8回 |
+| ポップアップを開いた直後に `popup.update()` | 0回（フォーカスの確認の3件だけ失敗） |
+| テストの後片付けで、画面を閉じた後に `update()` | 8回中8回（落ちる場所が後片付けの `update()` に移るだけ） |
+| フォーカスの確認だけ `focus_lastfor()` に変える | 8回中8回 |
+
+- 結論：ポップアップ（`grab_set()` 付きの Toplevel）を作った後、表示・grab のイベントを処理しないまま `invoke()` で閉じ、親の画面も閉じると、落ちる状態では次にイベントを処理したときに Tk が落ちる。落ちる最初のテストは、開いてから一度も `update()` しないで閉じる最初のテスト（`test_popup_all_selected_means_no_filter`）の次。アプリではイベントループが回っていて、ボタンを押す前に必ずイベントが処理されるので、同じことは起きない（推定。アプリの画面で落ちたという報告は無い）
+
+**直し方（テストだけ）**
+
+1. `_open()` で、ポップアップを開いた後に `popup.update()` を呼ぶ
+2. `test_popup_layout_and_values` のフォーカスの確認を、`popup.focus_get() is 検索欄` から「検索欄に `focus_set()` したこと」（`ttk.Entry.focus_set` を monkeypatch で記録）に変えた。`focus_lastfor()` も、落ちる状態では検索欄でなくポップアップ自身を返して失敗した（10回中10回、ng・wip の2件）。確かめる内容は「アプリが検索欄にフォーカスを渡そうとしたこと」になり、OS が実際にフォーカスを渡したかは確かめなくなった
+
+**確認（直した後、各回の全出力をファイルに残した）**
+
+| 実行 | 結果 |
+|---|---|
+| このファイル単独 50回 | 50回とも18件成功。強制終了0件・失敗0件 |
+| 全体 10回 | 10回とも504件成功。強制終了0件・失敗0件 |
+
+各回の直前に、直す前のテストのコピーを1回流して、その時点が落ちる状態かを確かめた。単独の50回では48回、全体の10回では10回すべてで、直す前のコピーが落ちる状態だった。
+
+### 51.2 単発スクリプトの課題（D-144、未着手）
+
+`inventory_app/scripts/` の古い単発スクリプト10本は、`if __name__ == "__main__"` が無く、import しただけで（`python -c "import ..."` やエディタの実行ボタンでも）`config.DB_PATH` の DB に接続して SQL を実行する（2026-10-15 にコードを読んで確認）。
+
+| スクリプト | DB への書き込み |
+|---|---|
+| `delete_failed_batches.py`・`delete_test_batches.py` | あり（DELETE して commit） |
+| `check_failed_batch_references.py`・`check_kitting_plan_schema.py`・`check_production_daily_schema.py`・`check_test_batch_references.py`・`check_test_versions.py`・`dump_schema.py`・`list_plan_batches_detail.py`・`verify_failed_batch_deletion.py` | SQL の書き込みは無い。ただし `sqlite3.connect()` は、DB のファイルが無ければ空のファイルを作る |
+
+整理の案（どちらにするかは未決定）：(1) 役目を終えたものは削除する。(2) 残すものは `if __name__ == "__main__"` の中に入れ、実行時に対象の DB のパスを示して確認を求める形にする。`check_code_unchanged.py`・`check_db_versions.py` は import しただけでは何もしないので対象外。
