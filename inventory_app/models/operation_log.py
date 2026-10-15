@@ -66,14 +66,20 @@ def log_operation(worker_name: str, operation_name: str, detail: str = None):
     if config.is_default_db():
         return
     init_operation_log_table()
-    pc_name = socket.gethostname()
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with get_connection() as con:
-        con.execute("""
-            INSERT INTO operation_log (timestamp, worker_name, pc_name, operation_name, detail)
-            VALUES (?, ?, ?, ?, ?)
-        """, (timestamp, worker_name, pc_name, operation_name, detail))
+        insert_operation_log(con, worker_name, operation_name, detail)
         con.commit()
+
+
+def insert_operation_log(con, worker_name: str, operation_name: str, detail: str = None):
+    """
+    呼び出し元の接続・トランザクションの中で操作履歴を1件書く（コミットしない）。ほかの書き込みと一緒にコミットしたいとき用（D-145）。
+    表は呼び出し元が先に init_operation_log_table() で用意しておくこと。既定DB かどうかは確かめない。
+    """
+    con.execute("""
+        INSERT INTO operation_log (timestamp, worker_name, pc_name, operation_name, detail)
+        VALUES (?, ?, ?, ?, ?)
+    """, (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), worker_name, socket.gethostname(), operation_name, detail))
 
 
 def list_operation_log(limit: int = None) -> list:

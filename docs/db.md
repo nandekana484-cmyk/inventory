@@ -83,6 +83,12 @@
 - 取り込みでは、確かめて適用するのはコピーした先の DB だけで、バックアップの原本は変えない
 - **前月からの引き継ぎの途中では確認しない（取り決め）**。作る DB は `init_database_at()` で最新の形・版になり、引き継ぎ元は今の DB（開いたときに確認済み）。`carry_over_incomplete_lots()` の中で `config.DB_PATH` を切り替えるときに、確認や適用を足さないこと
 
+### マイグレーションの一覧
+
+| 版 | ファイル | 内容 | 追加 |
+|---|---|---|---|
+| 14 | `db/migrations/m014_add_lot_merges.py` | ロット統合の表 `lot_merges` とインデックスを足す（既存のデータは変えない。D-145） | 2026-10-15（2.0.0 予定） |
+
 ### 開けなかったとき・適用に失敗したとき
 
 - 失敗したマイグレーションのトランザクションは巻き戻る。それより前の番号は適用済みのまま、その版が記録に残る。自動バックアップは残す
@@ -104,7 +110,7 @@
    - `upgrade(con)` は2回実行しても安全に書く（列は `PRAGMA table_info` で無いときだけ足す）
    - 表がまだ無い DB では何もしない（多くの表は初めて使ったときに `init_*_table()` で作られ、そのとき最新の形になる）
    - `con` はトランザクションの中で渡される。`COMMIT`・`ROLLBACK`・`PRAGMA foreign_keys` は書かない（実行する側が行う）
-   - 見本: `tests/schema_migrations/m014_add_test_dummy_column.py`（テスト専用。本番には入れない）
+   - 見本: `db/migrations/m014_add_lot_merges.py`（表を足す）、`tests/schema_migrations/m014_add_test_dummy_column.py`（列を足す。テスト専用で、本番には入れない。テストでは本番の 014 の代わりに差し込む）
 2. 同じコミットで、その表の `CREATE TABLE`（`db/schema.sql` か `models/*.py` の `init_*_table()`）を最新の形に直す
 3. `db/migrations/__init__.py` の `LATEST_VERSION` を上げる（番号が抜けていたり食い違っていたりすると、`load_migrations()` が ValueError を出す）
 4. テストを足す: 1つ前の版の DB に当てて目的の形になること、新しく作った DB と形（列・インデックス）が一致すること（`tests/test_schema_version.py` の `test_new_db_and_migrated_db_have_the_same_shape` と同じ方法）、2回当てても変わらないこと

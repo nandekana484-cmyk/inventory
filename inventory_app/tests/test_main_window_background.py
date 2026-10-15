@@ -194,7 +194,7 @@ def test_create_db_with_carry_over_success(host, monkeypatch):
         "release_lock", "menu", "menu", "db_label", "log", "lifecycle", "messagebox", "load_db_folders",
     ]
     assert ("menu", True) in host.events
-    assert host.events[4] == ("log", "作業者A", "未完了計画のDB間引き継ぎ", "成功2件 / スキップ1件 / 失敗0件")
+    assert host.events[4] == ("log", "作業者A", "未完了計画のDB間引き継ぎ", "成功2件 / スキップ1件 / 失敗0件 / ロット統合0件")
     assert host.events[5][1:3] == (mw.OPERATION_TYPE_CREATE_WITH_CARRY_OVER, "2026-08")
     (_, kind, title, message), = _messages(host)
     assert (kind, title) == ("showinfo", "完了")

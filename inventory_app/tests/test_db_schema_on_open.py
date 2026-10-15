@@ -1,7 +1,7 @@
 """
 DB を開くときの形の確認とマイグレーションの適用（段階7b）を、メイン画面の入口（切り替え・取り込み・起動）から確かめる。
-画面の作り方と一時フォルダの DB は test_db_lifecycle_main_window.py と同じ。本番のマイグレーションはまだ無いので、
-適用の場面では、テスト専用の 014（tests/schema_migrations/）を本番のものの代わりに差し込む。
+画面の作り方と一時フォルダの DB は test_db_lifecycle_main_window.py と同じ。適用の場面の多くは、
+テスト専用の 014（tests/schema_migrations/）を本番のもの（D-145 の 014）の代わりに差し込む。
 """
 import os
 import sqlite3
@@ -11,6 +11,7 @@ import pytest
 
 import config
 from db import schema_version as sv
+from db.migrations import LATEST_VERSION
 from services.db_lock_service import acquire_lock, get_lock_info
 from tests.schema_migrations import m014_add_test_dummy_column as m014
 from tests.test_db_lifecycle_main_window import (  # noqa: F401 （fixture）
@@ -81,17 +82,21 @@ def test_switch_to_current_version_db_has_no_extra_dialog(host, current_db):
     _switch(host, "V13")
     assert config.DB_PATH == target
     assert _messages(host) == [("showinfo", "完了", "データベースを切り替えました。")]
-    assert _version(target) == 13
+    assert _version(target) == LATEST_VERSION
 
 
 def test_switch_to_unversioned_baseline_db_stamps_13(host, current_db):
+    """版の記録が無い基準の形の DB は、13 を書いてから本番のマイグレーション（014〜）を当てる（D-145 で 014 が入った）。"""
     target = _make_db("V0")
     _set_version(target, 0)
     _switch(host, "V0")
     assert config.DB_PATH == target
-    assert _version(target) == 13
-    assert _messages(host) == [("showinfo", "完了", "データベースを切り替えました。")]
-    assert sv.list_migration_backups(target) == []
+    assert _version(target) == LATEST_VERSION == 14
+    backups = sv.list_migration_backups(target)
+    assert len(backups) == 1 and ".bak_v13_to_v14_" in backups[0]
+    (m1, m2) = [m[2] for m in _messages(host)]
+    assert m1.startswith("データベースを新しい形に更新しました（版 13 → 14）。") and backups[0] in m1
+    assert m2 == "データベースを切り替えました。"
 
 
 def test_switch_applies_migration_with_backup(host, current_db, with_test_014):
@@ -160,7 +165,7 @@ def test_switch_to_too_new_db_asks_to_update_app(host, current_db):
     _assert_not_switched(host, current_db, target)
     (kind, title, message), = _messages(host)
     assert (kind, title) == ("showerror", "データベースを開けません")
-    assert "（データベースの版：99／このアプリが扱える版：13）" in message
+    assert f"（データベースの版：99／このアプリが扱える版：{LATEST_VERSION}）" in message
     assert "アプリを最新版に更新してください。" in message
     assert _version(target) == 99
 
@@ -196,7 +201,7 @@ def test_restore_current_version_backup(host, current_db, backup_file):
     _restore(host, backup_file, "R13")
     target = _db_path("R13")
     assert config.DB_PATH == target
-    assert _version(target) == 13
+    assert _version(target) == LATEST_VERSION
     assert [m[:2] for m in _messages(host)] == [("showinfo", "取り込み完了")]
 
 

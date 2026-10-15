@@ -978,7 +978,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
             self._lot_progress_window.lift()
             self._lot_progress_window.focus_force()
             return
-        self._lot_progress_window = LotProgressWindow(self)
+        self._lot_progress_window = LotProgressWindow(self, current_worker=self.current_worker)
 
     def open_daily_drawdown(self):
         """日々の引落一覧を開く。開いていれば手前に出すだけ。"""

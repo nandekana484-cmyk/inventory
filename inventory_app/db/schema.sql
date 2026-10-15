@@ -97,3 +97,15 @@ CREATE TABLE IF NOT EXISTS audit_log (
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     worker_id TEXT
 );
+
+-- ロット統合（D-145。既存の DB にはマイグレーション 014 で足す。CREATE 文は db/migrations/m014_add_lot_merges.py と同じにする）
+CREATE TABLE IF NOT EXISTS lot_merges (
+    member_lot TEXT PRIMARY KEY,
+    target_lot TEXT NOT NULL,
+    merged_at TEXT NOT NULL,
+    merged_by TEXT,
+    note TEXT,
+    CHECK (member_lot = target_lot || '-'),
+    CHECK (target_lot <> '' AND substr(target_lot, -1) <> '-')
+);
+CREATE INDEX IF NOT EXISTS idx_lot_merges_target_lot ON lot_merges(target_lot);

@@ -150,9 +150,11 @@ class LotProgressWindow(tk.Toplevel):
     self._lot_progress_window属性＋winfo_exists()で行う、既存のcsv_staging_window
     と同じパターン）。
     """
-    def __init__(self, parent):
+    def __init__(self, parent, current_worker=None):
         super().__init__(parent)
         self.title("ロット進捗チェック")
+        self.current_worker = current_worker or {}
+        self._lot_merge_window = None
         self.geometry("1400x650")
         center_window(self, parent)
 
@@ -189,6 +191,7 @@ class LotProgressWindow(tk.Toplevel):
         btn_frame = ttk.Frame(self, padding=10)
         btn_frame.pack(side=tk.BOTTOM, fill=tk.X)
         ttk.Button(btn_frame, text="CSV出力", command=self.on_export_csv).pack(side=tk.LEFT)
+        ttk.Button(btn_frame, text="ロット統合", command=self.open_lot_merge_window).pack(side=tk.LEFT, padx=(15, 0))
 
         self.lbl_count = ttk.Label(self, foreground="gray")
         self.lbl_count.pack(side=tk.BOTTOM, anchor=tk.W, padx=10, pady=(0, 5))
@@ -214,6 +217,15 @@ class LotProgressWindow(tk.Toplevel):
         configure_status_color_tags(self.tree)
 
         self.refresh()
+
+    def open_lot_merge_window(self):
+        """ロット統合の画面を開く（D-145）。開いていれば前面に出す。"""
+        # 循環 import を避けるため、ここで import する（lot_merge_window がこのモジュールの STATUS_LABELS を使う）。
+        from ui.production.lot_merge_window import LotMergeWindow
+        if self._lot_merge_window is not None and self._lot_merge_window.winfo_exists():
+            self._lot_merge_window.lift()
+            return
+        self._lot_merge_window = LotMergeWindow(self, current_worker=self.current_worker)
 
     def refresh(self):
         """

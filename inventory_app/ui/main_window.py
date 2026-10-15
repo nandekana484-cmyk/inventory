@@ -1032,14 +1032,15 @@ class MainWindow(tk.Tk):
             folder_name = payload["folder"]
             failed_lot_nos = summary.get("failed_lot_nos") or []
             skipped_lot_nos = summary.get("skipped_lot_nos") or []
+            merges_not_copied = summary.get("lot_merges_not_copied") or []
 
             # この時点で config.DB_PATH は新しい DB なので、操作履歴は新しい DB に記録される。
-            log_operation(
-                self.current_worker.get("name", "unknown"),
-                "未完了計画のDB間引き継ぎ",
-                detail=f"成功{summary['lots_copied']}件 / スキップ{len(skipped_lot_nos)}件 / "
-                       f"失敗{len(failed_lot_nos)}件",
-            )
+            detail = (f"成功{summary['lots_copied']}件 / スキップ{len(skipped_lot_nos)}件 / "
+                      f"失敗{len(failed_lot_nos)}件 / ロット統合{summary.get('lot_merges_copied', 0)}件")
+            if merges_not_copied:
+                detail += " / 片方だけのため引き継がなかったロット統合: " + "、".join(
+                    f"{m['member_lot']}→{m['target_lot']}（引き継いだのは{m['carried_lot']}）" for m in merges_not_copied)
+            log_operation(self.current_worker.get("name", "unknown"), "未完了計画のDB間引き継ぎ", detail=detail)
             # 履歴を master.db にも記録する。
             record_db_lifecycle_event(
                 OPERATION_TYPE_CREATE_WITH_CARRY_OVER, folder_name,
@@ -1056,6 +1057,14 @@ class MainWindow(tk.Tk):
 
             if skipped_lot_nos:
                 msg += f"\n（前回までに引き継ぎ済みのため {len(skipped_lot_nos)}件をスキップしました）"
+            if summary.get("lot_merges_copied"):
+                msg += f"\nロット統合 {summary['lot_merges_copied']}件も引き継ぎました。"
+            if merges_not_copied:
+                lines = [f"・{m['member_lot']} → {m['target_lot']}（引き継いだのは {m['carried_lot']} だけ）"
+                         for m in merges_not_copied[:10]]
+                more = f"\n...ほか{len(merges_not_copied) - 10}件" if len(merges_not_copied) > 10 else ""
+                msg += (f"\n\n※ 次のロット統合は、片方のロットだけを引き継いだため、新しいデータベースには引き継いでいません"
+                        f"（{len(merges_not_copied)}件）。\n" + "\n".join(lines) + more)
 
             duplicate_warnings = summary.get("duplicate_lot_warnings") or []
             if duplicate_warnings:

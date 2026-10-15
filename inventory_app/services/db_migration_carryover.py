@@ -40,6 +40,7 @@ from models.kitting_plan import (
     init_kitting_plan_tables,
     fetch_plan_items_for_lot, fetch_plan_start_datetimes_for_lot, all_active_plan_items_exist,
 )
+from models.lot_merges import copy_lot_merge_rows, list_lot_merges
 from models.production import (
     replace_daily_result,
     fetch_production_daily_for_lot, all_production_daily_exist,
@@ -424,6 +425,11 @@ def carry_over_incomplete_lots(old_db_path: str, new_db_path: str, imported_by: 
             {"lot_no": str, "kitting_list_no": str},
             ...
         ],
+        "lot_merges_copied": int,             # 引き継いだ統合の行（統合先と統合されるロットの両方を引き継いだもの。D-145）
+        "lot_merges_not_copied": [            # 片方のロットだけを引き継いだため、引き継がなかった統合（D-145）
+            {"member_lot": str, "target_lot": str, "carried_lot": str},
+            ...
+        ],
         "lots_with_no_items_to_copy": [lot_no, ...],  # 2026-10-01追加。
                                                # 全ての計画が50日超過で除外され、
                                                # 結果的に今回コピー対象の計画が
@@ -444,6 +450,7 @@ def carry_over_incomplete_lots(old_db_path: str, new_db_path: str, imported_by: 
             plan_items = _fetch_plan_items_for_lot(lot["lot_no"])
             production_rows = _fetch_production_daily_for_lot(lot["lot_no"], lot["kitting_list_nos"])
             lots_data.append((lot, plan_items, production_rows))
+        merge_rows = list_lot_merges()
     finally:
         # 読み取りフェーズの成否に関わらず、以後は新DBを「現在のDB」とする
         # （new_db_pathは呼び出し元が既に作成済みで、引き継ぎの成否によらず
@@ -461,6 +468,8 @@ def carry_over_incomplete_lots(old_db_path: str, new_db_path: str, imported_by: 
         "excluded_unstarted_items": [],
         "undetermined_plan_start_datetime_items": [],
         "lots_with_no_items_to_copy": [],
+        "lot_merges_copied": 0,
+        "lot_merges_not_copied": [],
     }
 
     source_label = f"carry_over:{os.path.basename(os.path.dirname(old_db_path)) or old_db_path}"
@@ -548,4 +557,23 @@ def carry_over_incomplete_lots(old_db_path: str, new_db_path: str, imported_by: 
                 })
             break
 
+    _carry_over_lot_merges(merge_rows, set(summary["lot_nos"]) | set(summary["skipped_lot_nos"]), summary)
     return summary
+
+
+def _carry_over_lot_merges(merge_rows, carried_lot_nos, summary):
+    """
+    統合の行（D-145）を、統合先と統合されるロットの両方を引き継いだときだけ新しい DB へ写す（config.DB_PATH は新しい DB）。
+    片方だけを引き継いだ統合は写さず、summary に残す（統合後のロットを単位にした未完了の判定は第2段階で行う）。
+    """
+    to_copy = []
+    for row in merge_rows:
+        carried = [lot for lot in (row["target_lot"], row["member_lot"]) if lot in carried_lot_nos]
+        if len(carried) == 2:
+            to_copy.append(row)
+        elif len(carried) == 1:
+            summary["lot_merges_not_copied"].append({
+                "member_lot": row["member_lot"], "target_lot": row["target_lot"], "carried_lot": carried[0],
+            })
+    if to_copy:
+        summary["lot_merges_copied"] = copy_lot_merge_rows(to_copy)

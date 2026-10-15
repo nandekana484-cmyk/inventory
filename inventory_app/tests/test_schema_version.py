@@ -91,10 +91,10 @@ def db_path(tmp_path, monkeypatch):
 
 # ---------------------------------------------------------------- 本番のマイグレーション
 
-def test_production_migrations_are_baseline_only():
+def test_production_migrations():
     assert production_migrations.BASELINE_VERSION == 13
-    assert production_migrations.LATEST_VERSION == 13
-    assert production_migrations.load_migrations() == []
+    assert production_migrations.LATEST_VERSION == 14
+    assert [m.__name__ for m in production_migrations.load_migrations()] == ["db.migrations.m014_add_lot_merges"]
 
 
 def test_validate_migrations_detects_gaps():
@@ -111,7 +111,7 @@ def test_validate_migrations_detects_gaps():
 def test_new_full_db_passes_baseline_and_is_stamped_13(db_path):
     assert sv.baseline_problems(sqlite3.connect(db_path)) == []
     _set_version(db_path, 0)
-    result = sv.ensure_schema(db_path)
+    result = sv.ensure_schema(db_path, [], 13)        # 基準の確認だけを見るため、マイグレーションは無しにする
     assert result == {"from_version": 13, "to_version": 13, "applied": [], "stamped_baseline": True,
                       "backup_path": None, "deleted_backups": []}
     assert _version(db_path) == 13
