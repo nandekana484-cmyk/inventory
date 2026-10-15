@@ -18,26 +18,11 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
 from services.production_service import check_lot_progress
+from services.lot_status_service import ORDER_QTY_REMARK_BETWEEN_FILES, ORDER_QTY_REMARK_WITHIN_FILE
 from ui.common.window_utils import center_window
 from ui.loading_window import LoadingWindow
-from ui.reports.daily_report_window import configure_lot_stripe_tags, configure_status_color_tags
-
-# ui.reports.daily_report_window.configure_lot_stripe_tags()・configure_status_color_
-# tags()が実際にtag_configure()するタグ名と同じ文字列を、こちらのtree.insert()の
-# tags引数にも使う必要がある（daily_report_window.py側の定数は同モジュール内の
-# プライベート定数のため、ここでは同じ文字列リテラルを独自定義する。日報・月報・
-# ロット進捗チェックの3画面で同じ色・同じタグ名にするための取り決め）。
-_LOT_STRIPE_TAG_A = "lot_stripe_a"
-_LOT_STRIPE_TAG_B = "lot_stripe_b"
-_STATUS_COLOR_TAG_NEEDS_REVIEW = "status_needs_review"
-_STATUS_COLOR_TAG_SHORTFALL = "status_shortfall_note"
-# services.production_service._lot_status_color_category()の戻り値
-# （"needs_review"|"shortfall"|None）から、上記タグ名を引く（2026-09-28追加、
-# ui.reports.daily_report_window._STATUS_COLOR_CATEGORY_TO_TAGと同じ対応関係）。
-_STATUS_COLOR_CATEGORY_TO_TAG = {
-    "needs_review": _STATUS_COLOR_TAG_NEEDS_REVIEW,
-    "shortfall": _STATUS_COLOR_TAG_SHORTFALL,
-}
+# 縞模様・文字色は実績レポート・日々の引落一覧と共通の定義を使う（D-125）。
+from ui.common.lot_row_style import LotRowTagger, configure_lot_stripe_tags, configure_status_color_tags
 
 COLUMNS = (
     "lot_no", "status", "board_count", "actual_file_count", "board_name",
@@ -118,9 +103,16 @@ def build_display_rows(lot_results):
         board_count_display = "" if status == "board_count_inconsistent" else _format_number(lot["board_count"])
         actual_file_count = len(lot["visible_file_nos"])
         remarks = lot["status_remarks"]
-        status_color_category = lot["status_color_category"]
+        if lot["order_qty_inconsistent_between_files"]:
+            remarks = f"{remarks} / {ORDER_QTY_REMARK_BETWEEN_FILES}" if remarks else ORDER_QTY_REMARK_BETWEEN_FILES
+        # 発注数の食い違いも赤にする区分（実績レポートの status_color_category とは別。D-127）。
+        status_color_category = lot["progress_color_category"]
 
         def _make_row(board_name, f):
+            # 同じファイルNo・面のバッチで発注数が食い違う行は、発注数・未生産が空欄になるので理由を備考に足す（D-121・D-127）。
+            row_remarks = remarks
+            if f.get("order_qty_inconsistent"):
+                row_remarks = f"{remarks} / {ORDER_QTY_REMARK_WITHIN_FILE}" if remarks else ORDER_QTY_REMARK_WITHIN_FILE
             return {
                 "lot_no": lot_no,
                 "status": status_label,
@@ -133,7 +125,7 @@ def build_display_rows(lot_results):
                 "lot_completed": _format_number(f["lot_completed"]),
                 "surplus_qty": _format_number(f["surplus_qty"]),
                 "not_produced_qty": _format_number(f["not_produced_qty"]),
-                "remarks": remarks,
+                "remarks": row_remarks,
                 "_status_raw": status,
                 "_has_unregistered": has_unregistered,
                 "_status_color_category": status_color_category,
@@ -303,25 +295,13 @@ class LotProgressWindow(tk.Toplevel):
         for item in self.tree.get_children():
             self.tree.delete(item)
 
-        lot_tag_map = {}
-        use_tag_b = False
-        displayed_lot_nos = set()
+        tagger = LotRowTagger()
         for row in rows:
-            lot_no = row["lot_no"]
-            if lot_no not in lot_tag_map:
-                use_tag_b = not use_tag_b
-                lot_tag_map[lot_no] = _LOT_STRIPE_TAG_B if use_tag_b else _LOT_STRIPE_TAG_A
-            displayed_lot_nos.add(lot_no)
-
-            tags = [lot_tag_map[lot_no]]
-            color_tag = _STATUS_COLOR_CATEGORY_TO_TAG.get(row["_status_color_category"])
-            if color_tag:
-                tags.append(color_tag)
-
+            tags = tagger.tags_for(row["lot_no"], row["_status_color_category"])
             values = [row[c] for c in COLUMNS]
-            self.tree.insert("", tk.END, values=values, tags=tuple(tags))
+            self.tree.insert("", tk.END, values=values, tags=tags)
 
-        self.lbl_count.config(text=f"表示中: {len(displayed_lot_nos)}ロット / {len(rows)}行")
+        self.lbl_count.config(text=f"表示中: {tagger.lot_count()}ロット / {len(rows)}行")
 
     def sort_by_column(self, col):
         """

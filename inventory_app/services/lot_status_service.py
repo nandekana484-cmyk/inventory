@@ -4,7 +4,7 @@
 完成数の集計キーは (setup_file_no, production_side) の2要素で、代入ではなく加算する（docs/fragile_spots.md 2）。
 """
 from models.kitting_plan import list_plan_items_by_lot, list_plan_items_for_all_lots
-from models.production import get_app_cumulative_qty_bulk
+from models.production import get_app_cumulative_qty_bulk, get_app_cumulative_qty
 from models.board_structure_master import get_board_structure
 from models.lot_status_history import insert_lot_status_snapshot
 
@@ -78,6 +78,10 @@ DRAWDOWN_ZERO_STATUSES = {"shortfall"}
 
 # 引落は実績ベースのままでも、構成基板数と比べられないので「確認・修正が必要」（赤字）とする status。
 NEEDS_REVIEW_STATUSES = {"unregistered", "board_count_inconsistent", "excess"}
+
+# 発注数の食い違いの文言（ロット進捗チェックの備考に出す。実績レポートの「確認事項」には出さない。D-127）。
+ORDER_QTY_REMARK_BETWEEN_FILES = "発注数不一致(ファイル間)"
+ORDER_QTY_REMARK_WITHIN_FILE = "発注数不一致(同一ファイル内)"
 
 
 def _build_lot_status_remarks(status: str, board_count_values, shortfall_count: int,
@@ -197,15 +201,20 @@ def _evaluate_lot_status(lot_no: str, plan_items: list, cumulative_by_pair: dict
         files = []
         for (setup_file_no, side), batch_items in files_grouped.items():
             file_actual = lot_info["file_actuals"].get((setup_file_no, side), 0)
-            order_qty = sum(bi["order_qty"] for bi in batch_items)
+            # 発注数はロットの値が各バッチに同じ値で入っているので、バッチをまたいで足さない（D-121）。
+            # 値が食い違うときは決められないので、発注数・未生産を空欄（None）にして知らせる。
+            batch_order_qty_values = {bi["order_qty"] for bi in batch_items}
+            order_qty_inconsistent = len(batch_order_qty_values) > 1
+            order_qty = None if order_qty_inconsistent else batch_order_qty_values.pop()
             files.append({
                 "setup_file_no": setup_file_no,
                 "production_side": side,
                 "order_qty": order_qty,
+                "order_qty_inconsistent": order_qty_inconsistent,
                 "file_actual": file_actual,
                 "lot_completed": lot_completed,
                 "surplus_qty": file_actual - lot_completed,
-                "not_produced_qty": order_qty - file_actual,
+                "not_produced_qty": None if order_qty is None else order_qty - file_actual,
             })
 
         boards.append({
@@ -232,6 +241,21 @@ def _evaluate_lot_status(lot_no: str, plan_items: list, cumulative_by_pair: dict
     )
     status_color_category = _lot_status_color_category(status, unregistered_board_names)
 
+    # 発注数がファイルNoによって違うか（表示している行＝面1を除いた後で比べる）。値はファイルNoごとのまま表示する（D-127）。
+    order_qty_sets_by_file = {}
+    for it in visible_items:
+        order_qty_sets_by_file.setdefault(it["setup_file_no"], set()).add(it["order_qty"])
+    order_qty_inconsistent_between_files = len({frozenset(v) for v in order_qty_sets_by_file.values()}) > 1
+    order_qty_inconsistent_within_file = any(
+        f["order_qty_inconsistent"] for board in boards for f in board["files"]
+    )
+    # ロット進捗チェック・日々の引落一覧の文字色。発注数の食い違いは構成基板数不一致と同じ赤にする。
+    # 実績レポートは status_color_category を使い続ける（発注数の食い違いを出さない）。
+    progress_color_category = (
+        "needs_review" if order_qty_inconsistent_between_files or order_qty_inconsistent_within_file
+        else status_color_category
+    )
+
     return {
         "lot_no": lot_no,
         "status": status,
@@ -246,6 +270,8 @@ def _evaluate_lot_status(lot_no: str, plan_items: list, cumulative_by_pair: dict
         "lot_completed": lot_completed,
         "status_remarks": status_remarks,
         "status_color_category": status_color_category,
+        "order_qty_inconsistent_between_files": order_qty_inconsistent_between_files,
+        "progress_color_category": progress_color_category,
         "order_quantity": lot_info["order_quantity"],
         "file_actuals": lot_info["file_actuals"],
         "order_qty_inconsistent": lot_info["order_qty_inconsistent"],
@@ -267,6 +293,67 @@ def evaluate_lot_status(lot_no: str, cutoff_date: str = None) -> dict:
     cumulative_by_pair = get_app_cumulative_qty_bulk(kitting_list_no_lot_pairs, cutoff_date=cutoff_date)
 
     return _evaluate_lot_status(lot_no, plan_items, cumulative_by_pair, cutoff_date=cutoff_date)
+
+
+def is_lot_incomplete(lot_eval: dict) -> bool:
+    """
+    _evaluate_lot_status() の結果から、ロットが未完了かを返す（未完了ロットの抽出・完成済みロットの自動登録の除外で共通。D-130）。
+    未完了の条件（利用者の決定）: shortfall は引落0なので常に未完了。それ以外は 発注数 − 完成数 > 0 なら未完了。
+    """
+    if lot_eval["status"] in DRAWDOWN_ZERO_STATUSES:
+        return True
+    return lot_eval["order_quantity"] - lot_eval["lot_completed"] > 0
+
+
+def lot_completion_state(lot_no: str, cache: dict = None):
+    """
+    ロットが完成済みかを、未完了ロットの抽出と同じ定義（is_lot_incomplete()）で返す（D-130）。計画が無ければ None。
+    同じ (ファイルNo, 面) の中で発注数が食い違うロット（発注数が空欄になる。D-121）は、完成済みと判定しない。
+    戻り値: {"completed": bool, "lot_completed", "order_quantity", "file_actuals"}。cache（lot_no→結果）を渡すと使い回す。
+    後日のロット統合では、evaluate_lot_status() を統合後のロットに切り替えればここも切り替わる。
+    """
+    if cache is not None and lot_no in cache:
+        return cache[lot_no]
+    try:
+        lot_eval = evaluate_lot_status(lot_no)
+    except ValueError:
+        state = None
+    else:
+        within_file_inconsistent = any(
+            f["order_qty_inconsistent"] for board in lot_eval["boards"] for f in board["files"]
+        )
+        state = {
+            "completed": not within_file_inconsistent and not is_lot_incomplete(lot_eval),
+            "lot_completed": lot_eval["lot_completed"],
+            "order_quantity": lot_eval["order_quantity"],
+            "file_actuals": lot_eval["file_actuals"],
+        }
+    if cache is not None:
+        cache[lot_no] = state
+    return state
+
+
+def preview_completed_lot_registration(plan: dict, daily_qty: float):
+    """
+    plan（計画1件）に daily_qty を登録する前に、そのロットが完成済みなら確認用の内容を返す（D-130）。完成していなければ None。
+    new_total は、登録した後の、その計画の (ファイルNo, 面) の実績の合計（完成数の計算に使う値。1計画＝1レコードなので既存分は置き換わる）。
+    その計画に既に実績がある（数量を直す）場合は、直した後の合計が発注数を超え、かつ今より増えるときだけ返す（D-133）。
+    """
+    state = lot_completion_state(plan["lot_no"])
+    if state is None or not state["completed"]:
+        return None
+    file_key = (plan["setup_file_no"], plan["production_side"])
+    current_total = state["file_actuals"].get(file_key, 0)
+    own_existing = get_app_cumulative_qty(plan["kitting_list_no"], plan["lot_no"])
+    new_total = current_total - own_existing + daily_qty
+    if own_existing and not (new_total > state["order_quantity"] and new_total > current_total):
+        return None
+    return {
+        "lot_no": plan["lot_no"],
+        "lot_completed": state["lot_completed"],
+        "order_quantity": state["order_quantity"],
+        "new_total": new_total,
+    }
 
 
 def list_incomplete_lots():
@@ -294,12 +381,7 @@ def list_incomplete_lots():
         completed_quantity = lot_eval["lot_completed"]
         remaining_quantity = order_quantity - completed_quantity
 
-        if status == "shortfall":
-            is_incomplete = True  # 引落0扱いのため、remaining_quantityの値に関わらず無条件で未完了
-        else:
-            is_incomplete = remaining_quantity > 0
-
-        if not is_incomplete:
+        if not is_lot_incomplete(lot_eval):
             continue
 
         results.append({

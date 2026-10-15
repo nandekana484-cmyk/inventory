@@ -7,9 +7,11 @@ from tkcalendar import DateEntry
 from services.production_service import (
     search_plan_by_kitting_no,
     register_opposite_side_daily_result,
+    preview_opposite_side_overwrite,
     get_daily_history,
     calculate_lot_completion,
 )
+from services.lot_status_service import preview_completed_lot_registration
 from services.production_import_service import parse_production_csv_for_staging
 from services.csv_format_detection import (
     read_csv_header, detect_format_mismatch_warnings,
@@ -27,7 +29,8 @@ from models.board_structure_master import get_board_structure
 from ui.reports.unified_report_window import UnifiedReportWindow
 from ui.production.lot_progress_window import LotProgressWindow
 from ui.production.daily_drawdown_window import DailyDrawdownWindow
-from ui.production.production_import_staging_window import open_or_notify
+from ui.production.production_import_staging_window import open_or_notify, format_completed_lot_warning
+from ui.production.opposite_side_overwrite_dialog import format_opposite_change
 from ui.loading_window import LoadingWindow
 from ui.common.window_utils import center_window
 from ui.common.column_filter import CheckboxFilterPopup, build_filter_predicates, row_matches, filter_rows, date_range_predicate, make_sort_key
@@ -957,7 +960,13 @@ class KittingProductionEntryWindow(tk.Toplevel):
             lot_no=self.current_plan["lot_no"],
             on_updated=self.load_plan_list,
             current_worker=self.current_worker,
+            on_cancelled=self._on_registration_cancelled,
         )
+
+    def _on_registration_cancelled(self, pending_row_id):
+        """実績の取り消しで登録待ちに戻した行を、開いている登録待ち一覧にも足す（D-129）。"""
+        if self._csv_staging_window is not None and self._csv_staging_window.winfo_exists():
+            self._csv_staging_window.add_restored_row(pending_row_id)
 
     def open_unified_report(self):
         """実績レポート画面（日報・月報の統合）を開く。"""
@@ -1281,6 +1290,13 @@ class KittingProductionEntryWindow(tk.Toplevel):
         # 面1だけの計画で b（面2待ち）・c（生産面マスター未登録）なら、確認ダイアログで理由を示す（D-9x。登録は禁止しない）。
         side1_only_classification = classify_side1_only_plan(self.current_plan)
 
+        # 反対側の面の既存の実績が、連動で数量か日付を変えられるなら、確認ダイアログで示す（D-126）。
+        # _perform_registration() と同じ日付（転記した CSV の払い出し日、手入力なら None）で判定する。
+        opposite_change = preview_opposite_side_overwrite(self.current_plan, daily_qty, new_report_date)
+
+        # ロットが完成済みなら確認ダイアログで示す（D-130。手入力も対象、D-133）。面2の置き換え（D-126）と同じダイアログに並べる。
+        completed_lot = preview_completed_lot_registration(self.current_plan, daily_qty)
+
         return {
             "daily_qty": daily_qty,
             "existing_daily_qty": existing_daily_qty,
@@ -1289,6 +1305,8 @@ class KittingProductionEntryWindow(tk.Toplevel):
             "save_qty_by_side": save_qty_by_side,
             "mismatch_lines": mismatch_lines,
             "side1_only_classification": side1_only_classification,
+            "opposite_change": opposite_change,
+            "completed_lot": completed_lot,
         }
 
     def _show_registration_confirm_dialog(self, preview):
@@ -1316,6 +1334,17 @@ class KittingProductionEntryWindow(tk.Toplevel):
                     f"・面{side}（{side_plan['kitting_list_no']}）のNG数量："
                     f"{preview['save_qty_by_side'][side]:g}"
                 )
+
+        opposite_change = preview.get("opposite_change")
+        if opposite_change is not None:
+            lines.append("")
+            lines.append(f"・{format_opposite_change(opposite_change)}（計画 {opposite_change['kitting_list_no']}）。")
+            lines.append("・キャンセルすると、どちらの面も登録しません。")
+
+        completed_lot = preview.get("completed_lot")
+        if completed_lot is not None:
+            lines.append("")
+            lines.append(f"・{format_completed_lot_warning(completed_lot)}。")
 
         if preview["mismatch_lines"]:
             lines.append("")

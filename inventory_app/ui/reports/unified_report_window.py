@@ -169,12 +169,17 @@ class UnifiedReportWindow(tk.Toplevel):
         left_aligned = {"file_no", "board_name", "board_count", "lot_no", "report_date"}
         self._col_headers = headers
 
-        self.tree = ttk.Treeview(tree_frame, columns=self._cols, show="headings")
+        # 縦スクロールバー（D-124）。Treeview より先に pack しないと、スクロールバーの領域が残らない。
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical")
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.tree = ttk.Treeview(tree_frame, columns=self._cols, show="headings", yscrollcommand=vsb.set)
+        vsb.configure(command=self.tree.yview)
         self._sort_states = {}
         for c in self._cols:
             self.tree.heading(c, text=headers[c], command=lambda c=c: self.sort_by_column(c))
             self.tree.column(c, width=widths[c], anchor=tk.W if c in left_aligned else tk.E)
-        self.tree.pack(expand=True, fill=tk.BOTH)
+        self.tree.pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
         self.tree.bind("<Double-1>", self.on_row_double_click)
         # 両方必ず呼ぶ（旧日報は configure_status_color_tags() を呼んでおらず、確認事項の色が出なかった）。
         configure_lot_stripe_tags(self.tree)

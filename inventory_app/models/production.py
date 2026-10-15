@@ -400,3 +400,29 @@ def get_report_date_range():
             "SELECT MIN(report_date) AS min_date, MAX(report_date) AS max_date FROM production_daily"
         ).fetchone()
         return row["min_date"], row["max_date"]
+
+
+def cancel_daily_production(prod_log_ids: list, ng_declaration_keys: list, restored_row: dict = None,
+                            restored_source: str = None, imported_by: str = None):
+    """
+    実績の取り消し（D-129）を1つのトランザクションで確定する：production_daily の行の削除、NG申告の削除、
+    （restored_row があれば）登録待ちの行の作り直し。途中で例外が出たら、どれも反映されない。
+    戻り値は作り直した pending_row_id（作らなければ None）。
+    """
+    from models.ng_declarations import init_ng_declarations_table, delete_ng_declarations
+    from models.production_import_staging import init_csv_import_staging_tables, insert_restored_pending_row
+
+    # 表が無い DB でも動くよう、トランザクションの外で先に作っておく（CREATE TABLE IF NOT EXISTS は各関数が commit する）。
+    init_ng_declarations_table()
+    if restored_row is not None:
+        init_csv_import_staging_tables()
+
+    pending_row_id = None
+    with get_connection() as con:
+        for prod_log_id in prod_log_ids:
+            con.execute("DELETE FROM production_daily WHERE prod_log_id = ?", (prod_log_id,))
+        delete_ng_declarations(con, ng_declaration_keys)
+        if restored_row is not None:
+            pending_row_id = insert_restored_pending_row(con, restored_row, restored_source, imported_by)
+        con.commit()
+    return pending_row_id

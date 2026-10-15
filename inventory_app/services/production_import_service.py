@@ -509,6 +509,7 @@ STAGING_STATUS_LABELS = {
     "eligible_shift_q": "Shift+Qで登録可（日付差2〜4日）",
     "existing": "要確認（既に実績あり）",
     "duplicate": "要確認（同一計画への重複候補）",
+    "lot_completed": "要確認（ロット完成済み）",
     # 生産面マスターによる分類（2026-10-07新設、D-9x参照）。
     "side2_wait": "要確認（面2待ち）",
     "side_master_unregistered": "要確認（生産面マスター未登録）",

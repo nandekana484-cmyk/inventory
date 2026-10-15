@@ -12,10 +12,18 @@
 - 既存レコードが複数ある（仕様変更前の過去データ）ときは、最も新しい日付のものを使う
 - `overwrite_daily_result()` の report_date: None を今日にせず、そのまま `replace_daily_result()` に渡して既存行の日付を引き継ぐ（2026-09-29 の調査で、手で数量を直して再登録するたびに CSV 由来の正しい日付が今日に書き換わる問題が見つかったため）。既存行が無ければ今日
 - 反対側の面への連動（`register_opposite_side_daily_result()`）: 手入力と CSV 自動取込の共通処理（以前は UI 側にあった）。反対側でも重複チェックは通すが、既存があっても確認せずに上書きする
+  - 面2の登録で面1の既存の実績の数量か日付が変わるときは、画面が登録の前に確認する（2026-10-15、D-126。この関数自体は確認しない）。判定は `preview_opposite_side_overwrites()`（DB に書き込まない）。日付は、指定があればその日付、無ければ上書きは既存の日付（`replace_daily_result()`）・新規は今日、と登録と同じ規則で予測する。一括では、同じ一括の中で前の行が書く実績も「既存」として数える。面1の登録で面2が変わる逆向きは対象外（利用者の決定の範囲外）
 - 履歴（lot_status_history）の記録
   - 登録・上書き・修正・削除のたびに、そのロットの状態を記録する（2026-09-30）。記録に失敗しても本来の処理は失敗させない（`_record_lot_status_snapshot_safely()`。共通フックにはせず、各関数から個別に呼ぶ方針）
   - record_history=False: 一括登録（Shift+S など）で行ごとに記録すると、1件あたり数十 ms（commit の同期コスト）かかり100件で数秒になる。呼び出し元が影響したロットの集合を持ち、最後にロット単位で1回ずつ記録する。反対側の面も同じ lot_no なので漏れない
   - 修正（`update_daily_result()`）は UPDATE の前に、削除（`delete_daily_result()`）は DELETE の前に対象行を読んで lot_no を特定する（削除後は読めない。修正で前に読むのは、行が既に消えていた場合を検出するため）
+
+## 実績の取り消し（`build_cancellation_preview()`・`apply_cancellation()`、2026-10-15、D-129）
+
+- 反対側の面の実績は、削除と同じく `build_linked_correction_preview()` で特定して連動して取り消す。NG申告は取り消す計画と反対側の面の計画の分を取り消す（面2の NG は面1にも加算して保存されている）
+- NG申告の計画・面が NG展開（scrap_records）で、または取り消す実績の計画・面が仕掛部品展開（wip_scrap_records）で確定済みなら取り消さない
+- 登録待ちに戻す行は1行。日付は実績CSVの書式（`to_csv_date_format()`）、製品名は計画の基板名、作業者は実績を登録した作業者ID、取込のバッチは取り消し専用の新しいバッチ（source_file＝`CANCELLED_REGISTRATION_SOURCE`）、CSVの行番号は NULL
+- 確定は `models/production.cancel_daily_production()` の1つのトランザクション
 
 ## 実績の修正・削除での面の連動（`build_linked_correction_preview()`、D-112）
 
@@ -48,6 +56,8 @@
   4. status: 登録済みの基板名が無い→unregistered／登録値が複数種類→board_count_inconsistent（比較はしない）／それ以外は file_no の数と比べて、一致→match、足りない→shortfall（shortfall_count）、多い→excess（excess_file_nos）
   5. 引落: `DRAWDOWN_ZERO_STATUSES`（shortfall だけ）なら0、それ以外は実績ベースの完成数
   6. file_no・面ごとの仕掛（file_actual − 引落）と未生産（order_qty − file_actual）を、基板名ごとにまとめる
+     - order_qty は、同じ file_no・面に計画No（バッチ）が複数あっても足さない（2026-10-15、D-121）。発注数はロットの値が各計画に同じ値で入っているため。以前は足していて、ロット進捗チェックの発注数・未生産と日々の引落一覧の未生産が計画Noの数だけ膨らんでいた（実データで54ロット）
+     - 同じ file_no・面の中で order_qty が食い違うときは、order_qty・not_produced_qty を None にし、order_qty_inconsistent=True を付ける。ロット進捗チェックは空欄にして備考に「発注数不一致」と出す（実データでは0件）。ファイルNoごとに違う（166248・516526）のは、ロット全体の order_qty_inconsistent の扱いのまま
   7. shortfall なら、不足分の「未確定」エントリ（引落0・仕掛0・未生産＝代表の order_quantity）を足す
 - 引落のルール（利用者の決定）: 不足（shortfall）は構成がそろわないので引落を確定できない→0。未登録・不一致は比べられない、超過は自動で補正しない方針なので、実績ベースの値のまま。ルールを変えるときは `DRAWDOWN_ZERO_STATUSES` だけを変える
 - `NEEDS_REVIEW_STATUSES`（unregistered・board_count_inconsistent・excess）: 引落は実績ベースのままだが、構成基板数との整合を確かめていないので「確認・修正が必要」（赤字）とする
@@ -64,7 +74,7 @@
 
 ### `_evaluate_lot_status()` の戻り値
 
-lot_no・status・board_count（match/shortfall/excess のみ）・board_count_values（board_count_inconsistent のみ）・visible_file_nos・shortfall_count・excess_file_nos・unregistered_board_names・boards（基板名ごとの board_count と files: setup_file_no・production_side・order_qty・file_actual・lot_completed・surplus_qty・not_produced_qty）・missing_file_entries（同じ形、setup_file_no="未確定"）・lot_completed・status_remarks・status_color_category・order_quantity・file_actuals・order_qty_inconsistent・order_qty_values
+lot_no・status・board_count（match/shortfall/excess のみ）・board_count_values（board_count_inconsistent のみ）・visible_file_nos・shortfall_count・excess_file_nos・unregistered_board_names・boards（基板名ごとの board_count と files: setup_file_no・production_side・order_qty・order_qty_inconsistent・file_actual・lot_completed・surplus_qty・not_produced_qty）・missing_file_entries（同じ形、setup_file_no="未確定"）・lot_completed・status_remarks・status_color_category・order_quantity・file_actuals・order_qty_inconsistent・order_qty_values
 
 ## 日報・月報の行（`_build_report_rows()`）
 
@@ -85,6 +95,9 @@ lot_no・status・board_count（match/shortfall/excess のみ）・board_count_v
 
 ## 未完了ロットの抽出（`list_incomplete_lots()`）
 
+- 未完了の条件は `is_lot_incomplete()` に切り出し、完成済みロットの自動登録の除外（`lot_completion_state()`、D-130）と共有する。`lot_completion_state()` は同じ (ファイルNo, 面) の中で発注数が食い違うロットを完成済みにしない
+- `preview_completed_lot_registration()`（登録前の確認の内容）は、その計画に既に実績がある（数量を直す）場合、直した後の合計が発注数を超えて今より増えるときだけ返す（D-133）。生産実績入力の手入力・右クリック・ダブルクリックのどれも、この関数で判定する
+
 - DB 新規作成時の引き継ぎ用。2026-10-01 に `_evaluate_lot_status()` を通すよう変えた。以前は構成基板数を見ない完成数で判定していたため、shortfall のロットを「完了」として引き継ぎから外すおそれがあった（理論上。実データでは未確認）
 - 未完了の条件（利用者の決定）: shortfall は常に未完了。match・unregistered・board_count_inconsistent・excess は remaining_quantity > 0 なら未完了
 - 計画は `list_plan_items_for_all_lots()` で一括取得する。`list_active_plan_items()` は面1や完了済みを除くので、完成数の計算に必要な組がそろわない
@@ -93,6 +106,7 @@ lot_no・status・board_count（match/shortfall/excess のみ）・board_count_v
 
 - 日報・月報は対象期間に実績があるロットしか見ないので、(a) 実績の無いロットの不足・未登録を検知できず、(b) 1つのロットに基板名が複数あると代表1件しか見なかった。計画を起点に全アクティブロットを評価する
 - `evaluate_all_lot_status()` は、これに cutoff_date と board_structure_cache を足した版（日々の引落一覧用）。check_lot_progress() は変えないため別関数にした
+- 発注数の食い違い（2026-10-15、D-127）: ファイルNoによって発注数が違うロットは、全行の備考に「発注数不一致(ファイル間)」、同じファイルNo・面の中で違う行は「発注数不一致(同一ファイル内)」（D-121）。どちらも文字色は赤。文言は `ORDER_QTY_REMARK_*`、色は `progress_color_category`（日々の引落一覧と共有）。実績レポートは `status_remarks`・`status_color_category` を使い続け、発注数の食い違いを出さない
 
 ## 仕掛数量の抽出（`build_wip_extraction_rows()`）
 

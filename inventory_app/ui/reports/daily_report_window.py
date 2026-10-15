@@ -15,6 +15,9 @@ import tkinter as tk
 from tkinter import ttk
 
 from ui.common.window_utils import center_window
+# 縞模様・文字色のタグと色は、ロット進捗チェック・日々の引落一覧と共通の ui/common/lot_row_style.py に置く（D-125）。
+# configure_lot_stripe_tags・configure_status_color_tags は、既存の import 元（このモジュール）のために re-export する。
+from ui.common.lot_row_style import LotRowTagger, configure_lot_stripe_tags, configure_status_color_tags  # noqa: F401
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
@@ -46,54 +49,6 @@ REPORT_HEADERS = ["No", "ファイルNo", "基板名", "構成基板数", "ロ�
 PDF_COL_WIDTHS = [18, 42, 50, 38, 38, 30, 30, 34, 34, 34, 55, 107]
 PDF_WRAP_COLUMN_INDICES = {11}  # 「確認事項」列のみ折り返す
 
-# ロット単位の縞模様表示（2026-09-26追加）で使うTreeviewタグ名・背景色。
-# 既存の警告色（赤・オレンジ・黄・緑等、生産実績入力画面等で使用）と衝突しない
-# よう、彩度の無い薄いグレー系の2色のみを使う（判断しやすさを優先し、色数は
-# 2色に留めた）。
-_LOT_STRIPE_TAG_A = "lot_stripe_a"
-_LOT_STRIPE_TAG_B = "lot_stripe_b"
-_LOT_STRIPE_COLOR_A = "#ffffff"  # 白（無色、既定の背景と同じ）
-_LOT_STRIPE_COLOR_B = "#e6e6e6"  # 薄いグレー
-
-# 「確認事項」欄の文字色タグ（2026-09-28追加）。services.production_service.
-# _lot_status_color_category()が返す"needs_review"|"shortfall"に対応する。
-# 縞模様タグ（backgroundのみ設定）とは別のタグとし、こちらはforegroundのみを
-# 設定する（1行に両方のタグを付けても、設定する属性が重ならないため両方
-# 反映される想定。Treeviewの複数タグ適用時の実際の描画は目視確認が必要、
-# 詳細は各画面のdocstring・動作確認報告を参照）。
-_STATUS_COLOR_TAG_NEEDS_REVIEW = "status_needs_review"
-_STATUS_COLOR_TAG_SHORTFALL = "status_shortfall_note"
-_STATUS_TEXT_COLOR_NEEDS_REVIEW = "#cc0000"  # 赤（確認・修正が必要）
-_STATUS_TEXT_COLOR_SHORTFALL = "#cc6600"  # オレンジ（不足のため引落0）
-
-# services.production_service._lot_status_color_category()の戻り値
-# （"needs_review"|"shortfall"|None）から、上記タグ名を引くための辞書。
-_STATUS_COLOR_CATEGORY_TO_TAG = {
-    "needs_review": _STATUS_COLOR_TAG_NEEDS_REVIEW,
-    "shortfall": _STATUS_COLOR_TAG_SHORTFALL,
-}
-
-
-def configure_lot_stripe_tags(tree):
-    """
-    Treeviewにロット単位の縞模様タグを設定する（2026-09-26追加）。Treeview
-    生成直後に1回だけ呼び出す（tag_configure()自体はタグの見た目を定義する
-    だけで、行ごとの呼び出しは不要なため）。
-    """
-    tree.tag_configure(_LOT_STRIPE_TAG_A, background=_LOT_STRIPE_COLOR_A)
-    tree.tag_configure(_LOT_STRIPE_TAG_B, background=_LOT_STRIPE_COLOR_B)
-
-
-def configure_status_color_tags(tree):
-    """
-    Treeviewに「確認事項」欄の文字色タグを設定する（2026-09-28追加）。
-    configure_lot_stripe_tags()と同様、Treeview生成直後に1回だけ呼び出す。
-    縞模様タグ（background）とは別のタグ（foregroundのみ）のため、
-    populate_report_tree()で1行に両方のタグを渡して併用する。
-    """
-    tree.tag_configure(_STATUS_COLOR_TAG_NEEDS_REVIEW, foreground=_STATUS_TEXT_COLOR_NEEDS_REVIEW)
-    tree.tag_configure(_STATUS_COLOR_TAG_SHORTFALL, foreground=_STATUS_TEXT_COLOR_SHORTFALL)
-
 
 def populate_report_tree(tree, report_rows):
     """
@@ -115,24 +70,11 @@ def populate_report_tree(tree, report_rows):
     色の割り当て順は、report_rows内でそのlot_noが最初に登場した順（＝
     新しいlot_noに出会うたびに交互に切り替え）とする。
     """
-    lot_tag_map = {}
-    use_tag_b = False
+    tagger = LotRowTagger()
     for row in report_rows:
-        lot_no = row["lot_no"]
-        if lot_no not in lot_tag_map:
-            use_tag_b = not use_tag_b
-            lot_tag_map[lot_no] = _LOT_STRIPE_TAG_B if use_tag_b else _LOT_STRIPE_TAG_A
-
-        tags = [lot_tag_map[lot_no]]
-        # 「確認事項」欄の文字色タグ（2026-09-28追加）。縞模様タグ（background
-        # のみ）とは別に、statusに応じたforegroundのみのタグを追加する。
-        # matchかつ未登録board_nameも無いロットはstatus_color_categoryが
-        # Noneのため、色タグを追加しない（既定の文字色のまま）。
-        color_tag = _STATUS_COLOR_CATEGORY_TO_TAG.get(row.get("status_color_category"))
-        if color_tag:
-            tags.append(color_tag)
-
-        tree.insert("", tk.END, values=_row_to_values(row), tags=tuple(tags))
+        # matchかつ未登録board_nameも無いロットは status_color_category が None で、文字色タグを付けない。
+        tags = tagger.tags_for(row["lot_no"], row.get("status_color_category"))
+        tree.insert("", tk.END, values=_row_to_values(row), tags=tags)
 
 
 def _format_board_count(board_name):

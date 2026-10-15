@@ -42,8 +42,30 @@ group_active_plan_items_by_lot()によるN+1解消）により、再照合コス
     行が増えない）。日付や数量が少しでも異なれば、別の実績として新規に
     追加する。
 """
+from datetime import datetime
+
 from models.db_common import get_connection
 from models.kitting_plan import normalize_product_name
+
+# 重複判定で同じ日付とみなす書き方（D-134）。保存されている値は書き換えず、比べるときだけそろえる。
+_REPORT_DATE_FORMATS_FOR_DEDUP = ("%Y/%m/%d", "%Y-%m-%d")
+
+
+def _same_report_date(a, b) -> bool:
+    """"2026/7/14"・"2026/07/14"・"2026-07-14" を同じ日付とみなす。どちらかが解釈できなければ文字列のまま比べる。"""
+    if a == b:
+        return True
+
+    def parse(value):
+        for fmt in _REPORT_DATE_FORMATS_FOR_DEDUP:
+            try:
+                return datetime.strptime(str(value).strip(), fmt).date()
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    da, db_ = parse(a), parse(b)
+    return da is not None and da == db_
 
 
 def init_csv_import_staging_tables():
@@ -169,7 +191,7 @@ def upsert_pending_csv_import_row(data: dict, import_batch_id: int = None, claim
                 continue
             if (
                 normalize_product_name(row["product_name"]) == product_name_normalized
-                and row["report_date"] == report_date
+                and _same_report_date(row["report_date"], report_date)
                 and row["daily_qty"] == daily_qty
             ):
                 if claimed_pending_row_ids is not None:
@@ -228,3 +250,25 @@ def delete_pending_csv_import_row(pending_row_id: int):
             (pending_row_id,),
         )
         con.commit()
+
+
+def insert_restored_pending_row(con, data: dict, source_file: str, imported_by: str = None) -> int:
+    """
+    実績の取り消しで、登録待ちの行を1行作り直す（D-129）。呼び出し元が開いた接続 con を使い、commit はしない。
+    取込のバッチは、取り消しで戻した行だけの新しいバッチにする（source_file で見分けられる）。csv_row_no は分からないので NULL。
+    data：{"lot_no", "product_name", "daily_qty", "report_date", "worker_id"}。戻り値は pending_row_id。
+    """
+    cur = con.execute(
+        "INSERT INTO csv_import_batches (source_file, imported_by) VALUES (?, ?)",
+        (source_file, imported_by),
+    )
+    import_batch_id = cur.lastrowid
+    cur = con.execute("""
+        INSERT INTO pending_csv_import_rows (
+            import_batch_id, csv_row_no, lot_no, product_name, daily_qty, report_date, worker_id
+        ) VALUES (?, NULL, ?, ?, ?, ?, ?)
+    """, (
+        import_batch_id, str(data["lot_no"] or "").strip(), data["product_name"], data["daily_qty"],
+        data["report_date"], data["worker_id"],
+    ))
+    return cur.lastrowid

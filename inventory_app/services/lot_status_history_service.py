@@ -115,7 +115,9 @@ def get_daily_drawdown(target_date: str) -> list:
               "cumulative_lot_completed"（指定日時点の累計引落、
               ロット内の全ファイルNoで共通の値）,
               "surplus_qty"（指定日時点の仕掛）,
-              "not_produced_qty"（指定日時点の未生産）}, ...]
+              "not_produced_qty"（指定日時点の未生産。発注数が決まらなければ None）,
+              "board_count"（構成基板数、ロット単位。食い違い・未登録なら None）,
+              "status_color_category"（文字色の区分、ロット単位）}, ...]
     lot_no・setup_file_noの昇順でソート済み。
     """
     cutoff_today = _cutoff_for_date(target_date)
@@ -159,7 +161,12 @@ def get_daily_drawdown(target_date: str) -> list:
                 "daily_drawdown": diff,
                 "cumulative_lot_completed": today_completed,
                 "surplus_qty": (today_f["surplus_qty"] if today_f else 0) or 0,
-                "not_produced_qty": (today_f["not_produced_qty"] if today_f else 0) or 0,
+                # 同じファイルNo・面のバッチで発注数が食い違うと None（D-121）。0 にすると「未生産なし」と誤読されるので空欄のまま渡す。
+                "not_produced_qty": today_f["not_produced_qty"] if today_f else 0,
+                # 構成基板数と文字色の区分はロット単位の値（ロット進捗チェックと同じ。D-125）。食い違うときの board_count は None。
+                "board_count": today_status["board_count"],
+                # ロット進捗チェックと同じ区分（発注数の食い違いも赤。D-127）。
+                "status_color_category": today_status["progress_color_category"],
             })
 
     rows.sort(key=lambda r: (r["lot_no"], str(r["setup_file_no"])))

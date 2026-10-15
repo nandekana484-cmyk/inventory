@@ -332,6 +332,7 @@
        "lot_completed": 80,
        "not_produced_qty": 20.0,
        "order_qty": 100.0,
+       "order_qty_inconsistent": false,
        "production_side": "2",
        "setup_file_no": "F1",
        "surplus_qty": 0
@@ -349,10 +350,12 @@
    "lot_no": "L1",
    "missing_file_entries": [],
    "order_qty_inconsistent": false,
+   "order_qty_inconsistent_between_files": false,
    "order_qty_values": [
     100.0
    ],
    "order_quantity": 100.0,
+   "progress_color_category": null,
    "shortfall_count": null,
    "status": "match",
    "status_color_category": null,
@@ -373,8 +376,9 @@
       {
        "file_actual": 100,
        "lot_completed": 100,
-       "not_produced_qty": 100.0,
-       "order_qty": 200.0,
+       "not_produced_qty": 0.0,
+       "order_qty": 100.0,
+       "order_qty_inconsistent": false,
        "production_side": "2",
        "setup_file_no": "F2",
        "surplus_qty": 0
@@ -391,10 +395,12 @@
    "lot_no": "L2",
    "missing_file_entries": [],
    "order_qty_inconsistent": false,
+   "order_qty_inconsistent_between_files": false,
    "order_qty_values": [
     100.0
    ],
    "order_quantity": 100.0,
+   "progress_color_category": null,
    "shortfall_count": null,
    "status": "match",
    "status_color_category": null,
@@ -417,6 +423,7 @@
        "lot_completed": 0,
        "not_produced_qty": 10.0,
        "order_qty": 100.0,
+       "order_qty_inconsistent": false,
        "production_side": "2",
        "setup_file_no": "F3",
        "surplus_qty": 90
@@ -443,10 +450,12 @@
     }
    ],
    "order_qty_inconsistent": false,
+   "order_qty_inconsistent_between_files": false,
    "order_qty_values": [
     100.0
    ],
    "order_quantity": 100.0,
+   "progress_color_category": "shortfall",
    "shortfall_count": 1,
    "status": "shortfall",
    "status_color_category": "shortfall",
@@ -469,6 +478,7 @@
        "lot_completed": 0.0,
        "not_produced_qty": 100.0,
        "order_qty": 100.0,
+       "order_qty_inconsistent": false,
        "production_side": "2",
        "setup_file_no": "F4",
        "surplus_qty": 0.0
@@ -485,10 +495,12 @@
    "lot_no": "L4",
    "missing_file_entries": [],
    "order_qty_inconsistent": false,
+   "order_qty_inconsistent_between_files": false,
    "order_qty_values": [
     100.0
    ],
    "order_quantity": 100.0,
+   "progress_color_category": "needs_review",
    "shortfall_count": null,
    "status": "unregistered",
    "status_color_category": "needs_review",
@@ -513,6 +525,7 @@
        "lot_completed": 30,
        "not_produced_qty": 0.0,
        "order_qty": 30.0,
+       "order_qty_inconsistent": false,
        "production_side": "2",
        "setup_file_no": "F5",
        "surplus_qty": 0
@@ -529,10 +542,12 @@
    "lot_no": "L5",
    "missing_file_entries": [],
    "order_qty_inconsistent": false,
+   "order_qty_inconsistent_between_files": false,
    "order_qty_values": [
     30.0
    ],
    "order_quantity": 30.0,
+   "progress_color_category": null,
    "shortfall_count": null,
    "status": "match",
    "status_color_category": null,
@@ -557,6 +572,7 @@
        "lot_completed": 80,
        "not_produced_qty": 20.0,
        "order_qty": 100.0,
+       "order_qty_inconsistent": false,
        "production_side": "2",
        "setup_file_no": "F1",
        "surplus_qty": 0
@@ -574,10 +590,12 @@
    "lot_no": "L1",
    "missing_file_entries": [],
    "order_qty_inconsistent": false,
+   "order_qty_inconsistent_between_files": false,
    "order_qty_values": [
     100.0
    ],
    "order_quantity": 100.0,
+   "progress_color_category": null,
    "shortfall_count": null,
    "status": "match",
    "status_color_category": null,
@@ -598,8 +616,9 @@
       {
        "file_actual": 100,
        "lot_completed": 100,
-       "not_produced_qty": 100.0,
-       "order_qty": 200.0,
+       "not_produced_qty": 0.0,
+       "order_qty": 100.0,
+       "order_qty_inconsistent": false,
        "production_side": "2",
        "setup_file_no": "F2",
        "surplus_qty": 0
@@ -616,10 +635,12 @@
    "lot_no": "L2",
    "missing_file_entries": [],
    "order_qty_inconsistent": false,
+   "order_qty_inconsistent_between_files": false,
    "order_qty_values": [
     100.0
    ],
    "order_quantity": 100.0,
+   "progress_color_category": null,
    "shortfall_count": null,
    "status": "match",
    "status_color_category": null,
@@ -642,6 +663,7 @@
        "lot_completed": 0,
        "not_produced_qty": 10.0,
        "order_qty": 100.0,
+       "order_qty_inconsistent": false,
        "production_side": "2",
        "setup_file_no": "F3",
        "surplus_qty": 90
@@ -668,10 +690,12 @@
     }
    ],
    "order_qty_inconsistent": false,
+   "order_qty_inconsistent_between_files": false,
    "order_qty_values": [
     100.0
    ],
    "order_quantity": 100.0,
+   "progress_color_category": "shortfall",
    "shortfall_count": 1,
    "status": "shortfall",
    "status_color_category": "shortfall",
@@ -694,6 +718,7 @@
        "lot_completed": 0.0,
        "not_produced_qty": 100.0,
        "order_qty": 100.0,
+       "order_qty_inconsistent": false,
        "production_side": "2",
        "setup_file_no": "F4",
        "surplus_qty": 0.0
@@ -710,10 +735,12 @@
    "lot_no": "L4",
    "missing_file_entries": [],
    "order_qty_inconsistent": false,
+   "order_qty_inconsistent_between_files": false,
    "order_qty_values": [
     100.0
    ],
    "order_quantity": 100.0,
+   "progress_color_category": "needs_review",
    "shortfall_count": null,
    "status": "unregistered",
    "status_color_category": "needs_review",
@@ -738,6 +765,7 @@
        "lot_completed": 30,
        "not_produced_qty": 0.0,
        "order_qty": 30.0,
+       "order_qty_inconsistent": false,
        "production_side": "2",
        "setup_file_no": "F5",
        "surplus_qty": 0
@@ -754,10 +782,12 @@
    "lot_no": "L5",
    "missing_file_entries": [],
    "order_qty_inconsistent": false,
+   "order_qty_inconsistent_between_files": false,
    "order_qty_values": [
     30.0
    ],
    "order_quantity": 30.0,
+   "progress_color_category": null,
    "shortfall_count": null,
    "status": "match",
    "status_color_category": null,
@@ -782,6 +812,7 @@
        "lot_completed": 0.0,
        "not_produced_qty": 100.0,
        "order_qty": 100.0,
+       "order_qty_inconsistent": false,
        "production_side": "2",
        "setup_file_no": "F1",
        "surplus_qty": 0.0
@@ -799,10 +830,12 @@
    "lot_no": "L1",
    "missing_file_entries": [],
    "order_qty_inconsistent": false,
+   "order_qty_inconsistent_between_files": false,
    "order_qty_values": [
     100.0
    ],
    "order_quantity": 100.0,
+   "progress_color_category": null,
    "shortfall_count": null,
    "status": "match",
    "status_color_category": null,
@@ -823,8 +856,9 @@
       {
        "file_actual": 100,
        "lot_completed": 100,
-       "not_produced_qty": 100.0,
-       "order_qty": 200.0,
+       "not_produced_qty": 0.0,
+       "order_qty": 100.0,
+       "order_qty_inconsistent": false,
        "production_side": "2",
        "setup_file_no": "F2",
        "surplus_qty": 0
@@ -841,10 +875,12 @@
    "lot_no": "L2",
    "missing_file_entries": [],
    "order_qty_inconsistent": false,
+   "order_qty_inconsistent_between_files": false,
    "order_qty_values": [
     100.0
    ],
    "order_quantity": 100.0,
+   "progress_color_category": null,
    "shortfall_count": null,
    "status": "match",
    "status_color_category": null,
@@ -867,6 +903,7 @@
        "lot_completed": 0,
        "not_produced_qty": 100.0,
        "order_qty": 100.0,
+       "order_qty_inconsistent": false,
        "production_side": "2",
        "setup_file_no": "F3",
        "surplus_qty": 0.0
@@ -893,10 +930,12 @@
     }
    ],
    "order_qty_inconsistent": false,
+   "order_qty_inconsistent_between_files": false,
    "order_qty_values": [
     100.0
    ],
    "order_quantity": 100.0,
+   "progress_color_category": "shortfall",
    "shortfall_count": 1,
    "status": "shortfall",
    "status_color_category": "shortfall",
@@ -919,6 +958,7 @@
        "lot_completed": 0.0,
        "not_produced_qty": 100.0,
        "order_qty": 100.0,
+       "order_qty_inconsistent": false,
        "production_side": "2",
        "setup_file_no": "F4",
        "surplus_qty": 0.0
@@ -935,10 +975,12 @@
    "lot_no": "L4",
    "missing_file_entries": [],
    "order_qty_inconsistent": false,
+   "order_qty_inconsistent_between_files": false,
    "order_qty_values": [
     100.0
    ],
    "order_quantity": 100.0,
+   "progress_color_category": "needs_review",
    "shortfall_count": null,
    "status": "unregistered",
    "status_color_category": "needs_review",
@@ -963,6 +1005,7 @@
        "lot_completed": 0.0,
        "not_produced_qty": 30.0,
        "order_qty": 30.0,
+       "order_qty_inconsistent": false,
        "production_side": "2",
        "setup_file_no": "F5",
        "surplus_qty": 0.0
@@ -979,10 +1022,12 @@
    "lot_no": "L5",
    "missing_file_entries": [],
    "order_qty_inconsistent": false,
+   "order_qty_inconsistent_between_files": false,
    "order_qty_values": [
     30.0
    ],
    "order_quantity": 30.0,
+   "progress_color_category": null,
    "shortfall_count": null,
    "status": "match",
    "status_color_category": null,
@@ -1007,6 +1052,7 @@
        "lot_completed": 80,
        "not_produced_qty": 20.0,
        "order_qty": 100.0,
+       "order_qty_inconsistent": false,
        "production_side": "2",
        "setup_file_no": "F1",
        "surplus_qty": 0
@@ -1024,10 +1070,12 @@
    "lot_no": "L1",
    "missing_file_entries": [],
    "order_qty_inconsistent": false,
+   "order_qty_inconsistent_between_files": false,
    "order_qty_values": [
     100.0
    ],
    "order_quantity": 100.0,
+   "progress_color_category": null,
    "shortfall_count": null,
    "status": "match",
    "status_color_category": null,
@@ -1048,8 +1096,9 @@
       {
        "file_actual": 100,
        "lot_completed": 100,
-       "not_produced_qty": 100.0,
-       "order_qty": 200.0,
+       "not_produced_qty": 0.0,
+       "order_qty": 100.0,
+       "order_qty_inconsistent": false,
        "production_side": "2",
        "setup_file_no": "F2",
        "surplus_qty": 0
@@ -1066,10 +1115,12 @@
    "lot_no": "L2",
    "missing_file_entries": [],
    "order_qty_inconsistent": false,
+   "order_qty_inconsistent_between_files": false,
    "order_qty_values": [
     100.0
    ],
    "order_quantity": 100.0,
+   "progress_color_category": null,
    "shortfall_count": null,
    "status": "match",
    "status_color_category": null,
@@ -1092,6 +1143,7 @@
        "lot_completed": 0,
        "not_produced_qty": 10.0,
        "order_qty": 100.0,
+       "order_qty_inconsistent": false,
        "production_side": "2",
        "setup_file_no": "F3",
        "surplus_qty": 90
@@ -1118,10 +1170,12 @@
     }
    ],
    "order_qty_inconsistent": false,
+   "order_qty_inconsistent_between_files": false,
    "order_qty_values": [
     100.0
    ],
    "order_quantity": 100.0,
+   "progress_color_category": "shortfall",
    "shortfall_count": 1,
    "status": "shortfall",
    "status_color_category": "shortfall",
@@ -1144,6 +1198,7 @@
        "lot_completed": 0.0,
        "not_produced_qty": 100.0,
        "order_qty": 100.0,
+       "order_qty_inconsistent": false,
        "production_side": "2",
        "setup_file_no": "F4",
        "surplus_qty": 0.0
@@ -1160,10 +1215,12 @@
    "lot_no": "L4",
    "missing_file_entries": [],
    "order_qty_inconsistent": false,
+   "order_qty_inconsistent_between_files": false,
    "order_qty_values": [
     100.0
    ],
    "order_quantity": 100.0,
+   "progress_color_category": "needs_review",
    "shortfall_count": null,
    "status": "unregistered",
    "status_color_category": "needs_review",
@@ -1188,6 +1245,7 @@
        "lot_completed": 30,
        "not_produced_qty": 0.0,
        "order_qty": 30.0,
+       "order_qty_inconsistent": false,
        "production_side": "2",
        "setup_file_no": "F5",
        "surplus_qty": 0
@@ -1204,10 +1262,12 @@
    "lot_no": "L5",
    "missing_file_entries": [],
    "order_qty_inconsistent": false,
+   "order_qty_inconsistent_between_files": false,
    "order_qty_values": [
     30.0
    ],
    "order_quantity": 30.0,
+   "progress_color_category": null,
    "shortfall_count": null,
    "status": "match",
    "status_color_category": null,
@@ -1232,6 +1292,7 @@
        "lot_completed": 0.0,
        "not_produced_qty": 100.0,
        "order_qty": 100.0,
+       "order_qty_inconsistent": false,
        "production_side": "2",
        "setup_file_no": "F1",
        "surplus_qty": 0.0
@@ -1249,10 +1310,12 @@
    "lot_no": "L1",
    "missing_file_entries": [],
    "order_qty_inconsistent": false,
+   "order_qty_inconsistent_between_files": false,
    "order_qty_values": [
     100.0
    ],
    "order_quantity": 100.0,
+   "progress_color_category": null,
    "shortfall_count": null,
    "status": "match",
    "status_color_category": null,
@@ -1273,8 +1336,9 @@
       {
        "file_actual": 100,
        "lot_completed": 100,
-       "not_produced_qty": 100.0,
-       "order_qty": 200.0,
+       "not_produced_qty": 0.0,
+       "order_qty": 100.0,
+       "order_qty_inconsistent": false,
        "production_side": "2",
        "setup_file_no": "F2",
        "surplus_qty": 0
@@ -1291,10 +1355,12 @@
    "lot_no": "L2",
    "missing_file_entries": [],
    "order_qty_inconsistent": false,
+   "order_qty_inconsistent_between_files": false,
    "order_qty_values": [
     100.0
    ],
    "order_quantity": 100.0,
+   "progress_color_category": null,
    "shortfall_count": null,
    "status": "match",
    "status_color_category": null,
@@ -1317,6 +1383,7 @@
        "lot_completed": 0,
        "not_produced_qty": 100.0,
        "order_qty": 100.0,
+       "order_qty_inconsistent": false,
        "production_side": "2",
        "setup_file_no": "F3",
        "surplus_qty": 0.0
@@ -1343,10 +1410,12 @@
     }
    ],
    "order_qty_inconsistent": false,
+   "order_qty_inconsistent_between_files": false,
    "order_qty_values": [
     100.0
    ],
    "order_quantity": 100.0,
+   "progress_color_category": "shortfall",
    "shortfall_count": 1,
    "status": "shortfall",
    "status_color_category": "shortfall",
@@ -1369,6 +1438,7 @@
        "lot_completed": 0.0,
        "not_produced_qty": 100.0,
        "order_qty": 100.0,
+       "order_qty_inconsistent": false,
        "production_side": "2",
        "setup_file_no": "F4",
        "surplus_qty": 0.0
@@ -1385,10 +1455,12 @@
    "lot_no": "L4",
    "missing_file_entries": [],
    "order_qty_inconsistent": false,
+   "order_qty_inconsistent_between_files": false,
    "order_qty_values": [
     100.0
    ],
    "order_quantity": 100.0,
+   "progress_color_category": "needs_review",
    "shortfall_count": null,
    "status": "unregistered",
    "status_color_category": "needs_review",
@@ -1413,6 +1485,7 @@
        "lot_completed": 0.0,
        "not_produced_qty": 30.0,
        "order_qty": 30.0,
+       "order_qty_inconsistent": false,
        "production_side": "2",
        "setup_file_no": "F5",
        "surplus_qty": 0.0
@@ -1429,10 +1502,12 @@
    "lot_no": "L5",
    "missing_file_entries": [],
    "order_qty_inconsistent": false,
+   "order_qty_inconsistent_between_files": false,
    "order_qty_values": [
     30.0
    ],
    "order_quantity": 30.0,
+   "progress_color_category": null,
    "shortfall_count": null,
    "status": "match",
    "status_color_category": null,

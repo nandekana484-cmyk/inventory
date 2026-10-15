@@ -16,7 +16,11 @@ from services.production_import_service import (
     normalize_product_name,
     group_active_plan_items_by_lot,
 )
-from services.production_service import search_plan_by_kitting_no, get_daily_history, record_lot_status_snapshot
+from services.production_service import (
+    search_plan_by_kitting_no, get_daily_history, record_lot_status_snapshot,
+    preview_opposite_side_overwrite, preview_opposite_side_overwrites,
+)
+from services.lot_status_service import preview_completed_lot_registration, lot_completion_state
 from services.production_entry_service import (
     resolve_csv_report_date,
     register_actual_and_ng,
@@ -47,6 +51,9 @@ from ui.kitting.plan_candidate_dialog import (
 )
 from ui.common.window_utils import center_window
 from ui.common.highlight_colors import MISMATCH_RED
+from ui.production.opposite_side_overwrite_dialog import (
+    format_opposite_change, ask_bulk_opposite_overwrite, BULK_CANCEL, BULK_SKIP_REPLACED,
+)
 
 # 「候補なし」行を CSV 出力するときの理由。import_production_csv() の unmatched の理由と同じ文言。
 REASON_NO_CANDIDATES = "計画が見つからない（該当lot_noの計画なし）"
@@ -92,18 +99,30 @@ from services.staging_eligibility import (  # noqa: E402,F401 （re-export）
     REASON_MULTIPLE_CANDIDATES,
     REASON_EXISTING,
     REASON_DUPLICATE,
+    REASON_LOT_COMPLETED,
     REASON_SIDE2_WAIT,
     REASON_SIDE_MASTER_UNREGISTERED,
     REASON_QTY_MISMATCH,
     REASON_DATE_UNPARSEABLE,
     REASON_DATE_DIFF_TOO_LARGE,
+    REASON_OPPOSITE_OVERWRITE,
     AUTO_REGISTER_SKIP_REASON_LABELS,
     _date_only_diff_days,
     _is_qty_mismatch,
     is_auto_confirmable,
     evaluate_auto_register_eligibility,
     _load_staged_rows_from_db,
+    reevaluate_staged_row,
+    load_staged_row,
 )
+
+
+def format_completed_lot_warning(info) -> str:
+    """例：「ロット 123456 は完成済みです（完成数 1000／発注数 1000）。登録すると、完成数の計算に使う実績の合計が 1200 になります」（D-130）"""
+    return (
+        f"ロット {info['lot_no']} は完成済みです（完成数 {info['lot_completed']:g}／発注数 {info['order_quantity']:g}）。"
+        f"登録すると、完成数の計算に使う実績の合計が {info['new_total']:g} になります"
+    )
 
 
 def _is_candidate_already_registered(candidate, lot_no) -> bool:
@@ -182,18 +201,55 @@ class ProductionImportStagingWindow(tk.Toplevel):
         container = ttk.Frame(self, padding=10)
         container.pack(expand=True, fill=tk.BOTH)
 
-        left_frame = ttk.Labelframe(container, text="候補一覧（右の登録待ち一覧から行を選択）", padding=5)
-        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+        # 左右の幅はドラッグで変えられる（D-123。生産実績入力画面と同じ ttk.Panedwindow）。
+        # 以前の pack 配置と同じ配分にするため、余った幅は右ペイン（登録待ち一覧）だけに回す（左は weight=0）。
+        self._paned = ttk.Panedwindow(container, orient=tk.HORIZONTAL)
+        self._paned.pack(expand=True, fill=tk.BOTH)
 
-        right_frame = ttk.Labelframe(container, text="実績CSV：登録待ち一覧", padding=5)
-        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        left_frame = ttk.Labelframe(self._paned, text="候補一覧（右の登録待ち一覧から行を選択）", padding=5)
+        right_frame = ttk.Labelframe(self._paned, text="実績CSV：登録待ち一覧", padding=5)
+        self._paned.add(left_frame, weight=0)
+        self._paned.add(right_frame, weight=1)
+        self._left_pane, self._right_pane = left_frame, right_frame
+        self._sash_thickness = 0
 
         self._create_candidate_widgets(left_frame)
         self._create_staging_widgets(right_frame, staged_rows)
 
+        # 初期位置は、以前の pack 配置と同じく左ペインの必要幅。生成直後は幅が未確定なので update_idletasks() で確定させる。
+        self.update_idletasks()
+        self._paned.sashpos(0, left_frame.winfo_reqwidth())
+        self._clamp_pane_sash()
+        # ttk.Panedwindow にはペインごとの最小幅が無いので、ドラッグ・サイズ変更の後に範囲内へ戻す。
+        # クラスのバインドがサッシュを動かした後に直すため after_idle() で呼ぶ。
+        for sequence in ("<B1-Motion>", "<ButtonRelease-1>", "<Configure>"):
+            self._paned.bind(sequence, lambda e: self.after_idle(self._clamp_pane_sash), add="+")
+
         btn_frame = ttk.Frame(self, padding=(10, 0, 10, 10))
         btn_frame.pack(fill=tk.X)
         ttk.Button(btn_frame, text="閉じる", command=self._on_close).pack(side=tk.RIGHT)
+
+    # 左右どちらのペインも、この幅より狭くしない（片方がつぶれて操作できなくなるのを防ぐ）。
+    _LEFT_PANE_MIN_WIDTH_PX = 300
+    _RIGHT_PANE_MIN_WIDTH_PX = 300
+
+    def _clamp_pane_sash(self):
+        """サッシュの位置を、左右の最小幅を守る範囲に収める。ウインドウが両方の最小幅より狭いときは左を優先する。"""
+        if not self._paned.winfo_exists():
+            return
+        total = self._paned.winfo_width()
+        if total <= 1:
+            return
+        pos = self._paned.sashpos(0)
+        # 右ペインの幅＝全体−サッシュ位置−サッシュの太さ。太さはテーマで変わり style からも引けないので、配置から測って覚える。
+        # ウインドウのサイズ変更の直後はペインの幅が古く、測った値が負や過大になるので、そのときは覚えた値を使う。
+        measured = total - self._left_pane.winfo_width() - self._right_pane.winfo_width()
+        if 0 <= measured < 50:
+            self._sash_thickness = measured
+        new_pos = max(self._LEFT_PANE_MIN_WIDTH_PX,
+                      min(pos, total - self._sash_thickness - self._RIGHT_PANE_MIN_WIDTH_PX))
+        if new_pos != pos:
+            self._paned.sashpos(0, new_pos)
 
     def _create_candidate_widgets(self, left_frame):
         """
@@ -455,12 +511,17 @@ class ProductionImportStagingWindow(tk.Toplevel):
                 hint += "\n※ 製品名が完全一致する候補が無いため、ロットNo.が一致する全ての候補を表示しています。"
         self.lbl_candidate_hint.config(text=hint)
 
+        lot_state_cache = {}
         for candidate in effective_candidates:
             auto_flag = is_auto_confirmable(
                 row.get("lot_no"), row.get("product_name"),
                 candidate.get("planned_qty"), daily_qty,
                 candidate.get("plan_start_datetime"), report_date,
             )
+            # 完成済みのロットの計画は自動登録しない（D-130）ので、「自動確定可能」の緑にしない（状態表示を判定とそろえる、D-103・D-132）。
+            lot_state = lot_completion_state(candidate["lot_no"], lot_state_cache)
+            if lot_state is not None and lot_state["completed"]:
+                auto_flag = False
             qty_flag = is_large_qty_diff(candidate, daily_qty)
             date_flag = is_large_date_diff(report_date, candidate.get("plan_start_datetime"))
             side1_only_classification = classify_side1_only_plan(candidate)
@@ -528,13 +589,47 @@ class ProductionImportStagingWindow(tk.Toplevel):
         correction_win = ActualCorrectionWindow(
             self, kitting_list_no=candidate["kitting_list_no"], lot_no=lot_no,
             current_worker=getattr(self._parent, "current_worker", None),
+            on_cancelled=self.add_restored_row,
         )
         self.wait_window(correction_win)
-        # 修正内容を候補一覧の表示（登録済み判定・差分表記等）に反映する。
+        # 修正内容を、その行の「状態」列（D-122）と候補一覧の表示（登録済み判定・差分表記等）に反映する。
+        iid = self._current_staging_iid
         row = self._current_staging_row
-        if row is not None:
+        if row is not None and iid in self._row_by_iid:
+            row = self._refresh_staging_row_status(iid)
             self._populate_candidates(row)
         self._refocus_staging_window()
+
+    def add_restored_row(self, pending_row_id):
+        """
+        実績の取り消しで登録待ちに戻した行を、この一覧に足す（D-129。公開メソッド：生産実績入力の実績修正からも呼ばれる）。
+        状態は一覧のほかの行と同じ判定で決める（reevaluate_staged_row()）。ほかの行の状態と選択位置は変えない。
+        """
+        if pending_row_id is None or not self.winfo_exists():
+            return
+        if any(r.get("pending_row_id") == pending_row_id for r in self._row_by_iid.values()):
+            return
+        row = load_staged_row(pending_row_id)
+        if row is None:
+            return
+        iid = self._insert_staging_row(row)
+        self._refresh_staging_row_status(iid)
+        self._update_status_label()
+
+    def _refresh_staging_row_status(self, iid):
+        """
+        1行の状態を、いまの実績・計画で判定し直して「状態」列に反映する（D-103 の方針。D-122）。
+        ほかの行の状態と選択位置は変えない（ほかの行は開き直すか登録したときに更新される）。新しい行の辞書を返す。
+        """
+        old_row = self._row_by_iid[iid]
+        new_row = reevaluate_staged_row(old_row, list(self._row_by_iid.values()))
+        self._row_by_iid[iid] = new_row
+        if self._current_staging_iid == iid:
+            self._current_staging_row = new_row
+        status = new_row.get("status")
+        self.tree.set(iid, "status", STAGING_STATUS_LABELS.get(status, status or ""))
+        self.tree.item(iid, tags=("product_name_mismatch",) if status == REASON_PRODUCT_NAME_MISMATCH else ())
+        return new_row
 
     def _make_remove_callback(self, staging_iid):
         """
@@ -621,13 +716,16 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
         self._register_candidate_immediately(row, staging_iid, candidate)
 
-    def _register_staged_row(self, row, staging_iid, candidate, record_history=True, show_in_parent=True):
+    def _register_staged_row(self, row, staging_iid, candidate, record_history=True, show_in_parent=True,
+                             opposite_overwrite_confirmed=False, lot_completion_checked=False):
         """
         保留行1件を、確認ダイアログ（親の _start_registration()）を通さずに登録する。右クリックの即時登録と一括登録の共通部分。
         既に実績があるとき・面1だけの計画のときは確認し、「いいえ」なら何もせず None を返す（保留行は残る）。
         登録は register_actual_and_ng() を直接呼び、戻り値をそのまま返す。実績の登録が成功したら保留行を消し、失敗したらエラーを出す。
         NG は登録しない（save_qty_by_side={}。自動確定の要件は実績数量と日付だけで、NG 欄の値を誤って使わないため）。
         show_in_parent=True なら、登録の前に親の画面へ計画を表示し、登録の後に親の画面を更新する（一括登録は最後に1回だけ行う）。
+        反対側の面の既存の実績が置き換わるなら確認する（D-126）。opposite_overwrite_confirmed=True は一括登録で確認済みのとき。
+        ロットが完成済みなら確認する（D-130）。lot_completion_checked=True は一括登録で除外済みのとき。
         """
         parent = self._parent
         daily_qty = row["daily_qty"]
@@ -642,18 +740,41 @@ class ProductionImportStagingWindow(tk.Toplevel):
         if not _confirm_side1_only_if_applicable(parent, candidate):
             return None
 
+        # ロットが完成済みなら、登録した後の実績の合計を示して確認する（D-130）。「いいえ」なら登録しない。
+        if not lot_completion_checked:
+            completed = preview_completed_lot_registration(candidate, daily_qty)
+            if completed is not None and not messagebox.askyesno(
+                "完成済みのロットへの登録",
+                f"{format_completed_lot_warning(completed)}。\n\n登録しますか？",
+                parent=self.winfo_toplevel(),
+            ):
+                return None
+
+        # 反対側の面の既存の実績が連動で変わるなら、登録の直前の状態で判定して確認する（D-126）。「いいえ」ならどちらの面も登録しない。
+        report_date = resolve_csv_report_date(row.get("report_date"))
+        plan, _candidates = search_plan_by_kitting_no(kitting_list_no, lot_no)
+        if not opposite_overwrite_confirmed:
+            change = preview_opposite_side_overwrite(plan, daily_qty, report_date)
+            if change is not None and not messagebox.askyesno(
+                "反対側の面の実績の置き換え",
+                f"{format_opposite_change(change)}（計画 {change['kitting_list_no']}）。\n\n"
+                "続けると、反対側の面の実績は置き換えられます。登録しますか？\n"
+                "（「いいえ」なら、どちらの面も登録しません）",
+                parent=self.winfo_toplevel(),
+            ):
+                return None
+
         remove_callback = self._make_remove_callback(staging_iid)
         if show_in_parent:
             # コールバックも親に渡しておく。実績の登録に失敗しても、親の画面から登録し直せば保留行が消える（以前と同じ）。
             parent.load_staged_row(kitting_list_no, lot_no, daily_qty=daily_qty, on_registered=remove_callback)
 
-        plan, _candidates = search_plan_by_kitting_no(kitting_list_no, lot_no)
         existing = get_daily_history(kitting_list_no, lot_no)
         worker = parent.current_worker
         result = register_actual_and_ng(
             plan, {}, daily_qty, {}, existing[-1]["daily_qty"] if existing else None,
             worker.get("worker_id", "SYSTEM"), worker.get("name", "unknown"),
-            report_date=resolve_csv_report_date(row.get("report_date")), record_history=record_history,
+            report_date=report_date, record_history=record_history,
         )
         if not result["actual_registered"]:
             messagebox.showerror(
@@ -796,6 +917,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
         # 行ごとに判定する（まだ登録しない。Shift+Q の確認ダイアログの件数はこの結果から作る）。
         evaluated = []
+        lot_state_cache = {}
         for iid in selected_iids:
             row = self._row_by_iid.get(iid)
             if row is None:
@@ -805,7 +927,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
                 row["lot_no"], product_name_normalized, plan_items_by_lot,
             )
             eligibility, reason, candidate, date_diff = evaluate_auto_register_eligibility(
-                row, candidates, matched, plan_key_counts, max_date_diff_days,
+                row, candidates, matched, plan_key_counts, max_date_diff_days, lot_state_cache=lot_state_cache,
             )
             evaluated.append((iid, row, eligibility, reason, candidate, date_diff))
 
@@ -826,6 +948,22 @@ class ProductionImportStagingWindow(tk.Toplevel):
             if not messagebox.askyesno(f"{shortcut_label}一括登録の確認", confirm_message, parent=self):
                 return
 
+        # 反対側の面の既存の実績が置き換わる行があれば、登録の前に1回だけ一覧で確認する（D-126）。
+        # 同じ一括の中で前の行が書く実績も数える。「除いて登録」なら、各行の登録の直前にもう一度判定して除く。
+        changes = preview_opposite_side_overwrites([
+            (iid, candidate, row["daily_qty"], resolve_csv_report_date(row.get("report_date")))
+            for iid, row, _e, _r, candidate, _d in eligible_items
+        ])
+        overwrite_choice = None
+        if changes:
+            overwrite_choice = ask_bulk_opposite_overwrite(self, [
+                {"lot_no": row["lot_no"], "kitting_list_no": candidate["kitting_list_no"], "change": changes[iid]}
+                for iid, row, _e, _r, candidate, _d in eligible_items if iid in changes
+            ])
+            if overwrite_choice == BULK_CANCEL:
+                self._refocus_staging_window()
+                return
+
         registered_count = 0
         failed_count = 0
         skip_reason_counts = {}
@@ -839,9 +977,20 @@ class ProductionImportStagingWindow(tk.Toplevel):
                 skip_reason_counts[reason] = skip_reason_counts.get(reason, 0) + 1
                 continue
 
+            # 同じ一括の中で前の行の登録によってロットが完成することがあるので、登録の直前にもう一度確かめる（D-130）。
+            if preview_completed_lot_registration(candidate, row["daily_qty"]) is not None:
+                skip_reason_counts[REASON_LOT_COMPLETED] = skip_reason_counts.get(REASON_LOT_COMPLETED, 0) + 1
+                continue
+
+            if overwrite_choice == BULK_SKIP_REPLACED and preview_opposite_side_overwrite(
+                    candidate, row["daily_qty"], resolve_csv_report_date(row.get("report_date"))) is not None:
+                skip_reason_counts[REASON_OPPOSITE_OVERWRITE] = skip_reason_counts.get(REASON_OPPOSITE_OVERWRITE, 0) + 1
+                continue
+
             # 行ごとに履歴を記録すると100件規模で数秒かかるため、最後にロット単位でまとめて記録する。
             # 親の画面も行ごとには更新しない（登録の内容は親の画面の状態に依存しないため）。最後に1回だけ更新する。
-            result = self._register_staged_row(row, iid, candidate, record_history=False, show_in_parent=False)
+            result = self._register_staged_row(row, iid, candidate, record_history=False, show_in_parent=False,
+                                               opposite_overwrite_confirmed=True, lot_completion_checked=True)
             if result is not None:
                 last_attempted = (iid, row, candidate)
             if iid not in self._row_by_iid:

@@ -16,7 +16,11 @@ from models.production import (
     update_daily_production,
     delete_daily_production,
     apply_daily_production_changes,
+    cancel_daily_production,
 )
+from models.ng_declarations import get_ng_declaration
+from models.scrap_records import list_scrap_records_by_kitting_no
+from models.wip_scrap_records import list_wip_scrap_records_by_kitting_no
 from services.date_parsing import parse_plan_start_datetime
 # 段階5で services/lot_status_service.py へ移した。import している側を変えないよう、ここから re-export する。
 from services.lot_status_service import (  # noqa: F401 （re-export）
@@ -216,6 +220,63 @@ def register_opposite_side_daily_result(plan: dict, daily_qty: float, worker_id:
     return True
 
 
+def _resulting_report_date(existing_records: list, report_date: str = None) -> str:
+    """登録・上書きの後の日付。指定が無ければ、上書きは既存行の日付を引き継ぎ（replace_daily_result()）、新規は今日。"""
+    if report_date:
+        return report_date
+    if existing_records and existing_records[0]["report_date"]:
+        return existing_records[0]["report_date"]
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def preview_opposite_side_overwrites(entries: list) -> dict:
+    """
+    entries（[(key, plan, daily_qty, report_date), ...]、登録する順）を register_actual_and_ng() で順に登録したとき、
+    register_opposite_side_daily_result() が反対側の面の既存の実績の数量か日付を変える行を返す（D-126。DB には書き込まない）。
+    確認の対象は面2の登録で面1が変わる場合だけ（利用者の決定の範囲）。面1の登録で面2が変わる逆向きは対象にしない。
+    同じ一括の中で前の行が書く実績も、後の行の「既存の実績」として数える（面2の計画が2件・面1の計画が1件など）。
+    戻り値は {key: {"kitting_list_no", "lot_no", "production_side", "old": [(日付, 数量), ...], "new_date", "new_qty"}}。
+    反対側に計画・実績が無い行と、変わらない（同じ数量・日付の1件だけ）行は含めない。
+    """
+    written = {}  # (kitting_list_no, lot_no) -> この一括の中で書かれる予定の [(日付, 数量)]
+    changes = {}
+
+    def records_of(kitting_list_no, lot_no):
+        if (kitting_list_no, lot_no) in written:
+            return written[(kitting_list_no, lot_no)]
+        return [(r["report_date"], r["daily_qty"]) for r in list_daily_production_by_kitting_no(kitting_list_no, lot_no)]
+
+    for key, plan, daily_qty, report_date in entries:
+        primary_key = (plan["kitting_list_no"], plan["lot_no"])
+        primary_records = [{"report_date": d, "daily_qty": q} for d, q in records_of(*primary_key)]
+
+        side = str(plan.get("production_side") or "").strip()
+        opposite = None
+        if side == "2":
+            opposite = find_opposite_side_plan(
+                plan.get("lot_no"), plan.get("setup_file_no"), side,
+                current_plan_start_datetime=plan.get("plan_start_datetime"),
+            )
+        if opposite is not None:
+            opposite_key = (opposite["kitting_list_no"], opposite["lot_no"])
+            old = records_of(*opposite_key)
+            new_date = _resulting_report_date([{"report_date": d} for d, _q in old], report_date)
+            if old and old != [(new_date, daily_qty)]:
+                changes[key] = {
+                    "kitting_list_no": opposite["kitting_list_no"], "lot_no": opposite["lot_no"],
+                    "production_side": str(opposite.get("production_side") or "").strip(),
+                    "old": old, "new_date": new_date, "new_qty": daily_qty,
+                }
+            written[opposite_key] = [(new_date, daily_qty)]
+        written[primary_key] = [(_resulting_report_date(primary_records, report_date), daily_qty)]
+    return changes
+
+
+def preview_opposite_side_overwrite(plan: dict, daily_qty: float, report_date: str = None):
+    """preview_opposite_side_overwrites() の1件版。変わるならその内容、変わらなければ None。"""
+    return preview_opposite_side_overwrites([(None, plan, daily_qty, report_date)]).get(None)
+
+
 def get_daily_history(kitting_list_no: str, lot_no: str, report_date: str = None):
     """kitting_list_no・lot_no の実績履歴を返す。report_date を指定するとその日だけ。lot_no が必須なのは kitting_list_no が重複するため。"""
     return list_daily_production_by_kitting_no(kitting_list_no, lot_no, report_date)
@@ -389,6 +450,109 @@ def apply_linked_correction(preview: dict, action: str, worker_id: str, record_h
     # 反対側も同じ lot_no なので、履歴は1回の記録で両面分を反映する。
     if record_history:
         _record_lot_status_snapshot_safely(primary["lot_no"], f"correction_{action}")
+
+
+# 実績の取り消しで作り直した登録待ちの行の、取込のバッチの source_file（どこから来た行か見分けるため。D-129）。
+CANCELLED_REGISTRATION_SOURCE = "（実績の取り消しで登録待ちに戻した行）"
+
+
+def to_csv_date_format(report_date):
+    """"2026-07-14" → "2026/7/14"（実績CSVの書式。同じCSVの再取込で、登録待ちの行が2つに増えないようにするため）。"""
+    try:
+        year, month, day = str(report_date).split("-")
+        return f"{int(year)}/{int(month)}/{int(day)}"
+    except (TypeError, ValueError):
+        return report_date
+
+
+def build_cancellation_preview(prod_log_id: int) -> dict:
+    """
+    実績1件の取り消し（D-129）の内容を組み立てる。DB には書き込まない。
+    - 反対側の面の実績は、今の削除と同じく build_linked_correction_preview() で特定し、連動して取り消す（D-112）
+    - NG申告は、取り消す計画と反対側の面の計画の分を取り消す（面2の NG は面1にも加算されて保存されているため）
+    - そのNG申告の計画・面に NG展開（scrap_records）が、または取り消す実績の計画・面に仕掛部品展開（wip_scrap_records）が
+      確定済みなら、取り消せない（blockers に理由を入れる）
+    - 登録待ちに戻す行は1行（取り消す実績の分だけ）。日付は実績CSVの書式にする
+    戻り値: {"primary", "opposite"（None 可）, "ng_declarations", "blockers", "restored_row"}
+    """
+    linked = build_linked_correction_preview(prod_log_id, "delete")
+    primary = linked["primary"]
+    plan = primary["plan"]
+    lot_no = primary["lot_no"]
+    side = str(plan.get("production_side") or "").strip() if plan else ""
+    row = get_production_daily_by_id(prod_log_id)
+
+    primary_info = {
+        "prod_log_id": prod_log_id, "kitting_list_no": primary["kitting_list_no"], "lot_no": lot_no,
+        "production_side": side, "daily_qty": primary["old_daily_qty"], "report_date": primary["report_date"],
+    }
+    opposite_info = None
+    ng_targets = [(primary["kitting_list_no"], side)] if side in ("1", "2") else []
+    secondary = linked.get("secondary")
+    if secondary and not secondary.get("ambiguous") and secondary.get("kitting_list_no"):
+        opposite_side = "1" if side == "2" else "2"
+        ng_targets.append((secondary["kitting_list_no"], opposite_side))
+        if secondary.get("action") == "delete":
+            opposite_info = {
+                "prod_log_id": secondary["prod_log_id"], "kitting_list_no": secondary["kitting_list_no"],
+                "lot_no": lot_no, "production_side": opposite_side,
+                "daily_qty": secondary["old_daily_qty"], "report_date": secondary["report_date"],
+            }
+
+    ng_declarations = []
+    blockers = []
+    for kitting_list_no, ng_side in ng_targets:
+        declaration = get_ng_declaration(kitting_list_no, int(ng_side), lot_no)
+        if declaration is None:
+            continue
+        ng_declarations.append({
+            "kitting_list_no": kitting_list_no, "production_side": ng_side, "lot_no": lot_no,
+            "ng_qty": declaration["ng_qty"], "report_date": declaration["report_date"],
+        })
+        scrap = list_scrap_records_by_kitting_no(kitting_list_no, lot_no, int(ng_side))
+        if scrap:
+            blockers.append(f"計画 {kitting_list_no}（面{ng_side}）の NG が、NG展開（仕損展開）で確定済みです（{len(scrap)}件）。")
+    for target in [primary_info] + ([opposite_info] if opposite_info else []):
+        if target["production_side"] not in ("1", "2"):
+            continue
+        wip = list_wip_scrap_records_by_kitting_no(target["kitting_list_no"], lot_no, int(target["production_side"]))
+        if wip:
+            blockers.append(
+                f"計画 {target['kitting_list_no']}（面{target['production_side']}）の仕掛が、仕掛部品展開で確定済みです（{len(wip)}件）。"
+            )
+
+    restored_row = {
+        "lot_no": lot_no,
+        "product_name": (plan or {}).get("board_name") or (row or {}).get("group_id"),
+        "daily_qty": primary["old_daily_qty"],
+        "report_date": to_csv_date_format(primary["report_date"]),
+        "worker_id": (row or {}).get("worker_id"),
+    }
+    return {
+        "primary": primary_info, "opposite": opposite_info, "ng_declarations": ng_declarations,
+        "blockers": blockers, "restored_row": restored_row,
+    }
+
+
+def apply_cancellation(preview: dict, return_to_staging: bool, imported_by: str = None):
+    """
+    build_cancellation_preview() の内容を1つのトランザクションで確定する（D-129）。blockers があれば ValueError。
+    return_to_staging=True なら登録待ちの行を作り直し、その pending_row_id を返す（False なら None）。
+    """
+    if preview["blockers"]:
+        raise ValueError("NG展開・仕掛部品展開で確定済みのため、取り消せません。")
+    prod_log_ids = [preview["primary"]["prod_log_id"]]
+    if preview["opposite"]:
+        prod_log_ids.append(preview["opposite"]["prod_log_id"])
+    ng_keys = [(d["kitting_list_no"], int(d["production_side"]), d["lot_no"]) for d in preview["ng_declarations"]]
+    pending_row_id = cancel_daily_production(
+        prod_log_ids, ng_keys,
+        restored_row=preview["restored_row"] if return_to_staging else None,
+        restored_source=CANCELLED_REGISTRATION_SOURCE, imported_by=imported_by,
+    )
+    # 反対側も同じ lot_no なので、履歴は1回の記録で両面分を反映する（記録に失敗しても取り消しは失敗させない）。
+    _record_lot_status_snapshot_safely(preview["primary"]["lot_no"], "cancel_registration")
+    return pending_row_id
 
 
 def _pick_representative_plan_item(items: list):

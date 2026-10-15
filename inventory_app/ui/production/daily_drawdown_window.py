@@ -9,28 +9,29 @@ from tkcalendar import DateEntry
 
 from services.lot_status_history import get_daily_drawdown, get_drawdown_date_range
 from ui.common.window_utils import center_window
+from ui.common.lot_row_style import LotRowTagger, configure_lot_stripe_tags, configure_status_color_tags
 
+# 「面」の列は利用者の指示で削除した。構成基板数はロット進捗チェックと同じくロット単位の値（D-125）。
 DRAWDOWN_HEADERS = [
-    "ロットNo", "基板名", "ファイルNo", "面", "その日の引落", "累計引落", "仕掛", "未生産",
+    "ロットNo", "構成基板数", "基板名", "ファイルNo", "その日の引落", "累計引落", "仕掛", "未生産",
 ]
 
 
-def _side_label(production_side):
-    if production_side is None:
-        return ""
-    return f"面{production_side}"
+def _format_qty(value):
+    """None（構成基板数の食い違い・未登録、発注数の食い違いによる未生産）は空欄にする。"""
+    return "" if value is None else f"{value:.0f}"
 
 
 def _drawdown_row_to_values(row):
     return [
         row["lot_no"],
+        _format_qty(row.get("board_count")),
         row["board_name"] or "",
         row["setup_file_no"],
-        _side_label(row["production_side"]),
         f"{row['daily_drawdown']:.0f}",
         f"{row['cumulative_lot_completed']:.0f}",
         f"{row['surplus_qty']:.0f}",
-        f"{row['not_produced_qty']:.0f}",
+        _format_qty(row["not_produced_qty"]),
     ]
 
 
@@ -113,14 +114,14 @@ class DailyDrawdownWindow(tk.Toplevel):
         tree_frame = ttk.Frame(self, padding=10)
         tree_frame.pack(expand=True, fill=tk.BOTH)
 
-        cols = ("lot_no", "board_name", "file_no", "side", "daily_drawdown",
+        cols = ("lot_no", "board_count", "board_name", "file_no", "daily_drawdown",
                 "cumulative", "surplus_qty", "not_produced_qty")
         headers = dict(zip(cols, DRAWDOWN_HEADERS))
         widths = {
-            "lot_no": 110, "board_name": 170, "file_no": 90, "side": 50,
+            "lot_no": 110, "board_count": 80, "board_name": 170, "file_no": 90,
             "daily_drawdown": 90, "cumulative": 90, "surplus_qty": 80, "not_produced_qty": 80,
         }
-        left_aligned = {"lot_no", "board_name", "file_no", "side"}
+        left_aligned = {"lot_no", "board_name", "file_no"}
 
         self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings")
         for c in cols:
@@ -144,6 +145,9 @@ class DailyDrawdownWindow(tk.Toplevel):
         vsb.configure(command=self.tree.yview)
         hsb.configure(command=self.tree.xview)
 
+        configure_lot_stripe_tags(self.tree)
+        configure_status_color_tags(self.tree)
+
         self.on_aggregate()
 
     def on_aggregate(self):
@@ -160,8 +164,11 @@ class DailyDrawdownWindow(tk.Toplevel):
 
         for item in self.tree.get_children():
             self.tree.delete(item)
+        # 行は get_daily_drawdown() がロットNo・ファイルNo順に並べて返すので、同じロットの行は連続する。
+        tagger = LotRowTagger()
         for row in self.report_rows:
-            self.tree.insert("", tk.END, values=_drawdown_row_to_values(row))
+            tags = tagger.tags_for(row["lot_no"], row.get("status_color_category"))
+            self.tree.insert("", tk.END, values=_drawdown_row_to_values(row), tags=tags)
 
     def on_export_csv(self):
         if not self.report_rows:

@@ -9,7 +9,9 @@ models.wip_scrap_recordsに確定登録済みという前提で、本サービ�
 それらの集計結果を読むだけの薄いレイヤーとする（詳細は_collect_wip_totals()
 のdocstring参照）。
 """
+import config
 from models.inventory import list_inventory
+from models.operation_log import get_inventory_diff_export_status
 from models.theoretical_inventory import list_theoretical_inventory
 from models.scrap_records import query_scrap_totals
 from models.wip_board_snapshot import list_wip_snapshot
@@ -117,3 +119,13 @@ def build_inventory_diff_report():
         })
 
     return report_rows
+
+
+def is_current_db_inventory_exported() -> bool:
+    """
+    いま開いている月次DBが在庫値出力済みか（D-58）。既定DB（未選択）では DB に触れず False を返す
+    （get_inventory_diff_export_status() は表が無ければ作るので、既定DBに呼ぶとファイルができてしまう。D-57）。
+    """
+    if config.is_default_db():
+        return False
+    return get_inventory_diff_export_status()["exported"]

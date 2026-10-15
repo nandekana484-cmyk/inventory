@@ -118,3 +118,16 @@ def list_ng_declarations_latest() -> list:
             FROM ng_declarations
         """)
         return [dict(row) for row in cur.fetchall()]
+
+
+def delete_ng_declarations(con, keys):
+    """
+    NG申告を (kitting_list_no, production_side, lot_no) ごとに削除する（実績の取り消し、D-129）。
+    呼び出し元が開いた接続 con を使い、commit はしない（実績・登録待ちの行と1つのトランザクションにするため）。
+    """
+    for kitting_list_no, side, lot_no in keys:
+        con.execute(
+            "DELETE FROM ng_declarations WHERE kitting_list_no = ? AND production_side = ? "
+            "AND COALESCE(lot_no, '') = COALESCE(?, '')",
+            (kitting_list_no, side, lot_no),
+        )
