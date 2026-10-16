@@ -37,7 +37,8 @@ def _compute_lot_completion(lot_no: str, plan_items: list, cumulative_by_pair: d
     代入だと片方の実績が消える。3要素（kitting_list_no を含む）にすると完成数が少なく出る（CANONICAL_DESIGN_DECISIONS.md §5）。
     order_qty がファイルNoで食い違うロットがある（301件中3件）。そのときは先頭行の値を使い、order_qty_inconsistent で知らせる。
     cutoff_date は戻り値に記録するだけで、日付の絞り込みは呼び出し元が cumulative_by_pair で行う。
-    merge_ctx（統合したロット、_merge_lot_items()）があれば、実績を計画ごとの元のロットNoで引き、side1_extra を面1にも足す（D-150）。
+    merge_ctx（統合したロット、_merge_lot_items()）があれば、実績を計画ごとの元のロットNoで引き、side1_extra を面1にも足し、
+    side1_replaced の面1の実績は使わない（D-150・D-157）。
     """
     order_qty_values = sorted({item["order_qty"] for item in plan_items})
     order_qty_inconsistent = len(order_qty_values) > 1
@@ -48,6 +49,8 @@ def _compute_lot_completion(lot_no: str, plan_items: list, cumulative_by_pair: d
         kitting_list_no = item["kitting_list_no"]
         key = (item["setup_file_no"], item["production_side"])
         source_lot = lot_no if merge_ctx is None else item["lot_no"]
+        if merge_ctx is not None and (kitting_list_no, source_lot) in merge_ctx["side1_replaced"]:
+            continue
         file_actuals[key] = file_actuals.get(key, 0) + cumulative_by_pair[(kitting_list_no, source_lot)]
     if merge_ctx is not None:
         for pair, side1_key in merge_ctx["side1_extra"]:
@@ -354,6 +357,8 @@ def lot_completion_state(lot_no: str, cache: dict = None):
             "order_quantity": lot_eval["order_quantity"],
             "file_actuals": lot_eval["file_actuals"],
         }
+        if "display_lot_no" in lot_eval:   # 確認の文で「500500（+500500-）」と出すため（D-159）
+            state["display_lot_no"] = lot_eval["display_lot_no"]
     if cache is not None:
         cache[lot_no] = state
     return state
@@ -375,7 +380,7 @@ def preview_completed_lot_registration(plan: dict, daily_qty: float):
     if own_existing and not (new_total > state["order_quantity"] and new_total > current_total):
         return None
     return {
-        "lot_no": plan["lot_no"],
+        "lot_no": state.get("display_lot_no", plan["lot_no"]),
         "lot_completed": state["lot_completed"],
         "order_quantity": state["order_quantity"],
         "new_total": new_total,
@@ -393,7 +398,7 @@ def preview_completed_lot_correction(plan: dict, old_daily_qty: float, new_daily
     if state is None or not state["completed"]:
         return None
     current_total = state["file_actuals"].get((plan["setup_file_no"], plan["production_side"]), 0)
-    return {"lot_no": plan["lot_no"], "lot_completed": state["lot_completed"],
+    return {"lot_no": state.get("display_lot_no", plan["lot_no"]), "lot_completed": state["lot_completed"],
             "order_quantity": state["order_quantity"], "new_total": current_total - old_daily_qty + new_daily_qty}
 
 

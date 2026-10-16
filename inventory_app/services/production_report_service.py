@@ -153,8 +153,8 @@ def _build_report_rows(records):
         merged_fields = merged_lot_label(lot_eval)
         board_name = plan["board_name"] if plan else ""
         if merged_fields and plan is not None:
-            # 統合されるロットの行は、発注数・基板名を統合先にそろえた値で出す（D-150）。
-            if plan["lot_no"] != lot_eval["lot_no"] and lot_eval.get("aligned_order_qty") is not None:
+            # 統合したロットの行は、統合先の行も統合されるロットの行も、統合先の代表の発注数で出す（D-158）。基板名は統合先にそろえる（D-150）。
+            if lot_eval.get("aligned_order_qty") is not None:
                 order_qty = lot_eval["aligned_order_qty"]
             board_name = _aligned_board_name(lot_eval, plan) or board_name
             merged_fields["file_label"] = file_label_for(plan["setup_file_no"], [plan["lot_no"]], lot_eval["lot_no"])

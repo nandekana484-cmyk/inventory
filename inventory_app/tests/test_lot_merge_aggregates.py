@@ -137,16 +137,65 @@ def _item(kitting, lot, file_no, side, order=100, board="B"):
             "order_qty": order, "board_name": board}
 
 
-def test_side2_counted_as_side1_only_when_member_has_no_side1():
+def test_side2_counted_as_side1_per_file():
+    """D-157: 統合されるロットのファイルNoに面2があれば、そのファイルNoの面1の数量として面2を使う（面1の計画の有無を問わない）。"""
     target = [_item("T1", "X", "F1", "1"), _item("T2", "X", "F1", "2"), _item("T3", "X", "F2", "2")]
     _, ctx = _merge_lot_items("X", target + [_item("M2", "X-", "F1", "2", 10)], ["X-"])
-    assert ctx["side1_extra"] == [(("M2", "X-"), ("F1", "1"))]
-    # 統合先に面1の計画が無いファイルNo（F2）には数えない
+    assert ctx["side1_extra"] == [(("M2", "X-"), ("F1", "1"))] and ctx["side1_replaced"] == set()
+    # 面1の計画が統合後のロットのどこにも無いファイルNo（F2）には足さない（新しい (ファイルNo, 面1) を作らない）
     _, ctx = _merge_lot_items("X", target + [_item("M3", "X-", "F2", "2", 10)], ["X-"])
     assert ctx["side1_extra"] == []
-    # 統合されるロットに面1の計画が1件でもあれば、数えない（利用者の決定は「面2の計画しか無い場合」）
+    # 統合されるロットに別のファイルNoの面1の計画があっても、ファイルNoごとに判断する（D-151 の「面1が1件も無いとき」から変えた）
     _, ctx = _merge_lot_items("X", target + [_item("M2", "X-", "F1", "2", 10), _item("M1", "X-", "F9", "1", 10)], ["X-"])
-    assert ctx["side1_extra"] == []
+    assert ctx["side1_extra"] == [(("M2", "X-"), ("F1", "1"))] and ctx["side1_replaced"] == set()
+    # 同じファイルNoに統合されるロットの面1の計画もあれば、その面1の実績は使わず、面2を使う（二重に足さない）
+    _, ctx = _merge_lot_items("X", target + [_item("M2", "X-", "F1", "2", 10), _item("M1", "X-", "F1", "1", 10)], ["X-"])
+    assert ctx["side1_extra"] == [(("M2", "X-"), ("F1", "1"))] and ctx["side1_replaced"] == {("M1", "X-")}
+
+
+def _add_lot(plans, actuals, board="BRD-6000"):
+    batch = create_plan_batch("side.csv", imported_by="W1", row_count=len(plans))
+    for kitting_list_no, lot_no, file_no, side, order_qty in plans:
+        create_plan_version(batch, kitting_list_no, {
+            "lot_no": lot_no, "setup_file_no": file_no, "board_name": board, "production_side": side,
+            "order_qty": order_qty, "planned_qty": order_qty, "plan_start_datetime": "2026/07/01 08:00:00",
+            "mounting_line": "A",
+        }, created_by="W1")
+    upsert_board_structure(board, 2)
+    for kitting_list_no, lot_no, report_date, qty in actuals:
+        plan = find_plan_item_by_kitting_no(kitting_list_no, lot_no)
+        insert_daily_production(plan["plan_item_id"], kitting_list_no, lot_no, plan["board_name"], report_date, qty, "W1")
+
+
+def _target_plans(lot):
+    return ([(f"{lot}-{f}-{s}", lot, f, s, 100) for f in ("F1", "F2") for s in ("1", "2")],
+            [(f"{lot}-{f}-{s}", lot, "2026-07-02", 90) for f in ("F1", "F2") for s in ("1", "2")])
+
+
+@pytest.mark.parametrize("member_plans, member_actuals, expected_file_actuals", [
+    # (a) X- の F1 に面2の計画だけ: 面1にも面2の 10 を数える → 完成数 100
+    ([("M-F1-2", "F1", "2")], [("M-F1-2", 10)],
+     {("F1", "1"): 100, ("F1", "2"): 100, ("F2", "1"): 90, ("F2", "2"): 90}),
+    # (b) X- の F1 に面1・面2 の両方（面2の登録で面1へ自動入力された 10 も実績にある）: 面1は面2の 10 だけを使い、110 にしない
+    ([("M-F1-1", "F1", "1"), ("M-F1-2", "F1", "2")], [("M-F1-1", 10), ("M-F1-2", 10)],
+     {("F1", "1"): 100, ("F1", "2"): 100, ("F2", "1"): 90, ("F2", "2"): 90}),
+    # (c) 混ざる組: F1 は面2だけ、F2 は面1・面2 の両方
+    ([("M-F1-2", "F1", "2"), ("M-F2-1", "F2", "1"), ("M-F2-2", "F2", "2")],
+     [("M-F1-2", 10), ("M-F2-1", 10), ("M-F2-2", 10)],
+     {("F1", "1"): 100, ("F1", "2"): 100, ("F2", "1"): 100, ("F2", "2"): 100}),
+])
+def test_side1_from_side2_on_real_db(sample_db, member_plans, member_actuals, expected_file_actuals):
+    plans, actuals = _target_plans("600600")
+    plans += [(k, "600600-", f, s, 10) for k, f, s in member_plans]
+    actuals += [(k, "600600-", "2026-07-09", q) for k, q in member_actuals]
+    _add_lot(plans, actuals)
+    before = _lot("600600")["lot_completed"]
+    svc.merge_lots("600600-", "作業者A")
+    lot = _lot("600600")
+    assert lot["file_actuals"] == expected_file_actuals
+    assert (before, lot["lot_completed"]) == (90, min(expected_file_actuals.values()))
+    svc.unmerge_lot("600600-", "作業者A")
+    assert _lot("600600")["lot_completed"] == 90
 
 
 # ---------------------------------------------------------------- 表示（D-152）
@@ -252,3 +301,21 @@ def test_default_db_creates_no_file(monkeypatch):
     with pytest.raises(svc.LotMergeError):
         svc.preview_merge("163326-")
     assert not os.path.exists(os.path.dirname(default))
+
+
+def test_completed_lot_message_uses_merged_label(example_db):
+    """D-159: 完成済みロットの確認（右クリック・ダブルクリック・手入力の D-130・D-133、実績修正の D-156）は、統合したロットを「500500（+500500-）」と出す。"""
+    from services.lot_status_service import preview_completed_lot_registration, preview_completed_lot_correction
+    plan = find_plan_item_by_kitting_no("K500500M-2", "500500-")
+    assert preview_completed_lot_registration(plan, 60)["lot_no"] == "500500-"        # 統合前は単独で完成（50／50）
+    svc.merge_lots("500500-", "作業者A")
+    assert preview_completed_lot_registration(plan, 60)["lot_no"] == "500500（+500500-）"
+    assert preview_completed_lot_correction(plan, 50, 60)["lot_no"] == "500500（+500500-）"
+
+
+def test_report_order_qty_uses_target_value_on_all_rows(sample_db):
+    """D-158: 実績レポートの発注数は、統合した組の行すべてで統合先の代表値。"""
+    svc.merge_lots("163326-", "作業者A")
+    svc.merge_lots("348588-", "作業者A")
+    rows = [r for r in build_monthly_report("2026-07-01", "2026-07-31")[0] if r.get("lot_label")]
+    assert {(r["lot_no"], r["order_qty"]) for r in rows} == {("163326", 1000), ("163326-", 1000), ("348588-", 400)}
