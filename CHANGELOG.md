@@ -224,7 +224,7 @@ D-81の追加検証で見つかった1件の不具合を修正（D-83）。
 - 最初の本番のマイグレーション 014（`lot_merges` の表を足す。既存のデータは変えない）を足し、`LATEST_VERSION` を 14 にした。新しく作る DB は `db/schema.sql` で同じ表を作る（D-145）。
 - ロット統合の共通の関数 `services/lot_merge_service.py`（`load_lot_merge_map()` の `target_of()`・`members_of()`、統合・解除）と、操作履歴を呼び出し元のトランザクションで書く `models/operation_log.insert_operation_log()` を足した（D-146）。
 - 検証用の合成データを作る `inventory_app/scripts/make_lot_merge_sample_db.py` を足した（実データは含まない。`--app-dir` で別の版のコードを使って作れる）。
-- 集計は `services/lot_status_service.py` の `_merge_lot_items()` で統合後のロットの行を作り、実績は計画ごとに元のロットNoで引くようにした（計画Noを共有する組で二重に足さない）。統合していないロットは従来と同じ経路で計算する。`evaluate_lot_status()` に `merge_map` を、`services/lot_merge_service.py` に `merged_lot_nos()`・`preview_merge()` を足した（D-150・D-153）。
+- 集計は `services/lot_merge_items_service.py` の `_merge_lot_items()` で統合後のロットの行を作り（`lot_status_service.py` が500行を超えたので、統合の部分をこのファイルへ分けた。動きは同じ）、実績は計画ごとに元のロットNoで引くようにした（計画Noを共有する組で二重に足さない）。統合していないロットは従来と同じ経路で計算する。`evaluate_lot_status()` に `merge_map` を、`services/lot_merge_service.py` に `merged_lot_nos()`・`preview_merge()` を足した（D-150・D-153）。
 
 ## 既知の制約・未対応事項
 

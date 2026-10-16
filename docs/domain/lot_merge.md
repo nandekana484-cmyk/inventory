@@ -28,7 +28,7 @@
 ## 集計への反映（第2段階、D-150〜D-155）
 
 統合後のロット（統合先のロットNo.）を1つのロットとして評価する。統合していないロットの計算は変えない。
-中心は `services/lot_status_service.py` の `_merge_lot_items()`（評価に使う計画の行と、統合の扱い `merge_ctx` を作る）。
+中心は `services/lot_merge_items_service.py` の `_merge_lot_items()`（評価に使う計画の行と、統合の扱い `merge_ctx` を作る）。集計の本体は `services/lot_status_service.py`。
 
 守る約束:
 

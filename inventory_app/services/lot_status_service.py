@@ -5,11 +5,16 @@
 ロットの統合（D-136・D-150）: 統合したロットは「統合後のロット」（統合先のロットNo）単位でまとめて評価する。
 統合の無いロットの計算は変えない（merge_ctx が None の経路は統合の前と同じ）。業務ルールは docs/domain/lot_merge.md。
 """
-from models.kitting_plan import list_plan_items_by_lot, list_plan_items_for_all_lots
+from models.kitting_plan import list_plan_items_for_all_lots
 from models.production import get_app_cumulative_qty_bulk, get_app_cumulative_qty
 from models.board_structure_master import get_board_structure
 from models.lot_status_history import insert_lot_status_snapshot
 from services.lot_merge_service import load_lot_merge_map
+# 統合後のロットの行を作る部分は lot_merge_items_service.py へ移した（中身は同じ）。旧位置からも参照できるよう import しておく。
+from services.lot_merge_items_service import (  # noqa: F401 （re-export）
+    _representative_order_qty, _side_of, _merge_lot_items, _group_items_by_merged_lot,
+    _load_lot_items, _pairs_of, _merge_result_fields,
+)
 
 
 def record_lot_status_snapshot(lot_no: str, trigger_source: str) -> int:
@@ -22,97 +27,6 @@ def record_lot_status_snapshot(lot_no: str, trigger_source: str) -> int:
     """
     lot_status = evaluate_lot_status(lot_no)
     return insert_lot_status_snapshot(lot_status["lot_no"], lot_status, trigger_source)
-
-
-def _representative_order_qty(plan_items: list):
-    """ロットの発注数の代表値（食い違うときは先頭行の値。_compute_lot_completion() と同じ決め方）。"""
-    values = sorted({item["order_qty"] for item in plan_items})
-    return plan_items[0]["order_qty"] if len(values) > 1 else values[0]
-
-
-def _side_of(item) -> str:
-    return str(item.get("production_side") or "").strip()
-
-
-def _merge_lot_items(target_lot: str, items: list, member_lots: list):
-    """
-    統合後のロット（D-150）の評価に使う計画の行と、統合の扱い（merge_ctx）を作る。保存値・計画の行の lot_no は変えない。
-    - 統合されるロットの行は、発注数を統合先の代表値に、基板名を統合先の同じファイルNoの基板名（1種類のときだけ）にそろえた写しにする
-    - 統合されるロットに面1の計画が1件も無いとき、その面2の計画の実績を、統合先に面1の計画がある同じファイルNoの面1にも数える
-      （side1_extra。「面2が終わっていれば面1も終わっている」。D-136(5)）
-    統合先に計画が無いときは、そろえる元が無いので、統合されるロットの行をそのまま使う。
-    """
-    target_items = [it for it in items if it["lot_no"] == target_lot]
-    member_items = [it for it in items if it["lot_no"] != target_lot]
-    ctx = {
-        "target_lot": target_lot,
-        "member_lots": list(member_lots),
-        "display_lot_no": f"{target_lot}（" + "、".join(f"+{m}" for m in member_lots) + "）",
-        "aligned_order_qty": None,
-        "side1_extra": [],
-    }
-    if not target_items:
-        return items, ctx
-
-    aligned_order_qty = _representative_order_qty(target_items)
-    ctx["aligned_order_qty"] = aligned_order_qty
-    names_by_file = {}
-    for it in target_items:
-        names_by_file.setdefault(it["setup_file_no"], set()).add(it["board_name"])
-    side1_key_by_file = {it["setup_file_no"]: (it["setup_file_no"], it["production_side"])
-                         for it in target_items if _side_of(it) == "1"}
-
-    aligned = []
-    for it in member_items:
-        names = names_by_file.get(it["setup_file_no"])
-        board_name = next(iter(names)) if names and len(names) == 1 else it["board_name"]
-        aligned.append(dict(it, order_qty=aligned_order_qty, board_name=board_name))
-
-    for member in member_lots:
-        own = [it for it in member_items if it["lot_no"] == member]
-        if own and not any(_side_of(it) == "1" for it in own):
-            for it in own:
-                key = side1_key_by_file.get(it["setup_file_no"])
-                if _side_of(it) == "2" and key is not None:
-                    ctx["side1_extra"].append(((it["kitting_list_no"], it["lot_no"]), key))
-    return target_items + aligned, ctx
-
-
-def _group_items_by_merged_lot(plan_items: list, merge_map) -> dict:
-    """計画の行を統合後のロットごとにまとめる。戻り値: {統合後のロットNo: (評価に使う行, merge_ctx or None)}。"""
-    grouped = {}
-    for item in plan_items:
-        grouped.setdefault(merge_map.target_of(item["lot_no"]), []).append(item)
-    result = {}
-    for lot_no, items in grouped.items():
-        members = merge_map.members_of(lot_no)
-        result[lot_no] = _merge_lot_items(lot_no, items, members) if members else (items, None)
-    return result
-
-
-def _load_lot_items(lot_no: str, merge_map):
-    """lot_no（統合されるロットでもよい）の統合後のロットNo・評価に使う行・merge_ctx を返す。計画が無ければ ValueError。"""
-    target = merge_map.target_of(lot_no)
-    members = merge_map.members_of(target)
-    if not members:
-        plan_items = list_plan_items_by_lot(lot_no)
-        if not plan_items:
-            raise ValueError(f"ロットNo. {lot_no} の計画が見つかりません。")
-        return lot_no, plan_items, None
-    plan_items = []
-    for lot in [target] + members:
-        plan_items += list_plan_items_by_lot(lot)
-    if not plan_items:
-        raise ValueError(f"ロットNo. {lot_no} の計画が見つかりません。")
-    items, ctx = _merge_lot_items(target, plan_items, members)
-    return target, items, ctx
-
-
-def _pairs_of(lot_no: str, plan_items: list, merge_ctx) -> list:
-    """実績を引く (計画No, ロットNo) の組。統合したロットでは計画ごとに元のロットNoで引く（計画Noを共有する組で二重に足さない）。"""
-    if merge_ctx is None:
-        return [(item["kitting_list_no"], lot_no) for item in plan_items]
-    return [(item["kitting_list_no"], item["lot_no"]) for item in plan_items]
 
 
 def _compute_lot_completion(lot_no: str, plan_items: list, cumulative_by_pair: dict,
@@ -155,15 +69,6 @@ def _compute_lot_completion(lot_no: str, plan_items: list, cumulative_by_pair: d
     if merge_ctx is not None:
         result.update(_merge_result_fields(merge_ctx))
     return result
-
-
-def _merge_result_fields(merge_ctx: dict) -> dict:
-    """統合したロットの評価結果にだけ足すキー（統合の無いロットの結果の形は変えない）。"""
-    return {
-        "merged_lot_nos": list(merge_ctx["member_lots"]),
-        "display_lot_no": merge_ctx["display_lot_no"],
-        "aligned_order_qty": merge_ctx["aligned_order_qty"],
-    }
 
 
 def calculate_lot_completion(lot_no: str):

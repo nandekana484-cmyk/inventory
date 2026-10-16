@@ -75,10 +75,11 @@ import の向きだけを見ているので、実際の呼び出し回数や呼�
 | db_migration_carryover.py | kitting_plan, lot_merges, production | date_parsing, production_service | — |
 | inventory_diff_service.py | inventory, operation_log, scrap_records, theoretical_inventory, wip_board_snapshot, wip_scrap_records | — | — |
 | kitting_import_service.py | board_structure_master, kitting_plan | — | — |
+| lot_merge_items_service.py | kitting_plan | — | — |
 | lot_merge_service.py | kitting_plan, lot_merges | lot_status_service※ | — |
 | lot_status_history.py | — | lot_status_history_service | — |
 | lot_status_history_service.py | production | production_report_service, production_service | — |
-| lot_status_service.py | board_structure_master, kitting_plan, lot_status_history, production | lot_merge_service | — |
+| lot_status_service.py | board_structure_master, kitting_plan, lot_status_history, production | lot_merge_items_service, lot_merge_service | — |
 | master_merge_service.py | board_structure_master, db_common, master, parts_attributes, production_side_master, workers | — | — |
 | ng_list_service.py | kitting_plan, ng_declarations, ng_exclusion_list, scrap_records | — | — |
 | pdf_ocr_service.py | inventory | — | — |

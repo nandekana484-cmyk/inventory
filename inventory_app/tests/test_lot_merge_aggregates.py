@@ -13,7 +13,8 @@ from models.kitting_plan import create_plan_batch, create_plan_version, find_pla
 from models.production import insert_daily_production
 from services import lot_merge_service as svc
 from services.lot_status_history import get_daily_drawdown
-from services.lot_status_service import _merge_lot_items, lot_completion_state
+from services.lot_merge_items_service import _merge_lot_items
+from services.lot_status_service import lot_completion_state
 from services.production_service import (
     build_monthly_report, build_wip_extraction_rows, calculate_lot_completion, check_lot_progress, evaluate_lot_status,
 )
