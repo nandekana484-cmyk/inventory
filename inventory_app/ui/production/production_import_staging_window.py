@@ -21,6 +21,7 @@ from services.production_service import (
     preview_opposite_side_overwrite, preview_opposite_side_overwrites,
 )
 from services.lot_status_service import preview_completed_lot_registration, lot_completion_state
+from services.lot_merge_service import match_lot_of
 from services.production_entry_service import (
     resolve_csv_report_date,
     register_actual_and_ng,
@@ -128,8 +129,18 @@ def format_completed_lot_warning(info) -> str:
 def _is_candidate_already_registered(candidate, lot_no) -> bool:
     """
     候補の計画に、既に実績が1件以上あるか。「完了済み」とは別の概念（完了済みの計画は、候補の時点で除外されている）。
+    実績はキー (計画No, 元のロットNo) で見る（統合した組の相手のロットの計画を、CSV のロットNoで見ない。D-161）。
     """
-    return bool(list_daily_production_by_kitting_no(candidate["kitting_list_no"], lot_no))
+    return bool(list_daily_production_by_kitting_no(candidate["kitting_list_no"], match_lot_of(candidate, lot_no)))
+
+
+def staging_status_label(row) -> str:
+    """「状態」列の文言。「候補なし」で似たロットNoがあれば「候補なし（似たロットNoあり：326611-）」（D-162。状態の判定は変えない）。"""
+    status = row.get("status")
+    label = STAGING_STATUS_LABELS.get(status, status or "")
+    if row.get("similar_lot_no"):
+        label = f"{label}（似たロットNoあり：{row['similar_lot_no']}）"
+    return label
 
 
 def open_or_notify(parent, already_registered_rows=None):
@@ -408,7 +419,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
             row.get("report_date") or "",
             row.get("worker_id", ""),
             row.get("daily_qty", ""),
-            STAGING_STATUS_LABELS.get(row.get("status"), row.get("status", "")),
+            staging_status_label(row),
         ))
         self._row_by_iid[iid] = row
         return iid
@@ -509,6 +520,10 @@ class ProductionImportStagingWindow(tk.Toplevel):
                 hint += f"　当日実績数：{format_qty(daily_qty)}（計画数と見比べてご確認ください）"
             if using_fallback:
                 hint += "\n※ 製品名が完全一致する候補が無いため、ロットNo.が一致する全ての候補を表示しています。"
+            candidate_lots = sorted({str(c.get("lot_no") or "") for c in effective_candidates})
+            if len(candidate_lots) > 1:
+                # 統合したロット（D-160）。どの元のロットの計画かは、候補一覧のロットNo.の列で分かる。
+                hint += f"\n※ 統合したロットのため、{'・'.join(candidate_lots)} の計画を候補にしています（ロットNo.の列を確認してください）。"
         self.lbl_candidate_hint.config(text=hint)
 
         lot_state_cache = {}
@@ -575,7 +590,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
             return
         row = self._current_staging_row
         if row is not None and _is_candidate_already_registered(candidate, row.get("lot_no")):
-            self._open_correction_window_for_candidate(candidate, row.get("lot_no"))
+            self._open_correction_window_for_candidate(candidate, match_lot_of(candidate, row.get("lot_no")))
             return
         self._confirm_candidate(candidate)
 
@@ -627,7 +642,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
         if self._current_staging_iid == iid:
             self._current_staging_row = new_row
         status = new_row.get("status")
-        self.tree.set(iid, "status", STAGING_STATUS_LABELS.get(status, status or ""))
+        self.tree.set(iid, "status", staging_status_label(new_row))
         self.tree.item(iid, tags=("product_name_mismatch",) if status == REASON_PRODUCT_NAME_MISMATCH else ())
         return new_row
 
@@ -912,7 +927,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
                 other_row["lot_no"], other_normalized, plan_items_by_lot,
             )
             if len(other_matched) == 1:
-                plan_key = (other_matched[0]["kitting_list_no"], other_row["lot_no"])
+                plan_key = (other_matched[0]["kitting_list_no"], match_lot_of(other_matched[0], other_row["lot_no"]))
                 plan_key_counts[plan_key] = plan_key_counts.get(plan_key, 0) + 1
 
         # 行ごとに判定する（まだ登録しない。Shift+Q の確認ダイアログの件数はこの結果から作る）。

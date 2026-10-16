@@ -46,7 +46,7 @@ import の向きだけを見ているので、実際の呼び出し回数や呼�
 | production/lot_merge_window.py | inventory_diff_service, lot_merge_service | — | common/window_utils, production/lot_progress_window |
 | production/lot_progress_window.py | lot_status_service, production_report_service, production_service | — | common/lot_row_style, common/window_utils, loading_window, production/lot_merge_window※ |
 | production/opposite_side_overwrite_dialog.py | — | — | common/window_utils |
-| production/production_import_staging_window.py | lot_status_service, production_entry_service, production_import_service, production_service, staging_eligibility | kitting_plan, production, production_import_staging | common/highlight_colors, common/window_utils, kitting/kitting_production_entry※, kitting/plan_candidate_dialog, production/opposite_side_overwrite_dialog |
+| production/production_import_staging_window.py | lot_merge_service, lot_status_service, production_entry_service, production_import_service, production_service, staging_eligibility | kitting_plan, production, production_import_staging | common/highlight_colors, common/window_utils, kitting/kitting_production_entry※, kitting/plan_candidate_dialog, production/opposite_side_overwrite_dialog |
 | production/unmatched_production_window.py | — | — | common/window_utils |
 | reports/daily_report_window.py | — | board_structure_master | common/lot_row_style, common/window_utils |
 | reports/parts_ng_report_window.py | — | scrap_records | common/window_utils, reports/daily_report_window |
@@ -84,10 +84,10 @@ import の向きだけを見ているので、実際の呼び出し回数や呼�
 | ng_list_service.py | kitting_plan, ng_declarations, ng_exclusion_list, scrap_records | — | — |
 | pdf_ocr_service.py | inventory | — | — |
 | production_entry_service.py | ng_declarations, operation_log | date_parsing, production_service | — |
-| production_import_service.py | kitting_plan, production, production_import_staging | csv_parsing_common, production_service | — |
+| production_import_service.py | kitting_plan, production, production_import_staging | csv_parsing_common, lot_merge_service, production_service | — |
 | production_report_service.py | kitting_plan, ng_declarations, production, scrap_records | lot_merge_service, lot_status_service | — |
 | production_service.py | kitting_plan, ng_declarations, production, scrap_records, wip_scrap_records | date_parsing, lot_merge_service, lot_status_service, production_report_service | — |
-| staging_eligibility.py | kitting_plan, production, production_import_staging | date_parsing, lot_status_service, production_import_service | — |
+| staging_eligibility.py | kitting_plan, production, production_import_staging | date_parsing, lot_merge_service, lot_status_service, production_import_service | — |
 | unprocessed_check_service.py | — | ng_list_service, wip_list_service | — |
 | wip_list_service.py | wip_board_snapshot, wip_exclusion_list, wip_scrap_records | — | — |
 

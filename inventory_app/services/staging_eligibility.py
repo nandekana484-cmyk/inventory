@@ -17,6 +17,7 @@ from models.kitting_plan import (
 from models.production import list_daily_production_by_kitting_no
 from models.production_import_staging import list_pending_csv_import_rows
 from services.lot_status_service import lot_completion_state
+from services.lot_merge_service import active_plan_lot_nos, find_similar_lot_no, match_lot_of
 
 # Shift+S・Shift+Q で許容する、払い出し日と生産予定日の差（日付のみで比較）。
 # 両ショートカットの違いは、この日数の違いだけにする（利用者の決定、D-101）。
@@ -125,13 +126,14 @@ def evaluate_auto_register_eligibility(row, candidates, matched, plan_key_counts
     if not matched:
         return AUTO_REGISTER_INELIGIBLE, REASON_PRODUCT_NAME_MISMATCH, None, None
 
-    unique_kitting_nos = {c["kitting_list_no"] for c in matched}
-    if len(unique_kitting_nos) > 1:
+    # 計画は (計画No, 元のロットNo) で区別する。統合したロットで計画Noを共有する X・X- の計画は、別の候補として「複数」になる（D-161）。
+    unique_plan_keys = {(c["kitting_list_no"], match_lot_of(c, row["lot_no"])) for c in matched}
+    if len(unique_plan_keys) > 1:
         return AUTO_REGISTER_INELIGIBLE, REASON_MULTIPLE_CANDIDATES, None, None
 
     candidate = matched[0]
     kitting_list_no = candidate["kitting_list_no"]
-    lot_no = row["lot_no"]
+    lot_no = match_lot_of(candidate, row["lot_no"])
 
     if list_daily_production_by_kitting_no(kitting_list_no, lot_no):
         return AUTO_REGISTER_INELIGIBLE, REASON_EXISTING, candidate, None
@@ -179,7 +181,7 @@ def _count_plan_keys(resolved):
     plan_key_counts = {}
     for item in resolved:
         if len(item["matched"]) == 1:
-            key = (item["matched"][0]["kitting_list_no"], item["lot_no"])
+            key = (item["matched"][0]["kitting_list_no"], match_lot_of(item["matched"][0], item["lot_no"]))
             plan_key_counts[key] = plan_key_counts.get(key, 0) + 1
     return plan_key_counts
 
@@ -218,9 +220,20 @@ def _load_staged_rows_from_db():
     resolved = _resolve_candidates(rows, group_active_plan_items_by_lot())
     plan_key_counts = _count_plan_keys(resolved)
     lot_state_cache = {}
+    plan_lot_nos = None
     for item in resolved:
         item["status"] = _status_of(item, plan_key_counts, lot_state_cache)
+        if item["status"] == REASON_NO_CANDIDATES_CODE:
+            plan_lot_nos = active_plan_lot_nos() if plan_lot_nos is None else plan_lot_nos
+            _set_similar_lot_no(item, plan_lot_nos)
     return resolved
+
+
+def _set_similar_lot_no(item, plan_lot_nos=None):
+    """「候補なし」の行に、末尾「-」を付けた／外したロットの計画があれば similar_lot_no を足す（D-162。表示だけで、状態は変えない）。"""
+    similar = find_similar_lot_no(item["lot_no"], plan_lot_nos)
+    if similar is not None:
+        item["similar_lot_no"] = similar
 
 
 def reevaluate_staged_row(target_row, all_rows):
@@ -235,6 +248,9 @@ def reevaluate_staged_row(target_row, all_rows):
     for row, item in zip(all_rows, resolved):
         if row is target_row:
             item["status"] = _status_of(item, plan_key_counts)
+            item.pop("similar_lot_no", None)   # 前の判定のときの表示を持ち越さない
+            if item["status"] == REASON_NO_CANDIDATES_CODE:
+                _set_similar_lot_no(item)
             return item
     raise ValueError("target_row が all_rows に含まれていません。")
 

@@ -935,11 +935,12 @@ def resolve_plan_by_lot_and_name(lot_no: str, product_name_normalized: str, plan
     """
     lot_no と正規化済みの製品名から計画を特定し、kitting_list_no を返す（実績CSV自動取込用）。
     kitting_list_no が1種類に決まらなければ None。未一致の理由を区別したいときは find_matching_plan_items() を使うこと。
+    計画は (計画No, ロットNo) で区別する（統合したロットでは、計画Noを共有する X と X- の計画が両方候補になるため。D-161）。
     """
     _, matched = find_matching_plan_items(lot_no, product_name_normalized, plan_items_by_lot)
 
-    unique_kitting_nos = {item["kitting_list_no"] for item in matched}
-    if len(unique_kitting_nos) == 1:
+    unique_plan_keys = {(item["kitting_list_no"], item.get("lot_no")) for item in matched}
+    if len(unique_plan_keys) == 1:
         return matched[0]["kitting_list_no"]
     return None
 

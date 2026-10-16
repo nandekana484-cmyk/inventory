@@ -27,6 +27,7 @@ from models.kitting_plan import (  # normalize_product_name は段階4で models
     list_active_plan_items,
 )
 from models.production import list_daily_production_by_kitting_no
+from services.lot_merge_service import match_lot_of, merge_plan_items_by_lot
 from models.production_import_staging import (
     create_csv_import_batch,
     upsert_pending_csv_import_row,
@@ -113,7 +114,8 @@ def group_active_plan_items_by_lot(include_completed=False):
     for item in list_active_plan_items(include_completed=include_completed):
         key = str(item.get("lot_no") or "").strip()
         grouped.setdefault(key, []).append(item)
-    return grouped
+    # 統合したロット（D-160）は、X・X- のどちらのキーでも両方の計画を候補にする。計画の行の lot_no は元のまま。
+    return merge_plan_items_by_lot(grouped)
 
 
 def is_already_registered(lot_no, product_name, daily_qty, plan_items_by_lot=None, report_date=None):
@@ -241,7 +243,8 @@ def is_already_registered(lot_no, product_name, daily_qty, plan_items_by_lot=Non
         # 該当する候補が無ければ従来通り「判定不可」のまま返す
         # （誤って有効な行を隠さないため）。
         for plan in matched:
-            existing_rows = list_daily_production_by_kitting_no(plan["kitting_list_no"], lot_no)
+            # 実績はキー (計画No, 元のロットNo) で見る（統合した組の相手のロットの計画を、CSV のロットNoで見ない。D-161）。
+            existing_rows = list_daily_production_by_kitting_no(plan["kitting_list_no"], match_lot_of(plan, lot_no))
             if not existing_rows:
                 continue
             matched_ok, existing_qty = _qty_and_date_match(existing_rows)
@@ -268,7 +271,7 @@ def is_already_registered(lot_no, product_name, daily_qty, plan_items_by_lot=Non
         }
 
     plan = matched[0]
-    existing_rows = list_daily_production_by_kitting_no(plan["kitting_list_no"], lot_no)
+    existing_rows = list_daily_production_by_kitting_no(plan["kitting_list_no"], match_lot_of(plan, lot_no))
     if not existing_rows:
         return {
             "already_registered": False,
@@ -374,6 +377,10 @@ def import_production_csv(file_path, default_worker_id=None):
 
         product_name_normalized = normalize_product_name(product_name)
         kitting_list_no = resolve_plan_by_lot_and_name(lot_no, product_name_normalized, plan_items_by_lot)
+        if kitting_list_no:
+            # 統合した組では、候補の計画が CSV と別の元のロットのことがあるので、計画の元のロットNoで登録する（D-161）。
+            _, matched_plans = find_matching_plan_items(lot_no, product_name_normalized, plan_items_by_lot)
+            lot_no = match_lot_of(next(p for p in matched_plans if p["kitting_list_no"] == kitting_list_no), lot_no)
 
         if not kitting_list_no:
             candidates, matched = find_matching_plan_items(lot_no, product_name_normalized, plan_items_by_lot)

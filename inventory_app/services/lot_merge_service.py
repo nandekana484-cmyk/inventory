@@ -67,6 +67,60 @@ def _active_lot_nos():
     return {item["lot_no"] for item in list_plan_items_for_all_lots()}
 
 
+# ---------------------------------------------------------------- 実績CSVとの照合（第3段階、D-160〜D-162）
+
+def merge_plan_items_by_lot(plan_items_by_lot: dict) -> dict:
+    """
+    {ロットNo: [計画, ...]}（group_active_plan_items_by_lot() の形）を、統合したロットでは X・X- のどちらのキーでも
+    両方の計画（統合先・統合されるロットの順）を引けるようにした辞書にする（D-160）。計画の行の lot_no は元のまま。
+    統合していないロットのキーは元の辞書のまま。既定DB では統合が無いので、そのまま返す。
+    """
+    merge_map = load_lot_merge_map()
+    if not merge_map.rows:
+        return plan_items_by_lot
+    result = dict(plan_items_by_lot)
+    for target in {r["target_lot"] for r in merge_map.rows}:
+        lots = [target] + merge_map.members_of(target)
+        union = [item for lot in lots for item in plan_items_by_lot.get(lot, [])]
+        if union:
+            for lot in lots:
+                result[lot] = union
+    return result
+
+
+def match_lot_of(plan: dict, csv_lot_no: str) -> str:
+    """
+    実績CSVの行（ロットNo csv_lot_no）と照合した計画の、実績・重複を見るロットNo（D-161）。キーは (計画No, 元のロットNo)。
+    計画のロットNoが CSV のロットNoと同じ（統合していない、または同じロットの計画）なら、従来どおり CSV のロットNoを返す。
+    統合した組の相手のロットの計画なら、計画の元のロットNoを返す（計画Noを共有する 226793・226793- で別のロットを見ないため）。
+    """
+    if str(plan.get("lot_no") or "").strip() == csv_lot_no:
+        return csv_lot_no
+    return plan["lot_no"]
+
+
+def find_similar_lot_no(lot_no: str, plan_lot_nos=None):
+    """
+    「候補なし」の行に示す、似たロットNo（D-162）。末尾の「-」1つを付けた／外したロットNoの計画があれば、そのロットNo。無ければ None。
+    対象は末尾「-」だけ（「-1」「-2」「K」「.1」は対象外）。plan_lot_nos（有効な計画のロットNoの集合）を渡すと DB を読まない。
+    既定DB では DB に触れずに None。
+    """
+    if plan_lot_nos is None:
+        if config.is_default_db():
+            return None
+        plan_lot_nos = _active_lot_nos()
+    lot_no = str(lot_no or "").strip()
+    sibling = target_lot_for_member(lot_no)
+    if sibling is None and is_valid_merge_pair(lot_no + MERGE_SUFFIX, lot_no):
+        sibling = lot_no + MERGE_SUFFIX
+    return sibling if sibling is not None and sibling in plan_lot_nos else None
+
+
+def active_plan_lot_nos() -> set:
+    """有効な計画のロットNoの集合（find_similar_lot_no() に渡すため、一覧の判定1回につき1回だけ読む）。既定DB では空。"""
+    return set() if config.is_default_db() else _active_lot_nos()
+
+
 def list_merge_candidates() -> list:
     """
     統合の画面に並べる組。今の月次DB の有効な計画に X と X- の両方があるロットの組と、統合済みの組（計画が無くなっていても出す）。
