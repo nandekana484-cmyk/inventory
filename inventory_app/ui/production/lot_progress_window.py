@@ -19,6 +19,7 @@ from tkinter import ttk, messagebox, filedialog
 
 from services.production_service import check_lot_progress
 from services.lot_status_service import ORDER_QTY_REMARK_BETWEEN_FILES, ORDER_QTY_REMARK_WITHIN_FILE
+from services.production_report_service import file_label_for
 from ui.common.window_utils import center_window
 from ui.loading_window import LoadingWindow
 # 縞模様・文字色は実績レポート・日々の引落一覧と共通の定義を使う（D-125）。
@@ -93,7 +94,8 @@ def build_display_rows(lot_results):
     """
     rows = []
     for lot in lot_results:
-        lot_no = lot["lot_no"]
+        # 統合したロットは「123456（+123456-）」と出し、ファイルNoの後ろに元のロットNoを添える（D-152）。
+        lot_no = lot.get("display_lot_no", lot["lot_no"])
         status = lot["status"]
         status_label = STATUS_LABELS.get(status, status)
         has_unregistered = bool(lot["unregistered_board_names"])
@@ -119,7 +121,7 @@ def build_display_rows(lot_results):
                 "board_count": board_count_display,
                 "actual_file_count": actual_file_count,
                 "board_name": board_name,
-                "setup_file_no": f["setup_file_no"],
+                "setup_file_no": file_label_for(f["setup_file_no"], f.get("source_lot_nos"), lot["lot_no"]),
                 "order_qty": _format_number(f["order_qty"]),
                 "actual_qty": _format_number(f["file_actual"]),
                 "lot_completed": _format_number(f["lot_completed"]),

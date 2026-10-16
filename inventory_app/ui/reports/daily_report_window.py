@@ -73,7 +73,8 @@ def populate_report_tree(tree, report_rows):
     tagger = LotRowTagger()
     for row in report_rows:
         # matchかつ未登録board_nameも無いロットは status_color_category が None で、文字色タグを付けない。
-        tags = tagger.tags_for(row["lot_no"], row.get("status_color_category"))
+        # 統合したロットは、統合先・統合されるロットの行を同じ縞にする（D-152）。
+        tags = tagger.tags_for(row.get("lot_label", row["lot_no"]), row.get("status_color_category"))
         tree.insert("", tk.END, values=_row_to_values(row), tags=tags)
 
 
@@ -101,7 +102,8 @@ def report_row_to_values(row):
     # 本関数を経由すればCSV・PDF・印刷プレビューにも自動的に反映される
     # （services.production_service._build_report_rows()が全rowに含めている）。
     return [
-        row["seq"], row["file_no"], row["board_name"], _format_board_count(row["board_name"]), row["lot_no"],
+        row["seq"], row.get("file_label", row["file_no"]), row["board_name"], _format_board_count(row["board_name"]),
+        row.get("lot_label", row["lot_no"]),
         f"{row['daily_qty']:.0f}", f"{row['order_qty']:.0f}",
         f"{row['lot_completed']:.0f}", f"{row['surplus_qty']:.0f}", f"{row['lot_remaining']:.0f}",
         # 登録日（report_date、2026-10-01追加）。「未確定」仮想行はNoneのため空欄にする。

@@ -66,6 +66,9 @@ def test_merge_with_confirmation(window, dialogs):
     assert (kind, title) == ("askyesno", "ロット統合")
     assert message.startswith("163326- を 163326 へ統合しますか？")
     assert "統合すると、163326- の実績の日付の引落が、後から増えることがあります（例：7/15 に +1）。" in message
+    # 第2段階（D-153）: 統合した場合の試算を出し、「この版では集計にまだ反映されません」は出さない
+    assert "・統合後の 163326（+163326-）：発注数 1000（163326 の値）、完成数 100、残り 900" in message
+    assert "この版では" not in message
     assert dialogs["calls"][-1] == ("showinfo", "ロット統合", "163326- を 163326 へ統合しました。")
     assert [(r["member_lot"], r["merged_by"]) for r in list_lot_merges()] == [("163326-", "作業者A")]
     assert (list_operation_log()[0]["worker_name"], list_operation_log()[0]["operation_name"]) == ("作業者A", "ロット統合")

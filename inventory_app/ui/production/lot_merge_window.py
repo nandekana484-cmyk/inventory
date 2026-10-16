@@ -1,14 +1,14 @@
 # ui/production/lot_merge_window.py
 """
-ロット統合の画面（D-145、第1段階）。ロット進捗チェックの「ロット統合」ボタンから開く。
+ロット統合の画面（D-145・D-147）。ロット進捗チェックの「ロット統合」ボタンから開く。
 X と X- の両方に有効な計画があるロットの組（と統合済みの組）を並べ、「統合する」「解除する」を行う。
-並べる数字は今の計算のまま（統合しない計算）。統合後の試算と、集計への反映は第2段階で行う。
+一覧の数字はロットごとの値（統合しない計算）。統合する前に、統合した場合の発注数・完成数・残りを試算して確認に出す（D-153）。
 """
 import tkinter as tk
 from tkinter import messagebox, ttk
 
 from services.inventory_diff_service import is_current_db_inventory_exported
-from services.lot_merge_service import LotMergeError, list_merge_candidates, merge_lots, unmerge_lot
+from services.lot_merge_service import LotMergeError, list_merge_candidates, merge_lots, preview_merge, unmerge_lot
 from ui.common.window_utils import center_window
 from ui.production.lot_progress_window import STATUS_LABELS
 
@@ -25,6 +25,22 @@ _NUMERIC = {"production_side", "order_qty", "actual_qty"}
 
 def _fmt(value):
     return "" if value is None else f"{value:g}" if isinstance(value, (int, float)) else str(value)
+
+
+def format_merge_preview(preview) -> str:
+    """preview_merge() の結果を、確認ダイアログの文にする（D-153）。"""
+    target, member = preview["target_lot"], preview["member_lot"]
+    after = preview["after"]
+    lines = ["統合した場合（試算）："]
+    for lot in (target, member):
+        b = preview["before"].get(lot)
+        if b is None:
+            lines.append(f"・今の {lot}：有効な計画なし")
+        else:
+            lines.append(f"・今の {lot}：発注数 {_fmt(b['order_quantity'])}、完成数 {_fmt(b['completed'])}、残り {_fmt(b['remaining'])}")
+    lines.append(f"・統合後の {target}（+{member}）：発注数 {_fmt(after['order_quantity'])}（{target} の値）、"
+                 f"完成数 {_fmt(after['completed'])}、残り {_fmt(after['remaining'])}")
+    return "\n".join(lines)
 
 
 def build_candidate_rows(candidates):
@@ -74,7 +90,7 @@ class LotMergeWindow(tk.Toplevel):
         ttk.Label(
             self, foreground="gray", padding=(10, 8, 10, 0),
             text="末尾に「-」が1つ付いたロット（例 123456-）を、「-」の無いロット（123456）へ統合します。"
-                 "「-1」「K」「.1」などは統合しません。ここに出す数字は、統合しない今の計算のままです。",
+                 "「-1」「K」「.1」などは統合しません。一覧の数字は、ロットごと（統合しない計算）の値です。",
         ).pack(side=tk.TOP, anchor=tk.W)
         self.lbl_count = ttk.Label(self, foreground="gray")
         self.lbl_count.pack(side=tk.BOTTOM, anchor=tk.W, padx=10)
@@ -139,11 +155,14 @@ class LotMergeWindow(tk.Toplevel):
         target = member[:-1]
         if not self._confirm_exported_db():
             return
+        try:
+            preview_text = format_merge_preview(preview_merge(member))
+        except (LotMergeError, ValueError) as e:
+            preview_text = f"（試算できませんでした：{e}）"
         if not messagebox.askyesno(
             "ロット統合",
-            f"{member} を {target} へ統合しますか？\n\n"
-            f"統合すると、{member} の実績の日付の引落が、後から増えることがあります（例：7/15 に +1）。\n"
-            "（この版では、ロット進捗・引落などの集計にはまだ反映されません）",
+            f"{member} を {target} へ統合しますか？\n\n{preview_text}\n\n"
+            f"統合すると、{member} の実績の日付の引落が、後から増えることがあります（例：7/15 に +1）。",
             parent=self,
         ):
             return

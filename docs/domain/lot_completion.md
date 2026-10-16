@@ -44,6 +44,7 @@
 - order_qty: 以前は先頭行（順序不定）の値を無条件に使っていた。複数の file_no を持つロット301件のうち3件（166248・516526・516626）で、file_no 間の order_qty が食い違っていた。値が1種類ならそれを使い、複数なら先頭行の値を使いつつ order_qty_inconsistent・order_qty_values で知らせる
 - 実績の取得は (kitting_list_no, lot_no) の組でまとめて行う。kitting_list_no だけで集計すると、lot_no をまたいで重複する別ロットの実績まで合算してしまう（実データで完成数の取り違えを確認）
 - cutoff_date（2026-10-09、日々の引落一覧の払い出し日ベース化）: この関数は絞り込まず、戻り値に記録するだけ。呼び出し元が、その日付までの実績だけの cumulative_by_pair を渡す
+- ロットの統合（2026-10-16、D-150）: 統合したロットは `merge_ctx` を受け取り、実績を計画ごとの**元のロットNo**で引く（計画Noを共有する組で二重に足さない）。追加分の面2を面1にも足す（D-151）。統合していないロットは `merge_ctx=None` で従来と同じ計算。詳細は docs/domain/lot_merge.md
 
 ## 構成基板数チェックと引落（`_evaluate_lot_status()`）
 
@@ -75,6 +76,8 @@
 ### `_evaluate_lot_status()` の戻り値
 
 lot_no・status・board_count（match/shortfall/excess のみ）・board_count_values（board_count_inconsistent のみ）・visible_file_nos・shortfall_count・excess_file_nos・unregistered_board_names・boards（基板名ごとの board_count と files: setup_file_no・production_side・order_qty・order_qty_inconsistent・file_actual・lot_completed・surplus_qty・not_produced_qty）・missing_file_entries（同じ形、setup_file_no="未確定"）・lot_completed・status_remarks・status_color_category・order_quantity・file_actuals・order_qty_inconsistent・order_qty_values
+
+統合したロット（D-150）の結果にだけ、merged_lot_nos・display_lot_no（「123456（+123456-）」）・aligned_order_qty と、files の各行に source_lot_nos（元のロットNo）が付く。統合していないロットの結果の形は変えない。
 
 ## 日報・月報の行（`_build_report_rows()`）
 

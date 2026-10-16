@@ -722,8 +722,10 @@ class UnifiedReportWindow(tk.Toplevel):
                 lot_eval = evaluate_lot_status(lot_no)
             except ValueError:
                 continue
-            if lot_eval["status_color_category"] == "needs_review":
-                needs_review_lot_nos.append(lot_no)
+            # 統合したロットは統合後のロットとして1回だけ数える（D-150）。
+            label = lot_eval.get("display_lot_no", lot_no)
+            if lot_eval["status_color_category"] == "needs_review" and label not in needs_review_lot_nos:
+                needs_review_lot_nos.append(label)
 
         if needs_review_lot_nos:
             preview = "、".join(needs_review_lot_nos[:10])

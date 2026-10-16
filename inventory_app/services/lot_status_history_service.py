@@ -32,6 +32,7 @@ D-29改訂（過去に表示した引落の数字が後から変わらない、�
 """
 from models.production import get_report_date_range
 from services.production_service import evaluate_all_lot_status
+from services.production_report_service import file_label_for
 
 
 def _cutoff_for_date(date_str: str) -> str:
@@ -68,6 +69,7 @@ def _flatten_files(lot_status: dict) -> list:
                 "lot_completed": f["lot_completed"],
                 "surplus_qty": f["surplus_qty"],
                 "not_produced_qty": f["not_produced_qty"],
+                "source_lot_nos": f.get("source_lot_nos"),
             })
     representative_board_name = boards[0]["board_name"] if boards else None
     for mf in lot_status["missing_file_entries"]:
@@ -168,6 +170,11 @@ def get_daily_drawdown(target_date: str) -> list:
                 # ロット進捗チェックと同じ区分（発注数の食い違いも赤。D-127）。
                 "status_color_category": today_status["progress_color_category"],
             })
+            if "display_lot_no" in today_status:
+                # 統合したロット（D-152）。行の並べ替え・縞模様は lot_no（統合先）のまま、表示だけ添える。
+                rows[-1]["lot_label"] = today_status["display_lot_no"]
+                rows[-1]["file_label"] = file_label_for(
+                    setup_file_no, representative.get("source_lot_nos"), lot_no)
 
     rows.sort(key=lambda r: (r["lot_no"], str(r["setup_file_no"])))
     return rows

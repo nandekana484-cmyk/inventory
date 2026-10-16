@@ -191,7 +191,7 @@ def test_merge_map_reads_table_once(sample_db, monkeypatch):
 
 
 def _aggregates():
-    """第1段階で変わってはいけない画面の計算結果（ロット進捗・日々の引落・実績レポート・登録待ち）。"""
+    """統合・解除で比べる画面の計算結果（ロット進捗・日々の引落・実績レポート・登録待ち）。"""
     from services.lot_status_history import get_daily_drawdown
     from services.production_service import build_monthly_report, check_lot_progress
     from services.staging_eligibility import _load_staged_rows_from_db
@@ -200,11 +200,15 @@ def _aggregates():
     return check_lot_progress(), drawdown, build_monthly_report("2026-07-01", "2026-07-31"), staged
 
 
-def test_merge_does_not_change_aggregates_yet(sample_db):
+def test_merge_changes_aggregates_and_unmerge_restores_them(sample_db):
+    """第2段階（D-150）: 統合すると集計が変わり、全部を解除すると統合の前と完全に同じに戻る（第1段階の「変わらない」から変えた）。"""
     before = _aggregates()
     for member in sample.EXPECTED_CANDIDATES:
         svc.merge_lots(member, "作業者A")
     assert len(lm.list_lot_merges()) == 4
+    assert _aggregates() != before
+    for member in sample.EXPECTED_CANDIDATES:
+        svc.unmerge_lot(member, "作業者A")
     assert _aggregates() == before
 
 
@@ -243,10 +247,27 @@ def test_carry_over_copies_merge_when_both_lots_are_carried(sample_db):
     assert [(r["member_lot"], r["target_lot"], r["merged_by"]) for r in copied] == [("163326-", "163326", "作業者A")]
 
 
-def test_carry_over_skips_merge_when_only_one_lot_is_carried(sample_db):
+def test_carry_over_skips_merged_lot_completed_as_a_whole(sample_db):
+    """
+    第2段階（D-154）: 未完了の判定は統合後のロット単位。137599（500/500）を完成させると、統合後のロット（発注数 500、
+    同じファイルNo・面の実績 500＋0）も完成なので、単独では未完了の 137599- も引き継がない（第1段階では 137599- だけを引き継いでいた）。
+    """
     from services.db_migration_carryover import carry_over_incomplete_lots
     svc.merge_lots("137599-", "作業者A")
-    # 137599 を完成させる（500/500）。137599- は未完了のまま
+    from models.kitting_plan import find_plan_item_by_kitting_no
+    from models.production import replace_daily_result
+    p = find_plan_item_by_kitting_no("K137599-1", "137599")
+    replace_daily_result(p["plan_item_id"], "K137599-1", "137599", "BRD-1375", "2026-07-08", 500, "W1")
+    new_db = _new_month_db()
+    summary = carry_over_incomplete_lots(sample_db, new_db, imported_by="W1", reference_date=__import__("datetime").date(2026, 7, 31))
+    assert "137599" not in summary["lot_nos"] and "137599-" not in summary["lot_nos"]
+    assert summary["lot_merges_copied"] == 0 and summary["lot_merges_not_copied"] == []
+    assert lm.list_lot_merges() == []
+
+
+def test_carry_over_without_merge_is_per_lot(sample_db):
+    """統合していなければ、従来どおりロットごとに判定する（137599 は完成、137599- は未完了で引き継ぐ）。"""
+    from services.db_migration_carryover import carry_over_incomplete_lots
     from models.kitting_plan import find_plan_item_by_kitting_no
     from models.production import replace_daily_result
     p = find_plan_item_by_kitting_no("K137599-1", "137599")
@@ -254,6 +275,3 @@ def test_carry_over_skips_merge_when_only_one_lot_is_carried(sample_db):
     new_db = _new_month_db()
     summary = carry_over_incomplete_lots(sample_db, new_db, imported_by="W1", reference_date=__import__("datetime").date(2026, 7, 31))
     assert "137599" not in summary["lot_nos"] and "137599-" in summary["lot_nos"]
-    assert summary["lot_merges_copied"] == 0
-    assert summary["lot_merges_not_copied"] == [{"member_lot": "137599-", "target_lot": "137599", "carried_lot": "137599-"}]
-    assert lm.list_lot_merges() == []

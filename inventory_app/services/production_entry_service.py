@@ -57,6 +57,9 @@ def is_plan_row_completed(row, lot_info, file_no_index, order_qty_index):
     production_side = row[-1]
     file_actual = lot_info["file_actuals"].get((file_no, production_side), 0)
     order_qty = float(row[order_qty_index])
+    # 統合したロットは、発注数を統合先にそろえた値で比べる（統合されるロットの発注数 170 などで「入力済み」にしない。D-150）。
+    if lot_info.get("aligned_order_qty") is not None:
+        order_qty = float(lot_info["aligned_order_qty"])
     return file_actual >= order_qty
 
 

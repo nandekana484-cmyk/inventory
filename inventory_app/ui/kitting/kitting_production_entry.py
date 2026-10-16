@@ -12,6 +12,7 @@ from services.production_service import (
     calculate_lot_completion,
 )
 from services.lot_status_service import preview_completed_lot_registration
+from services.lot_merge_service import merged_lot_nos
 from services.production_import_service import parse_production_csv_for_staging
 from services.csv_format_detection import (
     read_csv_header, detect_format_mismatch_warnings,
@@ -566,6 +567,14 @@ class KittingProductionEntryWindow(tk.Toplevel):
     def _refresh_plan_list_for_lot(self, lot_no):
         """
         登録直後に、同じ lot_no の行だけを部分更新する（_perform_registration() から呼ぶ）。
+        統合したロットは完成数が共通なので、統合後のロットに入るすべてのロットの行を更新する（D-150）。
+        """
+        for each_lot_no in merged_lot_nos(lot_no):
+            self._refresh_plan_list_rows_of_lot(each_lot_no)
+
+    def _refresh_plan_list_rows_of_lot(self, lot_no):
+        """
+        lot_no の行だけを部分更新する。
         list_active_plan_items(lot_no=...) は部分一致（LIKE）なので、取得後に lot_no の完全一致で絞り直す。
         絞り込みで非表示の行も _all_plan_rows は更新する（解除したときに古い値が出ないように）。
         既存 iid への set() だけなので、並び順と選択状態は変わらない。

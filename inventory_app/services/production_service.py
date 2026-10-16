@@ -22,6 +22,7 @@ from models.ng_declarations import get_ng_declaration
 from models.scrap_records import list_scrap_records_by_kitting_no
 from models.wip_scrap_records import list_wip_scrap_records_by_kitting_no
 from services.date_parsing import parse_plan_start_datetime
+from services.lot_merge_service import load_lot_merge_map
 # 段階5で services/lot_status_service.py へ移した。import している側を変えないよう、ここから re-export する。
 from services.lot_status_service import (  # noqa: F401 （re-export）
     record_lot_status_snapshot,
@@ -574,20 +575,30 @@ def build_wip_extraction_rows(lot_nos: list) -> list:
     - 面2の実績がある file_no の面1は除く（同じ基板の仕掛を、面1・面2で二重に数えないため）
     - 複数バッチは、生産予定日が最も新しいものを代表にする（スナップショットは1行1 kitting_list_no のため）
     - 計画が見つからないロットは飛ばす。shortfall の「未確定」は対象外（実在の kitting_list_no が無いため）
+    - 統合したロット（D-150）は統合後のロットで1回だけ数え、スナップショットの lot_no には代表の計画の元のロットNoを書く
+      （仕掛一覧は (計画No, ロットNo, 面) で突き合わせるため）
     """
+    merge_map = load_lot_merge_map()
     rows = []
+    evaluated = set()
     for lot_no in lot_nos:
+        if merge_map.target_of(lot_no) in evaluated:
+            continue
         try:
-            lot_eval = evaluate_lot_status(lot_no)
+            lot_eval = evaluate_lot_status(lot_no, merge_map=merge_map)
         except ValueError:
             continue
+        if "merged_lot_nos" in lot_eval:
+            evaluated.add(lot_eval["lot_no"])   # 統合先と統合されるロットの両方が渡されても、1回だけ数える
 
         lot_completed = lot_eval["lot_completed"]
 
+        group_lots = [lot_eval["lot_no"]] + lot_eval.get("merged_lot_nos", []) if "merged_lot_nos" in lot_eval else [lot_no]
         items_by_key = {}
-        for item in list_plan_items_by_lot(lot_no):
-            key = (item["setup_file_no"], item["production_side"])
-            items_by_key.setdefault(key, []).append(item)
+        for group_lot in group_lots:
+            for item in list_plan_items_by_lot(group_lot):
+                key = (item["setup_file_no"], item["production_side"])
+                items_by_key.setdefault(key, []).append(item)
 
         second_side_files = {
             file_no for (file_no, side) in lot_eval["file_actuals"]
@@ -614,7 +625,7 @@ def build_wip_extraction_rows(lot_nos: list) -> list:
                 "board_name": representative["board_name"],
                 "production_side": representative["production_side"],
                 "mounting_line": representative["mounting_line"],
-                "lot_no": lot_no,
+                "lot_no": representative["lot_no"] if "merged_lot_nos" in lot_eval else lot_no,
                 "surplus_qty": wip_qty,
             })
 

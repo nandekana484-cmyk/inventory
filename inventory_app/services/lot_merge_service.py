@@ -1,13 +1,13 @@
 # services/lot_merge_service.py
 """
-ロットの統合（D-136・D-145）。末尾「-」のロット（例 123456-）を、「-」の無いロット（123456）へ統合した、という情報を扱う。
-第1段階（D-145）では、統合の情報の保存・統合の画面・前月からの引き継ぎだけを行う。完成数・ロット進捗・引落・照合などの集計からは、まだ呼ばない。
+ロットの統合（D-136・D-145・D-150）。末尾「-」のロット（例 123456-）を、「-」の無いロット（123456）へ統合した、という情報を扱う。
+集計（services/lot_status_service.py）は load_lot_merge_map() を通して、統合後のロット単位でまとめる（第2段階、D-150）。
+実績CSVの照合（候補・自動登録・「似たロットNoあり」）には、まだ反映していない（第3段階）。
 既定DB（未選択）では DB に触れない（D-56・D-57）。
 """
 import config
 from models.kitting_plan import list_plan_items_for_all_lots
 from models.lot_merges import MERGE_SUFFIX, delete_lot_merge, insert_lot_merge, is_valid_merge_pair, list_lot_merges
-from services.lot_status_service import evaluate_lot_status
 
 OPERATION_NAME_MERGE = "ロット統合"
 OPERATION_NAME_UNMERGE = "ロット統合解除"
@@ -47,6 +47,14 @@ def load_lot_merge_map() -> LotMergeMap:
     return LotMergeMap(list_lot_merges())
 
 
+def merged_lot_nos(lot_no: str) -> list:
+    """lot_no と同じ統合後のロットに入るロットNoの一覧（統合先・統合されるロットの順）。統合していなければ [lot_no]。"""
+    merge_map = load_lot_merge_map()
+    target = merge_map.target_of(lot_no)
+    members = merge_map.members_of(target)
+    return [target] + members if members else [lot_no]
+
+
 def target_lot_for_member(lot_no):
     """統合されうるロットNo（末尾の「-」1つ）なら統合先のロットNo、そうでなければ None（「-1」「K」「.1」「-」だけ、など）。"""
     if not isinstance(lot_no, str) or not lot_no.endswith(MERGE_SUFFIX):
@@ -62,11 +70,14 @@ def _active_lot_nos():
 def list_merge_candidates() -> list:
     """
     統合の画面に並べる組。今の月次DB の有効な計画に X と X- の両方があるロットの組と、統合済みの組（計画が無くなっていても出す）。
-    各組の lots には、ロットごとの今の評価（evaluate_lot_status()。統合しない計算のまま）を入れる。計画が無いロットは None。
+    各組の lots には、ロットごとの評価（evaluate_lot_status()。統合済みの組でも、統合しない計算）を入れる。計画が無いロットは None。
     戻り値: [{"target_lot", "member_lot", "merged"（bool）, "merge"（統合の行 or None）, "lots": {ロットNo: 評価 or None}}]（統合先の順）
     """
+    # lot_status_service がこのモジュールを import するので、ここで import する（循環 import を避ける）。
+    from services.lot_status_service import evaluate_lot_status
     if config.is_default_db():
         return []
+    unmerged = LotMergeMap([])
     lots = _active_lot_nos()
     merges = {r["member_lot"]: r for r in list_lot_merges()}
     pairs = {}
@@ -84,9 +95,40 @@ def list_merge_candidates() -> list:
             "member_lot": member,
             "merged": member in merges,
             "merge": merges.get(member),
-            "lots": {lot: (evaluate_lot_status(lot) if lot in lots else None) for lot in (target, member)},
+            "lots": {lot: (evaluate_lot_status(lot, merge_map=unmerged) if lot in lots else None)
+                     for lot in (target, member)},
         })
     return results
+
+
+def preview_merge(member_lot: str) -> dict:
+    """
+    統合の画面の試算（D-153）。member_lot を統合した場合と、統合しない今の値を、同じ計算（evaluate_lot_status()）で出す。DB には書かない。
+    戻り値: {"target_lot", "member_lot", "before": {ロットNo: {"order_quantity", "completed", "remaining"} or None},
+             "after": {"order_quantity", "completed", "remaining", "status"}}
+    """
+    from services.lot_status_service import evaluate_lot_status
+    if config.is_default_db():
+        raise LotMergeError("データベースが選択されていません。")
+    target = target_lot_for_member(member_lot)
+    if target is None:
+        raise LotMergeError(f"{member_lot} は統合できるロットNo.ではありません。")
+    current = load_lot_merge_map()
+    unmerged = LotMergeMap([r for r in current.rows if r["member_lot"] != member_lot])
+    merged = LotMergeMap(unmerged.rows + [{"member_lot": member_lot, "target_lot": target}])
+
+    def figures(lot_eval):
+        return {"order_quantity": lot_eval["order_quantity"], "completed": lot_eval["lot_completed"],
+                "remaining": lot_eval["order_quantity"] - lot_eval["lot_completed"], "status": lot_eval["status"]}
+
+    before = {}
+    for lot in (target, member_lot):
+        try:
+            before[lot] = figures(evaluate_lot_status(lot, merge_map=unmerged))
+        except ValueError:
+            before[lot] = None
+    return {"target_lot": target, "member_lot": member_lot, "before": before,
+            "after": figures(evaluate_lot_status(target, merge_map=merged))}
 
 
 def check_merge(member_lot) -> list:

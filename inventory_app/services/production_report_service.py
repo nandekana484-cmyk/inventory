@@ -15,7 +15,34 @@ from models.production import (
 )
 from models.scrap_records import list_scrap_summary_by_kitting_no
 from models.ng_declarations import list_ng_declarations_latest
+from services.lot_merge_service import load_lot_merge_map
 from services.lot_status_service import evaluate_lot_status
+
+
+def merged_lot_label(lot_eval) -> dict:
+    """
+    統合したロットの表示用の値（D-152）。統合していなければ空の辞書（行の形を変えない）。
+    lot_label は「123456（+123456-）」。行の元のロットNoは、ファイルNoの後ろに添える（file_label_for()）。
+    """
+    if lot_eval is None or "display_lot_no" not in lot_eval:
+        return {}
+    return {"lot_label": lot_eval["display_lot_no"]}
+
+
+def _aligned_board_name(lot_eval, plan):
+    """統合したロットの評価で、計画の (ファイルNo, 面) の行に付いている基板名（統合先にそろえた名前）。無ければ None。"""
+    for board in lot_eval["boards"]:
+        for f in board["files"]:
+            if (f["setup_file_no"], f["production_side"]) == (plan["setup_file_no"], plan["production_side"]):
+                return board["board_name"]
+    return None
+
+
+def file_label_for(setup_file_no, source_lot_nos, target_lot) -> str:
+    """統合したロットのファイルNoの表示。元のロットが統合先だけなら、ファイルNoのまま。例「0553（348588・348588-）」（D-152）。"""
+    if not source_lot_nos or list(source_lot_nos) == [target_lot]:
+        return setup_file_no
+    return f"{setup_file_no}（" + "・".join(source_lot_nos) + "）"
 
 
 def _build_report_rows(records):
@@ -27,7 +54,16 @@ def _build_report_rows(records):
     - 構成基板数が不足するロットには、不足分の「未確定」仮想行を追加する（kitting_list_no=""、数量は None でなく 0）
     戻り値は (report_rows, inconsistency_warnings, order_qty_inconsistency_warnings, unregistered_board_warnings,
     excess_file_no_warnings, board_count_inconsistency_warnings)。各要素の形と経緯は docs/domain/lot_completion.md。
+    統合したロット（D-150）: 評価・面1を隠す判定・警告は統合後のロットで行う。行の lot_no は実績の元のロットNoのまま
+    （実績修正・NG・仕掛の抽出で使う）で、表示用に lot_label・file_label を足し、統合されるロットの行の発注数は統合先にそろえる。
     """
+    merge_map = load_lot_merge_map()
+
+    def group_lots(lot_no):
+        target = merge_map.target_of(lot_no)
+        members = merge_map.members_of(target)
+        return [target] + members if members else [lot_no]
+
     enriched = []
     for rec in records:
         kitting_list_no = rec["kitting_list_no"]
@@ -57,21 +93,22 @@ def _build_report_rows(records):
 
         setup_file_no = plan.get("setup_file_no")
         lot_no = item["lot_no"]
-        opposite = find_opposite_side_plan(lot_no, setup_file_no, "1")
-        if opposite is None:
+        # 統合したロットでは、統合後のロットのどれかに面2の計画があれば隠す（D-150）。統合していなければ従来どおり lot_no だけ。
+        if all(find_opposite_side_plan(lot, setup_file_no, "1") is None for lot in group_lots(lot_no)):
             continue  # 面2計画が無い（片面のみの計画）→ 除外しない
 
         excluded_indices.add(idx)
-        file_keys_with_opposite.add((lot_no, setup_file_no))
+        file_keys_with_opposite.add((merge_map.target_of(lot_no), setup_file_no))
 
     # 不整合は、ロットNo・ファイルNoごとの面1合計と面2合計で比べる（D-111。計画どうしを1対1で対応づけないので、複数バッチでも誤検出しない）。
     inconsistency_warnings = []
     for lot_no, setup_file_no in sorted(file_keys_with_opposite):
-        side_plans = list_active_side_plans_for_file(lot_no, setup_file_no)
-        side1_plans = [p for p in side_plans if str(p.get("production_side") or "").strip() == "1"]
-        side2_plans = [p for p in side_plans if str(p.get("production_side") or "").strip() == "2"]
-        side1_total = sum(get_app_cumulative_qty(p["kitting_list_no"], lot_no) for p in side1_plans)
-        side2_total = sum(get_app_cumulative_qty(p["kitting_list_no"], lot_no) for p in side2_plans)
+        lots = group_lots(lot_no)
+        side_plans = [(lot, p) for lot in lots for p in list_active_side_plans_for_file(lot, setup_file_no)]
+        side1_plans = [(lot, p) for lot, p in side_plans if str(p.get("production_side") or "").strip() == "1"]
+        side2_plans = [(lot, p) for lot, p in side_plans if str(p.get("production_side") or "").strip() == "2"]
+        side1_total = sum(get_app_cumulative_qty(p["kitting_list_no"], lot) for lot, p in side1_plans)
+        side2_total = sum(get_app_cumulative_qty(p["kitting_list_no"], lot) for lot, p in side2_plans)
 
         if side1_total > side2_total:
             inconsistency_warnings.append({
@@ -80,8 +117,8 @@ def _build_report_rows(records):
                 "side1_total": side1_total,
                 "side2_total": side2_total,
                 "diff": side1_total - side2_total,
-                "side1_kitting_list_nos": [p["kitting_list_no"] for p in side1_plans],
-                "side2_kitting_list_nos": [p["kitting_list_no"] for p in side2_plans],
+                "side1_kitting_list_nos": [p["kitting_list_no"] for _lot, p in side1_plans],
+                "side2_kitting_list_nos": [p["kitting_list_no"] for _lot, p in side2_plans],
             })
 
     # 「NGの有無」の絞り込み用に、NG 実績か NG 申告がある (kitting_list_no, lot_no, production_side) を先にまとめて取得する（N+1 回避）。
@@ -106,12 +143,21 @@ def _build_report_rows(records):
         daily_qty = item["daily_qty"]
         order_qty = plan["order_qty"] if plan else 0
 
-        if lot_no not in lot_status_cache:
+        eval_lot_no = merge_map.target_of(lot_no)
+        if eval_lot_no not in lot_status_cache:
             try:
-                lot_status_cache[lot_no] = evaluate_lot_status(lot_no)
+                lot_status_cache[eval_lot_no] = evaluate_lot_status(lot_no, merge_map=merge_map)
             except ValueError:
-                lot_status_cache[lot_no] = None
-        lot_eval = lot_status_cache[lot_no]
+                lot_status_cache[eval_lot_no] = None
+        lot_eval = lot_status_cache[eval_lot_no]
+        merged_fields = merged_lot_label(lot_eval)
+        board_name = plan["board_name"] if plan else ""
+        if merged_fields and plan is not None:
+            # 統合されるロットの行は、発注数・基板名を統合先にそろえた値で出す（D-150）。
+            if plan["lot_no"] != lot_eval["lot_no"] and lot_eval.get("aligned_order_qty") is not None:
+                order_qty = lot_eval["aligned_order_qty"]
+            board_name = _aligned_board_name(lot_eval, plan) or board_name
+            merged_fields["file_label"] = file_label_for(plan["setup_file_no"], [plan["lot_no"]], lot_eval["lot_no"])
 
         file_actual = None
         if lot_eval is not None and plan is not None:
@@ -140,7 +186,7 @@ def _build_report_rows(records):
             "seq": seq,
             "kitting_list_no": kitting_list_no,
             "file_no": plan["setup_file_no"] if plan else "",
-            "board_name": plan["board_name"] if plan else "",
+            "board_name": board_name,
             "production_side": plan["production_side"] if plan else None,
             "mounting_line": plan["mounting_line"] if plan else None,
             "lot_no": lot_no,
@@ -155,6 +201,7 @@ def _build_report_rows(records):
             "status": lot_eval["status"] if lot_eval is not None else None,
             "has_ng": has_ng,
             "report_date": item["report_date"],
+            **merged_fields,
         })
         seq += 1
 
@@ -228,6 +275,7 @@ def _build_report_rows(records):
                     "has_ng": False,
                     # 元の実績レコードが無いので、日付も無い。
                     "report_date": None,
+                    **merged_lot_label(lot_eval),
                 })
                 seq += 1
 

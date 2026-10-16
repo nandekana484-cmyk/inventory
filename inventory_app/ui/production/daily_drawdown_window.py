@@ -23,11 +23,12 @@ def _format_qty(value):
 
 
 def _drawdown_row_to_values(row):
+    # 統合したロットは lot_label「123456（+123456-）」・file_label（元のロットNoを添えたファイルNo）を出す（D-152）。
     return [
-        row["lot_no"],
+        row.get("lot_label", row["lot_no"]),
         _format_qty(row.get("board_count")),
         row["board_name"] or "",
-        row["setup_file_no"],
+        row.get("file_label", row["setup_file_no"]),
         f"{row['daily_drawdown']:.0f}",
         f"{row['cumulative_lot_completed']:.0f}",
         f"{row['surplus_qty']:.0f}",

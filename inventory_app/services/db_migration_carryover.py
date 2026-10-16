@@ -447,9 +447,11 @@ def carry_over_incomplete_lots(old_db_path: str, new_db_path: str, imported_by: 
 
         lots_data = []
         for lot in incomplete_lots:
-            plan_items = _fetch_plan_items_for_lot(lot["lot_no"])
-            production_rows = _fetch_production_daily_for_lot(lot["lot_no"], lot["kitting_list_nos"])
-            lots_data.append((lot, plan_items, production_rows))
+            # 統合したロット（D-154）は、統合後のロットで未完了なら、統合しているすべての元のロットを、元のロットNoのまま写す。
+            for source_lot in _source_lots_of(lot):
+                plan_items = _fetch_plan_items_for_lot(source_lot["lot_no"])
+                production_rows = _fetch_production_daily_for_lot(source_lot["lot_no"], source_lot["kitting_list_nos"])
+                lots_data.append((source_lot, plan_items, production_rows))
         merge_rows = list_lot_merges()
     finally:
         # 読み取りフェーズの成否に関わらず、以後は新DBを「現在のDB」とする
@@ -561,10 +563,23 @@ def carry_over_incomplete_lots(old_db_path: str, new_db_path: str, imported_by: 
     return summary
 
 
+def _source_lots_of(lot: dict) -> list:
+    """
+    list_incomplete_lots() の1件を、計画・実績を写す単位（元のロットNoと、その計画No）に分ける。
+    統合していないロットはそのまま1件（従来どおり）。統合したロットは、統合先・統合されるロットの順に1件ずつ（D-154）。
+    """
+    by_lot = lot.get("kitting_list_nos_by_lot")
+    if not by_lot:
+        return [lot]
+    order = [lot["lot_no"]] + list(lot.get("merged_lot_nos", []))
+    return [{"lot_no": lot_no, "kitting_list_nos": by_lot[lot_no]} for lot_no in order if lot_no in by_lot]
+
+
 def _carry_over_lot_merges(merge_rows, carried_lot_nos, summary):
     """
     統合の行（D-145）を、統合先と統合されるロットの両方を引き継いだときだけ新しい DB へ写す（config.DB_PATH は新しい DB）。
-    片方だけを引き継いだ統合は写さず、summary に残す（統合後のロットを単位にした未完了の判定は第2段階で行う）。
+    未完了の判定は統合後のロット単位なので（D-154）、ふつうは両方そろって引き継がれる。片方だけになるのは、片方に計画が無い・
+    50日を超える未着手の計画しか無い・途中で失敗した、などの場合で、そのときは写さず summary に残す。
     """
     to_copy = []
     for row in merge_rows:
