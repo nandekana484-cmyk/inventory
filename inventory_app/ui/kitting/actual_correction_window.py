@@ -15,9 +15,11 @@ from services.production_service import (
     apply_cancellation,
 )
 from services.inventory_diff_service import is_current_db_inventory_exported
+from services.lot_status_service import preview_completed_lot_correction
 from models.operation_log import log_operation
 from ui.common.window_utils import center_window
 from ui.kitting.cancel_registration_dialog import ask_cancel_registration, CANCEL_AND_RETURN
+from ui.production.production_import_staging_window import format_completed_lot_warning
 
 
 class ActualCorrectionWindow(tk.Toplevel):
@@ -119,8 +121,11 @@ class ActualCorrectionWindow(tk.Toplevel):
             return
 
         preview = build_linked_correction_preview(prod_log_id, "update", new_daily_qty=daily_qty)
+        # 完成済みのロットで数量を増やすときは、同じダイアログで確かめる（D-156。文言は手入力の D-133 と同じ）。
+        primary = preview["primary"]
+        completed_lot = preview_completed_lot_correction(primary["plan"], primary["old_daily_qty"], daily_qty)
 
-        if not self._show_correction_confirm_dialog(preview, "update"):
+        if not self._show_correction_confirm_dialog(preview, "update", completed_lot=completed_lot):
             return
 
         apply_linked_correction(preview, "update", self.current_worker.get("worker_id", "unknown"))
@@ -232,10 +237,11 @@ class ActualCorrectionWindow(tk.Toplevel):
             detail += f"、pending_row_id={pending_row_id}"
         return detail + "）"
 
-    def _show_correction_confirm_dialog(self, preview, action):
+    def _show_correction_confirm_dialog(self, preview, action, completed_lot=None):
         """
         修正・削除の確認ダイアログ（D-112）。反対側の実績の変化と、相手の特定方法（a/b）を示す。
         b で特定した場合や、連動前から両面が食い違っていた場合は「※」で強調する。
+        completed_lot（preview_completed_lot_correction() の結果）があれば、完成済みロットの確認も同じダイアログに出す（D-156）。
         """
         primary = preview["primary"]
         secondary = preview.get("secondary")
@@ -284,6 +290,11 @@ class ActualCorrectionWindow(tk.Toplevel):
                     f"{secondary['report_date']}）は、この面の変更前の値と一致していませんでした。"
                     "連動前から両面の実績が食い違っていた可能性があります。"
                 )
+
+        if completed_lot is not None:
+            lines.append("")
+            lines.append("【完成済みのロット】")
+            lines.append(f"・{format_completed_lot_warning(completed_lot)}。")
 
         lines.append("")
         lines.append("この内容で確定しますか？")

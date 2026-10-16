@@ -382,6 +382,21 @@ def preview_completed_lot_registration(plan: dict, daily_qty: float):
     }
 
 
+def preview_completed_lot_correction(plan: dict, old_daily_qty: float, new_daily_qty: float):
+    """
+    実績修正の「修正」で数量を増やす前に、ロット（統合後のロット）が修正の前に完成済みなら確認用の内容を返す（D-156）。
+    形は preview_completed_lot_registration() と同じ。減らす・変えない修正、未完成のロット、計画が無いときは None。
+    """
+    if plan is None or new_daily_qty <= old_daily_qty:
+        return None
+    state = lot_completion_state(plan["lot_no"])
+    if state is None or not state["completed"]:
+        return None
+    current_total = state["file_actuals"].get((plan["setup_file_no"], plan["production_side"]), 0)
+    return {"lot_no": plan["lot_no"], "lot_completed": state["lot_completed"],
+            "order_quantity": state["order_quantity"], "new_total": current_total - old_daily_qty + new_daily_qty}
+
+
 def list_incomplete_lots():
     """
     全ロットを _evaluate_lot_status() で評価し、未完了のロットだけを返す（DB 新規作成時の引き継ぎ用）。lot_no 昇順。
