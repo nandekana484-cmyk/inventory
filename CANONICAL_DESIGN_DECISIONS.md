@@ -1433,7 +1433,10 @@ D-81の修正（候補が複数ある場合も、いずれか1件の実績合計
 | D-168 | ロット統合で、統合先と統合されるロットの両方にあるファイルNoの面の構成（面2あり／面1のみ）が食い違う場合はエラーとする（2026-10-19、利用者の決定）。統合の画面ではその組を統合させず（`lot_merge_service.check_merge()`・`merge_lots()` も断る）、「ファイルA：面の構成が食い違っています（123456 は面1のみ、123456- は面2あり）。手入力で対応してください」と示す。一覧の「統合」列は「未統合（面の構成が食い違い）」。統合した後に食い違いが生じた場合（計画が後から取り込まれたなど）は、ロット進捗チェックで赤（`progress_color_category`＝needs_review。日々の引落一覧の文字色も同じ区分）にし、備考に「エラー：」を付けて同じ文言を出す。判定は `lot_merge_items_service.find_side_composition_conflicts()`、文言は `format_side_conflict()` | 本ファイル §58 |
 | D-169 | 面1への自動入力と面の連動を削った（2026-10-19、D-167 の手順2）。削ったもの：面2の登録で面1へ自動入力する処理（`register_opposite_side_daily_result()`、生産実績入力の `_register_opposite_side_daily_result()`、`register_actual_and_ng()` の連動と戻り値の `opposite_registered`、旧 `import_production_csv()` の連動）、置き換え前の確認（D-126：`preview_opposite_side_overwrite(s)()`・`_resulting_report_date()`・`ui/production/opposite_side_overwrite_dialog.py`・`REASON_OPPOSITE_OVERWRITE`、登録確認ダイアログ・右クリック・Shift+S/Q の確認）、修正・削除の連動（D-112：`build_linked_correction_preview()`・`apply_linked_correction()` を、選んだ実績だけを扱う `build_correction_preview()`・`apply_correction()` に置き換え、`models/production.apply_daily_production_changes()` を削除）、取り消し（D-129）の実績の連動、不整合の判定と警告（D-111：`_build_report_rows()` の inconsistency_warnings（戻り値は5要素になった）・実績レポートの「面1/面2不整合」の警告と切り替え・`list_active_side_plans_for_file()`）、仕掛数量の抽出の面1の除外（D-167 で何もしない処理になった）。残したもの：`find_opposite_side_plan()`（NG の欄で面1の計画を探す・取り消しで面1の NG を探す。ほかの呼び出し元は外した。実績レポートの面1の除外は元のロットの計画に面2があるかで判定）、「面1実績の隠れ状況を確認」（D-94）と計画CSV取込の完了時の通知（今後は面2の計画が後から来たのに面1に実績がある、対応が必要なものだけが出る）。NG の欄（面1・面2）・保存の形（面1＝面1欄＋面2欄、面2＝面2欄）・NG展開は変えていない。削った行数：アプリのコード 703行削除・87行追加（差し引き約 −616行）、テスト 224行削除・85行追加 | 本ファイル §58.4 |
 | D-170 | 面2がある場合と面2待ちの場合は面1へ登録させない（2026-10-19、D-167 の手順3）。元のロット・ファイルNoに面2の有効な計画がある面1の計画は、どの経路でも出さない・登録させない：生産実績入力の計画一覧（もともと `list_active_plan_items()` で出さない）、本日の実績履歴（面2の有効な計画がある面1の行は出さない。以前は同じ日に面2の実績があるときだけ隠していた）、計画の検索（`search_plan()` で面1が当たったら、面2の計画が1件ならそれに切り替えて知らせる。2件以上なら決められないので計画一覧から選んでもらう）、登録待ち一覧の候補（もともと出さない）、登録（生産実績入力の「登録」、右クリック、ダブルクリックからの転記、Shift+S・Shift+Q）、サービスの入口（`register_daily_result()`・`overwrite_daily_result()` が `Side1RegistrationRefused` を送出する二重の安全策）。「面2待ち」（`classify_side1_only_plan()` の b）の面1も、すべての登録経路で受け付けず「このロットには面2の計画があるはずです。面2の計画を取り込んでから、面2に登録してください」と案内する（Shift+S・Shift+Q では今までどおり除外。計画一覧には今までどおり色付きで出す）。片面の製品（a）は今までどおり面1に登録でき、生産面マスター未登録（c）は今までどおり確認のうえで登録できる。実績修正の画面は、面2がある面1の計画で開かれたら読み取り専用にし、面2の計画で開くよう案内する。判定は `services/production_service.side2_plans_hiding()`・`side1_registration_block()`、計画は `models/kitting_plan.list_active_side2_plans_for_file()`。完成済みロットの確認（D-130・D-133・D-156）は変えておらず、面2の計画で働く | 本ファイル §58.5 |
-| D-171 | 今後の課題（2026-10-19、未着手）：(1) 両面の製品の仕掛は面2の行だけで、仕掛部品展開は面2の部品表で展開するので、面1の部品が仕掛に入っていない（`services/bom_service._calculate_bom()` は面で絞る。案X' の前から同じ）。(2) 面1の NG の保存値に面2の NG を足すので、面1・面2の両方の部品表にある部品（基板自身の K 行など）は、面2の NG の分が2回数えられている可能性がある（未確認。実データで NG展開の確定が0件のため）。(3) `services/production_import_service.import_production_csv()` は画面から呼ばれておらず、使われていない（削除するかは未決定）。(4) 面2の計画が後から来たのに面1に実績があるもの（「面1実績の隠れ状況を確認」に出るもの）を面2へ移す処理は作っていない（今は通知だけ） | 本ファイル §58.7 |
+| D-171 | 今後の課題（2026-10-19、未着手）：(1) 両面の製品の仕掛は面2の行だけで、仕掛部品展開は面2の部品表で展開するので、面1の部品が仕掛に入っていない（`services/bom_service._calculate_bom()` は面で絞る。案X' の前から同じ）。(2) 面1の NG の保存値に面2の NG を足すので、面1・面2の両方の部品表にある部品（基板自身の K 行など）は、面2の NG の分が2回数えられている可能性がある（未確認。実データで NG展開の確定が0件のため）。(3) `services/production_import_service.import_production_csv()` は画面から呼ばれておらず、使われていない（削除するかは未決定）。(4) 面2の計画が後から来たのに面1に実績があるもの（「面1実績の隠れ状況を確認」に出るもの）を面2へ移す処理は作っていない（今は通知だけ）。**2026-10-19 の利用者の決定（D-173）**：(1)(2) は本番のデータを入れた後に調べる、(3) は D-144 と一緒に片付ける、(4) は作らない | 本ファイル §58.7・§59 |
+| D-172 | .exe v3.0.0（面2がある場合は面1を扱わない、D-167〜D-171）をビルドした（2026-10-19、PyInstaller、`--onefile`、`inventory_app.spec`、§57 と同じ手順、`.spec` の変更なし）。面1に実績を書かなくなり、古い版でこの版のデータを開くと完成数が正しく出ないので1桁目を上げた（D-74）。DB の形（版 14）は v2.0.0 と同じ。サイズ 130,878,423バイト、SHA-256 `17DD506B3FDDCB7FE03BEDEEE9AE2056909479651AB6D0E9F5A58DCB00800A49`、FileVersion/ProductVersion `3.0.0 (2026-10-19)`。ビルドの前に dist の v2.0.0 の .exe（SHA-256 `83A0CDF4…E628`、D-164 と同じ）を `C:\work\inventory_dist_backup_20261019_153009_before_v3` へ退避した。2.0.0 に戻す手順は §59.6 | 本ファイル §59 |
+| D-173 | 利用者の決定（2026-10-19、§58 の報告への回答）：(1) 手順3のコミット（da2e0b2）は戻さない、(2) 計画の検索で面2の計画が2件以上あるときの案内・「面2待ち」の面1を一覧に色付きで出すこと・面の構成が食い違うロットで計算を続けることは今のまま、(3) 後から来た面2へ面1の実績を移す処理は作らない（入力は面2まで終わってから行うため）、(4) 両面の製品の仕掛に面1の部品が入っていない件と、面2の NG が2回数えられている可能性は、本番のデータを入れた後に調べる、(5) `import_production_csv()` は D-144（古いスクリプトの整理）と一緒に片付ける | 本ファイル §59.7 |
+| D-174 | テストの失敗の見落としと再発防止（2026-10-19）：§58 の手順3のコミット（da2e0b2）の直前の全テストは「3件失敗」だったが、出力を `tail` に通して `&&` でつないでいたため、終了コードが `tail` のもの（0）になり、コミット・push まで進んだ。失敗した3件の名前は、出力を残していなかったため分からない（その後の同じコードでの8回、v3.0.0 のビルド前の3回は、すべて全件成功）。再発防止：pytest の出力を tail などに通さず、全出力をファイルに書き出し、終了コード（PowerShell の `$LASTEXITCODE`）と出力の最後の集計行の両方で結果を確かめる。1件でも失敗・エラー・強制終了があれば、コミット・ビルドをせずに止めて、失敗したテストの名前と全文を報告する（利用者の決定。v3.0.0 のビルドから適用） | 本ファイル §59.8 |
 
 ### 30.1 Shift+Sの検証結果（D-84）
 
@@ -3286,4 +3289,62 @@ D-155 の一覧と、前回の設計案のお勧め（統合したロットで�
 - 実績の取り消しで面1の NG を探すのに、NG の欄と同じ `find_opposite_side_plan()`（開始日時が最も近い面1）を使った。NG の欄で保存した相手と同じになるため
 - 統合で面の構成が食い違ったままのロットの計算は、元のロットごとの規則のまま（面1と面2のキーが別々にでき、少ない方で完成数が決まる）。エラーとして示すだけで、計算は止めていない
 - 「面2待ち」の面1は、計画一覧・候補一覧には今までどおり出す（登録だけを断る）。決定の「受け付けない」を、登録の受け付けと解釈した
+
+## 59. .exe v3.0.0（面2がある場合は面1を扱わない）のビルド（2026-10-19、D-172〜D-174）
+
+### 59.0 着手前の確認（実際に試した）
+
+- `git status` は clean、main と origin/main は `da2e0b2`（§58 の手順3）で一致
+- `InventoryApp.exe` は起動していなかった（`tasklist`）
+- dist の中は `InventoryApp.exe`（130,883,765バイト、FileVersion `2.0.0 (2026-10-19)`、SHA-256 `83A0CDF46C7E7E256ED3D45ACB41EFB3CA55B7A9A1B8335B3BFF1DBBF808E628`、D-164 と同じ）だけ
+- 退避：`C:\work\inventory_dist_backup_20261019_153009_before_v3` に写し、SHA-256 が一致することを確かめた
+
+### 59.1 ビルド前の確認（実際に試した）
+
+| 項目 | 結果 |
+|---|---|
+| pytest（3回。全出力をファイルに書き出し、`$LASTEXITCODE` と最後の集計行で確認） | 3回とも終了コード 0、585件すべて成功。失敗・エラー・強制終了は0件 |
+| `tests/test_checkbox_filter_popup.py` を単独で20回 | 20回とも終了コード 0、18件すべて成功（揺れは出なかった） |
+| 出力のファイル | `%TEMP%\claude\c--work-inventory\9cc5a145-9c05-44a3-9dd0-6d37b9be2f8c\scratchpad\out\v3\prebuild_pytest_1〜3.txt`、`popup_1〜20.txt` |
+
+### 59.2 ビルド
+
+- `inventory_app/version.py`：`APP_VERSION = "3.0.0"`、`BUILD_DATE = "2026-10-19"`
+- CHANGELOG.md の「未リリース（3.0.0 予定）」を「3.0.0（2026-10-19）」にし、利用者向けに書き直した。冒頭に、実績は面2まで終わった完成品として入力すること（面2の計画があるロットでは面1の計画は表示も登録もしない）、面1への自動入力が無くなったこと、この版で入力したデータを 2.0.0 以前のアプリで開かないことを入れた
+- `pyinstaller inventory_app.spec --noconfirm`（`--clean` は使わない）。2026-10-19 15:40〜15:46、終了コード 0。ビルドログの WARNING の行は8件（v2.0.0 と同じ件数）で、自作モジュールに関するものは0件
+- `.spec` の変更は不要（コードを読んだ）：`.spec` はアプリのモジュールを名前で挙げていない。追加した `services/lot_status_remarks.py` は `lot_status_service.py` から通常の import で読み込まれ、削除した `ui/production/opposite_side_overwrite_dialog.py` はどこからも import されない。データファイルも増減していない
+
+### 59.3 ビルド後の確認（実際に試した）
+
+| 項目 | 結果 |
+|---|---|
+| `dist/InventoryApp.exe` | 130,878,423バイト（v2.0.0 より −5,342）、更新日時 2026-10-19 15:46:18、SHA-256 `17DD506B3FDDCB7FE03BEDEEE9AE2056909479651AB6D0E9F5A58DCB00800A49`、FileVersion/ProductVersion `3.0.0 (2026-10-19)` |
+| dist の .exe 以外のファイル | ビルドの前後とも無い（隠しファイルを含めて一覧にした） |
+| 同梱（`PyInstaller.archive.readers` で .exe の中の PYZ を開いた） | `services.lot_status_remarks`・`services.lot_status_service`・`services.lot_merge_items_service`・`services.lot_merge_service`・`services.production_service`・`ui.kitting.actual_correction_window`・`ui.production.lot_merge_window`・`db.migrations.m014_add_lot_merges`・`version` がある。`ui.production.opposite_side_overwrite_dialog` は無い。`db\schema.sql` も CArchive にある。同梱の `services.production_service` には `side1_registration_block` があり `register_opposite_side_daily_result` は無い。同梱の `version` の定数は `3.0.0`・`2026-10-19` |
+| 起動（一時フォルダに .exe だけ。クリックはしない） | 表示されたウィンドウは「部品在庫管理アプリ - ログイン v3.0.0（2026-10-19）」だけで、エラーのダイアログは無い。作られたのは `db\master.db`（12,288バイト）だけ。プロセスを止めた後、`InventoryApp.exe` のプロセスは残っていない |
+| 新しく作る月次DB（開発環境の隔離環境で `create_db_file()`・`activate_new_db()` を直接呼んだ。config の3つのパスは一時フォルダ） | 版 14（`PRAGMA user_version`）。`lot_merges`・`idx_lot_merges_target_lot` がある。`LATEST_VERSION` は 14 |
+| 起動の確認の1回目 | 子プロセスを探すのに使った `wmic` がこの環境に無く、確認のスクリプトが途中で止まった。起動した .exe が1つ残ったので `Stop-Process` で止め、`Get-CimInstance` で探す形に直してやり直した（上の行がやり直しの結果） |
+
+### 59.4 含まれる変更
+
+- §58（D-166 の解決、D-167〜D-171）。v2.0.0（D-164）より後のコミット：`bc6368d`（手順0）・`49cac20`（手順1）・`a6f334d`（手順2）・`da2e0b2`（手順3）
+
+### 59.5 退避
+
+- `C:\work\inventory_dist_backup_20261019_153009_before_v3`：v2.0.0 の `InventoryApp.exe` だけ（dist に実データは無かった）
+
+### 59.6 v2.0.0 に戻す手順
+
+1. アプリを閉じる（ほかのPCで開いていないことも確かめる）
+2. `dist\InventoryApp.exe` を、退避した v2.0.0（`C:\work\inventory_dist_backup_20261019_153009_before_v3\InventoryApp.exe`、SHA-256 `83A0CDF4…E628`）に置き換える
+3. DB の形は同じ（版 14）なので開けるが、**3.0.0 で入力したデータは、2.0.0 では面1に実績が無いため完成数が正しく出ない**。3.0.0 の前の状態のデータベースに戻すこと
+
+### 59.7 利用者の決定（D-173）
+
+§58 の報告の「利用者に決めてもらう必要がある点」への回答。手順3のコミットは戻さない／§58 の案内・表示・計算は今のまま／後から来た面2へ面1の実績を移す処理は作らない／両面の製品の仕掛と面2の NG の件は本番のデータを入れた後に調べる／`import_production_csv()` は D-144 と一緒に片付ける。コードは変えていない
+
+### 59.8 テストの失敗の見落としと再発防止（D-174）
+
+- §58 の手順3のコミットで、`pytest … | tail -1 && git commit …` とつないでいたため、pytest が失敗しても終了コードが `tail` の 0 になり、コミット・push まで進んだ。失敗した3件の名前は分からない
+- 今回から、pytest の出力は全部ファイルに書き出し、`$LASTEXITCODE` と最後の集計行の両方で確かめる。1件でも失敗・エラー・強制終了があれば、コミット・ビルドをせずに止めて報告する
 
