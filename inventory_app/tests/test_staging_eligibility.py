@@ -79,10 +79,9 @@ def test_constants():
         "no_candidates", "product_name_mismatch", "multiple_candidates", "existing", "duplicate",
         "side2_wait", "side_master_unregistered", "qty_mismatch", "date_unparseable", "date_diff_too_large",
     ]
-    # 一括登録の完了メッセージのラベルは、理由コード・「ロット完成済み」（D-130）・「置き換えが起きる行を除いた」（D-126）を全部カバーしている
-    assert se.REASON_OPPOSITE_OVERWRITE == "opposite_overwrite"
+    # 一括登録の完了メッセージのラベルは、理由コードと「ロット完成済み」（D-130）を全部カバーしている（D-126 の理由は廃止。D-169）
     assert se.REASON_LOT_COMPLETED == "lot_completed"
-    assert set(se.AUTO_REGISTER_SKIP_REASON_LABELS) == set(codes) | {se.REASON_OPPOSITE_OVERWRITE, se.REASON_LOT_COMPLETED}
+    assert set(se.AUTO_REGISTER_SKIP_REASON_LABELS) == set(codes) | {se.REASON_LOT_COMPLETED}
 
 
 # ---------------------------------------------------------------- _date_only_diff_days

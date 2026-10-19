@@ -303,55 +303,6 @@ def delete_daily_production(prod_log_id: int):
         con.commit()
 
 
-def apply_daily_production_changes(changes: list):
-    """
-    production_dailyへの複数の変更（更新・削除・追加）を**1つのトランザクション**
-    でまとめて確定する（2026-10-08新設、D-112）。
-
-    ui.kitting.kitting_production_entry.ActualCorrectionWindowで、面1・面2の実績を
-    連動させて修正・削除する際に使う。update_daily_production()・
-    delete_daily_production()・insert_daily_production()は、それぞれ単独で
-    get_connection()を開いてcommit()するため、2つの関数を連続で呼ぶだけでは
-    「片方だけ確定し、もう片方は例外で失敗する」中途半端な状態になり得る
-    （要件：片方だけが変わった状態で終わらないこと）。本関数は両方の変更を
-    同一コネクション・同一トランザクション内で実行し、途中で例外が発生すれば
-    with文により自動的にロールバックされ、どちらの変更も反映されない。
-
-    changes：[{"action": "update", "prod_log_id", "daily_qty", "report_date"},
-              {"action": "delete", "prod_log_id"},
-              {"action": "insert", "plan_item_id", "kitting_list_no", "lot_id",
-               "group_id", "report_date", "daily_qty", "worker_id"}, ...]
-    の形の辞書のリスト。空リストを渡しても何もしない（エラーにはしない）。
-    """
-    if not changes:
-        return
-    with get_connection() as con:
-        cur = con.cursor()
-        for change in changes:
-            action = change["action"]
-            if action == "update":
-                cur.execute(
-                    "UPDATE production_daily SET daily_qty = ?, report_date = ? WHERE prod_log_id = ?",
-                    (change["daily_qty"], change["report_date"], change["prod_log_id"]),
-                )
-            elif action == "delete":
-                cur.execute(
-                    "DELETE FROM production_daily WHERE prod_log_id = ?",
-                    (change["prod_log_id"],),
-                )
-            elif action == "insert":
-                cur.execute("""
-                    INSERT INTO production_daily (
-                        plan_item_id, kitting_list_no, lot_id, group_id,
-                        report_date, daily_qty, worker_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (change["plan_item_id"], change["kitting_list_no"], change["lot_id"],
-                      change["group_id"], change["report_date"], change["daily_qty"], change["worker_id"]))
-            else:
-                raise ValueError(f"未対応のaction: {action}")
-        con.commit()
-
-
 # ---------------------------------------------------------------- 段階4で services から移した SQL
 # SQL 文は変えていない。旧位置（services/db_migration_carryover.py・services/lot_status_history_service.py）には、
 # これを呼ぶだけの関数を残している。

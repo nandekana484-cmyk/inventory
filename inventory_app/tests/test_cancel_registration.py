@@ -1,6 +1,7 @@
 """
 実績の取り消し（D-129、services.production_service.build_cancellation_preview()・apply_cancellation()）。
-面2の実績を取り消すと、連動して入った面1の実績と、両面の NG申告も取り消す。登録待ちに戻す行は1行で、日付は実績CSVの書式。
+面2の実績を取り消すと、その実績と、両面の NG申告（面2の NG は面1にも加算して保存されている）を取り消す。
+面1の実績は書かれていないので、実績の連動は無い（D-169）。登録待ちに戻す行は1行で、日付は実績CSVの書式。
 1つのトランザクションで行い、途中で失敗したら何も変わらない。
 """
 import os
@@ -26,7 +27,7 @@ from services.production_service import (
 
 @pytest.fixture
 def registered(monkeypatch):
-    """面1（K1）・面2（K2）の計画に、面2から 300・NG 5 を登録した状態（面1に連動）。"""
+    """面1（K1）・面2（K2）の計画に、面2から 300・NG 面1欄0・面2欄5 を登録した状態（面1の実績は無い）。"""
     monkeypatch.setattr(config, "DB_PATH", os.path.join(config.APP_DATA_DIR, "db", "test_month", "inventory.db"))
     init_database_at(config.DB_PATH)
     init_kitting_plan_tables()
@@ -39,6 +40,7 @@ def registered(monkeypatch):
     k2 = search_plan_by_kitting_no("K2", "L1")[0]
     k1 = search_plan_by_kitting_no("K1", "L1")[0]
     register_actual_and_ng(k2, {"1": k1, "2": k2}, 300, {"1": 5.0, "2": 5.0}, None, "W1", "test", report_date="2026-10-06")
+    assert list_daily_production_by_kitting_no("K1", "L1") == []
     return list_daily_production_by_kitting_no("K2", "L1")[0]["prod_log_id"]
 
 
@@ -53,7 +55,7 @@ def _state():
 def test_preview_contents(registered):
     preview = build_cancellation_preview(registered)
     assert preview["primary"]["kitting_list_no"] == "K2" and preview["primary"]["production_side"] == "2"
-    assert preview["opposite"]["kitting_list_no"] == "K1" and preview["opposite"]["production_side"] == "1"
+    assert "opposite" not in preview
     assert sorted((d["kitting_list_no"], d["ng_qty"]) for d in preview["ng_declarations"]) == [("K1", 5.0), ("K2", 5.0)]
     assert preview["restored_row"] == {"lot_no": "L1", "product_name": "ProdA", "daily_qty": 300,
                                        "report_date": "2026/10/6", "worker_id": "W1"}
@@ -117,3 +119,36 @@ def test_reimport_with_zero_padded_date_does_not_duplicate(registered, tmp_path)
     csv_path.write_text("ロットNo,製品名,実績数,払い出し日\nL1,ProdA,300,2026/10/06\n", encoding="utf-8-sig")
     parse_production_csv_for_staging(str(csv_path), "W1")
     assert len(list_pending_csv_import_rows()) == 1
+
+
+# ---------------------------------------------------------------- 修正・削除は片面だけ（D-169）
+
+def _put_old_side1_copy():
+    """古い版で面1へ自動入力された写し（面2と同じ 300・同じ日付）を足す。"""
+    from models.production import insert_daily_production
+    k1 = search_plan_by_kitting_no("K1", "L1")[0]
+    insert_daily_production(k1["plan_item_id"], "K1", "L1", "ProdA", "2026-10-06", 300, "W0")
+
+
+def test_update_changes_only_the_selected_record(registered):
+    from services.production_service import build_correction_preview, apply_correction
+    _put_old_side1_copy()
+    preview = build_correction_preview(registered, "update", new_daily_qty=280)
+    assert set(preview) == {"primary"} and preview["primary"]["old_daily_qty"] == 300
+    apply_correction(preview, "update")
+    assert [(r["kitting_list_no"], r["daily_qty"]) for k in ("K1", "K2") for r in list_daily_production_by_kitting_no(k, "L1")] \
+        == [("K1", 300), ("K2", 280)]
+
+
+def test_delete_changes_only_the_selected_record(registered):
+    from services.production_service import build_correction_preview, apply_correction
+    _put_old_side1_copy()
+    apply_correction(build_correction_preview(registered, "delete"), "delete")
+    assert [(r["kitting_list_no"], r["daily_qty"]) for k in ("K1", "K2") for r in list_daily_production_by_kitting_no(k, "L1")] \
+        == [("K1", 300)]
+
+
+def test_cancel_keeps_old_side1_copy_but_removes_side1_ng(registered):
+    _put_old_side1_copy()
+    apply_cancellation(build_cancellation_preview(registered), False)
+    assert _state() == ([("K1", 300.0)], [False, False], [])

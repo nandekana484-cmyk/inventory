@@ -1,6 +1,6 @@
 """
 日報・月報を統合した実績レポート画面。期間（今日/今週/今月/カスタム）を選び、build_monthly_report(from, to) で集計する。
-警告5種のオン/オフ・行の絞り込み・列の表示/非表示・CSV/PDF 出力・仕掛数量抽出を持つ。
+警告4種のオン/オフ・行の絞り込み・列の表示/非表示・CSV/PDF 出力・仕掛数量抽出を持つ。
 設計と経緯は docs/domain/unified_report.md。
 """
 import csv
@@ -73,15 +73,13 @@ class UnifiedReportWindow(tk.Toplevel):
         self.from_date = None
         self.to_date = None
         self.report_rows = []
-        self.inconsistency_warnings = []
         self.order_qty_inconsistency_warnings = []
         self.unregistered_board_warnings = []
         self.excess_file_no_warnings = []
         self.board_count_inconsistency_warnings = []
 
-        # 警告5種のオン/オフ。既定はすべてオン（月報は常に全部出していた挙動を変えないため）。
+        # 警告4種のオン/オフ。既定はすべてオン（月報は常に全部出していた挙動を変えないため）。
         self.warning_toggle_vars = {
-            "inconsistency": tk.BooleanVar(value=True),
             "order_qty_inconsistency": tk.BooleanVar(value=True),
             "unregistered_board": tk.BooleanVar(value=True),
             "excess_file_no": tk.BooleanVar(value=True),
@@ -118,9 +116,6 @@ class UnifiedReportWindow(tk.Toplevel):
         warning_frame = ttk.LabelFrame(self, text="警告表示（オン/オフ）", padding=10)
         warning_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
 
-        ttk.Checkbutton(
-            warning_frame, text="面1/面2不整合", variable=self.warning_toggle_vars["inconsistency"],
-        ).pack(side=tk.LEFT, padx=5)
         ttk.Checkbutton(
             warning_frame, text="発注数不一致", variable=self.warning_toggle_vars["order_qty_inconsistency"],
         ).pack(side=tk.LEFT, padx=5)
@@ -239,7 +234,7 @@ class UnifiedReportWindow(tk.Toplevel):
 
         try:
             (
-                self.report_rows, self.inconsistency_warnings,
+                self.report_rows,
                 self.order_qty_inconsistency_warnings, self.unregistered_board_warnings,
                 self.excess_file_no_warnings, self.board_count_inconsistency_warnings,
             ) = build_monthly_report(from_date, to_date)
@@ -254,9 +249,7 @@ class UnifiedReportWindow(tk.Toplevel):
         self._annotate_filter_fields(self.report_rows)
         self.clear_filters()  # 絞り込み条件をリセットした上で再描画する
 
-        # 警告は常に5種とも計算し、表示するかどうかだけをチェックボックスに従う。
-        if self.warning_toggle_vars["inconsistency"].get():
-            self._show_inconsistency_warning_if_any()
+        # 警告は常に4種とも計算し、表示するかどうかだけをチェックボックスに従う。
         if self.warning_toggle_vars["order_qty_inconsistency"].get():
             self._show_order_qty_inconsistency_warning_if_any()
         if self.warning_toggle_vars["unregistered_board"].get():
@@ -281,29 +274,6 @@ class UnifiedReportWindow(tk.Toplevel):
             "発注数不一致の警告",
             "以下のロットで発注数がファイルNo間で一致していません。"
             "手作業での確認・修正が必要です。\n\n"
-            f"{lines}",
-            parent=self.winfo_toplevel(),
-        )
-
-    def _show_inconsistency_warning_if_any(self):
-        """面1・面2の不整合の警告。ロットNo・ファイルNoごとの合計で比べた結果と、面1・面2の計画Noを表示する（D-111）。"""
-        if not self.inconsistency_warnings:
-            return
-        lines = "\n".join(
-            f"・lot_no={w['lot_no']}（setup_file_no={w['setup_file_no']}）：\n"
-            f"　　面1合計={w['side1_total']:.0f} ＞ 面2合計={w['side2_total']:.0f}"
-            f"（差 {w['diff']:+.0f}）\n"
-            f"　　面1の計画No：{'、'.join(w['side1_kitting_list_nos'])}\n"
-            f"　　面2の計画No：{'、'.join(w['side2_kitting_list_nos'])}"
-            for w in self.inconsistency_warnings
-        )
-        messagebox.showwarning(
-            "実績不整合の警告",
-            "以下のロット・ファイルNoで面1・面2の実績に不整合があります（面1の実績の"
-            "合計が面2の合計を上回っています）。実績修正画面（ActualCorrectionWindow）"
-            "での片面のみの修正・削除が原因の可能性があります。\n"
-            "該当する面1の行は、通常表示されるはずの面2省略ルールにより一覧からは"
-            "除外されていますが、内容のご確認をお願いします。\n\n"
             f"{lines}",
             parent=self.winfo_toplevel(),
         )
@@ -388,20 +358,18 @@ class UnifiedReportWindow(tk.Toplevel):
 
     def refresh_report(self):
         """
-        実績修正の後に一覧を読み直す。再表示する警告は面1・面2の不整合だけ（ほかは片面の修正では変わらない）。
+        実績修正の後に一覧を読み直す。警告は再表示しない（実績の修正では、警告の元の計画・マスタは変わらない）。
         """
         if not self.from_date or not self.to_date:
             return
         (
-            self.report_rows, self.inconsistency_warnings,
+            self.report_rows,
             self.order_qty_inconsistency_warnings, self.unregistered_board_warnings,
             self.excess_file_no_warnings, self.board_count_inconsistency_warnings,
         ) = build_monthly_report(self.from_date, self.to_date)
         self._annotate_filter_fields(self.report_rows)
         # 実績の修正に伴う読み直しなので、on_display() と違い絞り込みはそのまま残す。
         self.apply_filters()
-        if self.warning_toggle_vars["inconsistency"].get():
-            self._show_inconsistency_warning_if_any()
 
     def sort_by_column(self, col):
         """

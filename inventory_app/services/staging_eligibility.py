@@ -45,8 +45,6 @@ REASON_SIDE_MASTER_UNREGISTERED = "side_master_unregistered"
 REASON_QTY_MISMATCH = "qty_mismatch"
 REASON_DATE_UNPARSEABLE = "date_unparseable"
 REASON_DATE_DIFF_TOO_LARGE = "date_diff_too_large"
-# 一括登録で「置き換えが起きる行を除いて登録」を選んだときに除いた行（判定の優先順位には入らない。D-126）。
-REASON_OPPOSITE_OVERWRITE = "opposite_overwrite"
 
 # 一括登録の完了メッセージで、スキップ理由ごとの件数に付ける短いラベル（一覧の「状態」列とは別）。
 AUTO_REGISTER_SKIP_REASON_LABELS = {
@@ -61,7 +59,6 @@ AUTO_REGISTER_SKIP_REASON_LABELS = {
     REASON_QTY_MISMATCH: "数量不一致",
     REASON_DATE_UNPARSEABLE: "日付を解釈できない",
     REASON_DATE_DIFF_TOO_LARGE: "日付の差が許容日数を超える",
-    REASON_OPPOSITE_OVERWRITE: "反対側の面の実績が置き換わるため除外",
 }
 
 

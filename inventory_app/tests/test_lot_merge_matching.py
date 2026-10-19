@@ -15,7 +15,6 @@ from models.production import list_daily_production_by_kitting_no
 from models.production_import_staging import create_csv_import_batch, upsert_pending_csv_import_row
 from services import lot_merge_service as svc
 from services.production_import_service import group_active_plan_items_by_lot, is_already_registered
-from services.production_service import preview_opposite_side_overwrite, register_opposite_side_daily_result
 from services.staging_eligibility import (
     REASON_MULTIPLE_CANDIDATES, REASON_NO_CANDIDATES_CODE, _count_plan_keys, _load_staged_rows_from_db,
 )
@@ -124,19 +123,6 @@ def test_find_similar_lot_no_rules():
 
 
 # ---------------------------------------------------------------- 統合をまたがない処理（D-163）
-
-def test_side1_auto_fill_does_not_cross_merge(sample_db):
-    """163326-（面2の計画だけ）に登録しても、統合先 163326 の面1へは自動入力しない。置き換えの確認も出ない（D-113・D-126）。"""
-    svc.merge_lots("163326-", "作業者A")
-    plan = find_plan_item_by_kitting_no("K163326M-2", "163326-")
-    assert preview_opposite_side_overwrite(plan, 50, "2026-07-20") is None
-    assert register_opposite_side_daily_result(plan, 50, "W1", report_date="2026-07-20") is False
-    assert [r["daily_qty"] for r in list_daily_production_by_kitting_no("K163326-1", "163326")] == [99]
-    # 統合先の面2を登録すると、統合先の面1へは従来どおり自動入力する
-    target_plan = find_plan_item_by_kitting_no("K163326-2", "163326")
-    assert register_opposite_side_daily_result(target_plan, 120, "W1", report_date="2026-07-20") is True
-    assert [r["daily_qty"] for r in list_daily_production_by_kitting_no("K163326-1", "163326")] == [120]
-
 
 def test_registration_candidates_keep_side1_hiding_per_lot(sample_db):
     """登録の候補の面1を隠す処理（list_active_plan_items）は元のロットのまま。163326 の面1は 163326 の面2があるので隠れる。"""

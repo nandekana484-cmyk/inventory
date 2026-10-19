@@ -24,7 +24,7 @@
 | R6 | 面1だけの計画は、生産面マスターで「片面の製品／面2待ち／生産面マスター未登録」(a/b/c) に分ける。b と c は確認ダイアログを出すが、登録は禁止しない | `ui/kitting/kitting_production_entry.py` `_build_registration_preview()`、`ui/production/production_import_staging_window.py` `_register_candidate_immediately()`・`_confirm_side1_only_if_applicable()` |
 | R7 | 後行面（面2）があるかどうかはセットアップファイルNo単位で判定する（実装ラインは問わない）（D-104、D-107） | `models/kitting_plan.py` `classify_side1_only_plan()` |
 | R8 | 両面の計画があるロットで実績を修正・削除するときは、反対側の面の実績も連動させる。確定の前に必ず確認ダイアログを出す（D-112） | `ui/kitting/kitting_production_entry.py` `ActualCorrectionWindow.on_update()` |
-| R9 | 面1/面2 の不整合は、ロットNo・ファイルNoごとの合計で比べる（D-111） | `services/production_report_service.py` `_build_report_rows()` のコメント |
+| R9 | ~~面1/面2 の不整合は、ロットNo・ファイルNoごとの合計で比べる（D-111）~~ → 2026-10-19 に判定ごと廃止（D-169） | — |
 
 ## 実績・完成数
 

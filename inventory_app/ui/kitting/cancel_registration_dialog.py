@@ -1,6 +1,6 @@
 """
 実績の取り消しの確認ダイアログ（D-129）。内容は services.production_service.build_cancellation_preview() の戻り値。
-ボタンは「取り消して登録待ちに戻す」「取り消すだけ」「キャンセル」。どちらで取り消しても、実績・反対側の面の実績・NG申告の取り消しは同じ。
+ボタンは「取り消して登録待ちに戻す」「取り消すだけ」「キャンセル」。どちらで取り消しても、実績・NG申告の取り消しは同じ。
 """
 import tkinter as tk
 from tkinter import ttk
@@ -23,12 +23,6 @@ def build_cancellation_lines(preview):
         f"・取り消す実績：ロットNo {p['lot_no']}　計画No {p['kitting_list_no']}　{_side_label(p['production_side'])}"
         f"　数量 {p['daily_qty']:g}　日付 {p['report_date']}",
     ]
-    o = preview["opposite"]
-    if o:
-        lines.append(
-            f"・連動して取り消す反対側の面の実績：計画No {o['kitting_list_no']}　{_side_label(o['production_side'])}"
-            f"　数量 {o['daily_qty']:g}　日付 {o['report_date']}"
-        )
     for d in preview["ng_declarations"]:
         lines.append(
             f"・同時に取り消す NG申告：計画No {d['kitting_list_no']}　{_side_label(d['production_side'])}　NG数量 {d['ng_qty']:g}"

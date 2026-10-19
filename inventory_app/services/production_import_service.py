@@ -16,14 +16,12 @@ from services.csv_parsing_common import parse_csv_generic
 from services.production_service import (
     register_daily_result,
     overwrite_daily_result,
-    register_opposite_side_daily_result,
     DailyResultAlreadyExists,
 )
 from models.kitting_plan import (  # normalize_product_name は段階4で models へ移した（ここから re-export する）
     normalize_product_name,
     resolve_plan_by_lot_and_name,
     find_matching_plan_items,
-    find_plan_item_by_kitting_no,
     list_active_plan_items,
 )
 from models.production import list_daily_production_by_kitting_no
@@ -311,12 +309,7 @@ def import_production_csv(file_path, default_worker_id=None):
     が送出されるので、overwrite_daily_result() で上書きする。CSVに同一計画の行が
     複数回（異なるreport_dateを含む）出現した場合も、後の行が前の行を上書きする。
 
-    面1/面2連動：主行の登録（新規追加／上書きいずれも）に成功した後、
-    services.production_service.register_opposite_side_daily_result() を使って
-    反対側の面（存在する場合）にも同じdaily_qtyを連動登録する
-    （ui.kitting.kitting_production_entry.KittingProductionEntryWindow の手動入力と
-    共通のロジック）。反対側への登録が失敗しても、主行自体はimportedに含めたまま
-    とし（主行の処理結果を巻き込まない）、反対側のエラーのみ別途errorsに記録する。
+    反対側の面には登録しない（面1への自動入力は廃止。D-169）。
 
     register_daily_result()/overwrite_daily_result() が例外を送出した行（計画は
     特定できたが登録に失敗した行。例：処理中に計画が削除された等）は、その行だけを
@@ -452,26 +445,6 @@ def import_production_csv(file_path, default_worker_id=None):
             "report_date": report_date,
             "app_cumulative_qty": new_cumulative,
         })
-
-        # 主行の登録（新規／上書きいずれも）に成功した後、反対側の面（存在する場合）
-        # にも同じdaily_qtyを連動登録する。失敗しても主行は既にimportedへ追加済み
-        # のため、主行の処理結果には影響させず、反対側のエラーのみ別途記録する
-        # （元の行の処理を止めない）。
-        plan = find_plan_item_by_kitting_no(kitting_list_no, lot_no)
-        if plan is not None:
-            try:
-                register_opposite_side_daily_result(plan, daily_qty, worker_id, report_date=report_date)
-            except Exception as e3:
-                errors.append({
-                    "row": i,
-                    "lot_no": lot_no,
-                    "product_name": product_name,
-                    "kitting_list_no": kitting_list_no,
-                    "daily_qty": daily_qty,
-                    "worker_id": worker_id,
-                    "report_date": report_date,
-                    "error": f"反対側の面への連動登録に失敗しました：{e3}",
-                })
 
     # 区切り文字・列名の不一致でヘッダーが正しく認識されないと、全行が
     # 「lot_noまたはproduct_nameが空」「daily_qtyが空」として一律にスキップ

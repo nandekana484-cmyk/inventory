@@ -12,7 +12,6 @@ from services.date_parsing import parse_flexible_date
 from services.production_service import (
     register_daily_result,
     overwrite_daily_result,
-    register_opposite_side_daily_result,
 )
 
 
@@ -79,7 +78,8 @@ def plan_row_tag(classification):
 def register_actual_and_ng(plan, ng_side_plans, daily_qty, save_qty_by_side, existing_daily_qty,
                            worker_id, worker_name, report_date=None, record_history=True):
     """
-    実績→操作履歴→反対側の面→NG の順に DB へ書き込む。段階3aで _perform_registration() から移した書き込み部分。
+    実績→操作履歴→NG の順に DB へ書き込む。段階3aで _perform_registration() から移した書き込み部分。
+    反対側の面には実績を書かない（面1への自動入力は廃止。D-169）。NG は ng_side_plans の両面に保存する（変えていない）。
     途中でエラーが出ても、成功した分は残す（ロールバックしない）。実績の登録に失敗したら、それ以降は書き込まない。
     実績の日付は report_date（None なら登録側で実行日。上書きなら既存の日付を引き継ぐ）、NG の日付は当日。
     ng_side_plans は面（"1"/"2"）-> その面の計画。save_qty_by_side は compute_ng_save_qty() の戻り値。
@@ -87,15 +87,13 @@ def register_actual_and_ng(plan, ng_side_plans, daily_qty, save_qty_by_side, exi
       actual_registered: 実績を登録できたか
       actual_error: 実績の登録で出た例外（成功時は None）
       new_cumulative: 登録後のアプリ内累計（失敗時は None）
-      opposite_registered: 反対側の面へ連動登録したか
       declared_sides: NG を保存した面（"1"/"2"）の一覧
-      errors: 反対側の連動・NG の保存で出たエラーの文言の一覧
+      errors: NG の保存で出たエラーの文言の一覧
     """
     result = {
         "actual_registered": False,
         "actual_error": None,
         "new_cumulative": None,
-        "opposite_registered": False,
         "declared_sides": [],
         "errors": [],
     }
@@ -125,13 +123,6 @@ def register_actual_and_ng(plan, ng_side_plans, daily_qty, save_qty_by_side, exi
         detail=f"{kitting_no} / ロットNo. {lot_no} / {daily_qty:g}",
     )
 
-    try:
-        result["opposite_registered"] = register_opposite_side_daily_result(
-            plan, daily_qty, worker_id, report_date=report_date, record_history=record_history,
-        )
-    except Exception as e:
-        result["errors"].append(f"反対側の面への実績連動登録に失敗しました：{e}")
-
     # NG は当日の日付で保存する（実績は CSV の払い出し日のまま）。
     ng_report_date = datetime.now().strftime("%Y-%m-%d")
     for side in ("1", "2"):
@@ -157,8 +148,6 @@ def format_registration_message(result, save_qty_by_side):
     save_qty_by_side は register_actual_and_ng() に渡したもの（申告した NG 数量の表示に使う）。
     """
     lines = [f"実績を登録しました。アプリ入力累計：{result['new_cumulative']:.0f}"]
-    if result["opposite_registered"]:
-        lines.append("反対側の面にも同じ数量を連動登録しました。")
     for side in result["declared_sides"]:
         lines.append(f"面{side}：NG数量{save_qty_by_side[side]:g}を申告しました")
     if result["errors"]:

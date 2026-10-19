@@ -25,7 +25,6 @@
   [],
   [],
   [],
-  [],
   []
  ],
  "build_monthly_report_all": [
@@ -151,21 +150,6 @@
     "surplus_qty": 0
    }
   ],
-  [
-   {
-    "diff": 20,
-    "lot_no": "L1",
-    "setup_file_no": "F1",
-    "side1_kitting_list_nos": [
-     "K1"
-    ],
-    "side1_total": 100,
-    "side2_kitting_list_nos": [
-     "K2"
-    ],
-    "side2_total": 80
-   }
-  ],
   [],
   [],
   [],
@@ -212,21 +196,6 @@
     "status": "match",
     "status_color_category": null,
     "surplus_qty": 0
-   }
-  ],
-  [
-   {
-    "diff": 20,
-    "lot_no": "L1",
-    "setup_file_no": "F1",
-    "side1_kitting_list_nos": [
-     "K1"
-    ],
-    "side1_total": 100,
-    "side2_kitting_list_nos": [
-     "K2"
-    ],
-    "side2_total": 80
    }
   ],
   [],

@@ -1,6 +1,6 @@
 # 実績の登録とロットの完成数・引落（services/production_service.py・lot_status_service.py・production_report_service.py）
 
-段階5（2026-10-13）で、ロット状態の評価を `services/lot_status_service.py`、日報・月報の表示データを `services/production_report_service.py` に分けた。登録・連動修正・仕掛数量の抽出は `services/production_service.py` に残っている（移した関数は production_service.py からも re-export している）。
+段階5（2026-10-13）で、ロット状態の評価を `services/lot_status_service.py`、日報・月報の表示データを `services/production_report_service.py` に分けた。登録・修正・仕掛数量の抽出は `services/production_service.py` に残っている（移した関数は production_service.py からも re-export している）。
 
 2026-10-09 のコメント軽量化で、コメント・docstring から移した内容。関数名で参照する。
 集計キー（2要素・加算）の決定は CANONICAL_DESIGN_DECISIONS.md §5 と BOM_MIGRATION_NOTES.md §4。
@@ -11,31 +11,24 @@
 - `register_daily_result(check_duplicate=True)`: 既存の実績があれば追記せず `DailyResultAlreadyExists` を送出する。CSV 自動取込（`import_production_csv()`）は check_duplicate=False（無条件に追記）のまま。手入力（`KittingProductionEntryWindow`）は確認ダイアログで既存の有無を先に見せているので、例外を使わず register / overwrite を呼び分ける
 - 既存レコードが複数ある（仕様変更前の過去データ）ときは、最も新しい日付のものを使う
 - `overwrite_daily_result()` の report_date: None を今日にせず、そのまま `replace_daily_result()` に渡して既存行の日付を引き継ぐ（2026-09-29 の調査で、手で数量を直して再登録するたびに CSV 由来の正しい日付が今日に書き換わる問題が見つかったため）。既存行が無ければ今日
-- 反対側の面への連動（`register_opposite_side_daily_result()`）: 手入力と CSV 自動取込の共通処理（以前は UI 側にあった）。反対側でも重複チェックは通すが、既存があっても確認せずに上書きする
-  - 面2の登録で面1の既存の実績の数量か日付が変わるときは、画面が登録の前に確認する（2026-10-15、D-126。この関数自体は確認しない）。判定は `preview_opposite_side_overwrites()`（DB に書き込まない）。日付は、指定があればその日付、無ければ上書きは既存の日付（`replace_daily_result()`）・新規は今日、と登録と同じ規則で予測する。一括では、同じ一括の中で前の行が書く実績も「既存」として数える。面1の登録で面2が変わる逆向きは対象外（利用者の決定の範囲外）
+- 反対側の面には実績を書かない（2026-10-19、D-169）。以前は面2の登録で面1へ同じ数量を自動入力していた（`register_opposite_side_daily_result()`、D-113）が、面2があれば面1の実績を計算に使わなくなった（D-167）ので削除した。置き換え前の確認（D-126、`preview_opposite_side_overwrite(s)()`）も削除した
 - 履歴（lot_status_history）の記録
   - 登録・上書き・修正・削除のたびに、そのロットの状態を記録する（2026-09-30）。記録に失敗しても本来の処理は失敗させない（`_record_lot_status_snapshot_safely()`。共通フックにはせず、各関数から個別に呼ぶ方針）
-  - record_history=False: 一括登録（Shift+S など）で行ごとに記録すると、1件あたり数十 ms（commit の同期コスト）かかり100件で数秒になる。呼び出し元が影響したロットの集合を持ち、最後にロット単位で1回ずつ記録する。反対側の面も同じ lot_no なので漏れない
+  - record_history=False: 一括登録（Shift+S など）で行ごとに記録すると、1件あたり数十 ms（commit の同期コスト）かかり100件で数秒になる。呼び出し元が影響したロットの集合を持ち、最後にロット単位で1回ずつ記録する
   - 修正（`update_daily_result()`）は UPDATE の前に、削除（`delete_daily_result()`）は DELETE の前に対象行を読んで lot_no を特定する（削除後は読めない。修正で前に読むのは、行が既に消えていた場合を検出するため）
 
 ## 実績の取り消し（`build_cancellation_preview()`・`apply_cancellation()`、2026-10-15、D-129）
 
-- 反対側の面の実績は、削除と同じく `build_linked_correction_preview()` で特定して連動して取り消す。NG申告は取り消す計画と反対側の面の計画の分を取り消す（面2の NG は面1にも加算して保存されている）
+- 取り消すのはその実績1件だけ（反対側の面の実績へは連動しない。D-169）。NG申告は、取り消す計画の分と、面2なら同じロット・ファイルNoの面1の計画の分を取り消す（面2の NG は面1にも加算して保存されている。面1の計画は NG の欄と同じ `find_opposite_side_plan()` で探す）
 - NG申告の計画・面が NG展開（scrap_records）で、または取り消す実績の計画・面が仕掛部品展開（wip_scrap_records）で確定済みなら取り消さない
 - 登録待ちに戻す行は1行。日付は実績CSVの書式（`to_csv_date_format()`）、製品名は計画の基板名、作業者は実績を登録した作業者ID、取込のバッチは取り消し専用の新しいバッチ（source_file＝`CANCELLED_REGISTRATION_SOURCE`）、CSVの行番号は NULL
 - 確定は `models/production.cancel_daily_production()` の1つのトランザクション
 
-## 実績の修正・削除での面の連動（`build_linked_correction_preview()`、D-112）
+## 実績の修正・削除（`build_correction_preview()`・`apply_correction()`）
 
-- 相手の実績の特定
-  - a. 同じロットNo・ファイルNoの反対側の面の計画（複数バッチあり得る）の実績のうち、修正・削除前の数量・日付が完全に一致するものが1件だけなら相手にする。複数一致したら決められないので b へ
-  - b. 登録時の自動入力・NG 入力欄の相手探しと同じ方法（`find_opposite_side_plan()` に選択中の計画の生産予定日を渡す）で計画を1件に絞る。実績が1件ならそれが相手。2件以上（「1計画＝1レコード」に反する想定外のデータ）なら連動しない（ambiguous=True）
-  - c. 相手の計画に実績が無ければ、修正なら新規登録、削除なら何もしない（noop）
-- 戻り値
-  - `primary`: prod_log_id・kitting_list_no・lot_no・old_daily_qty・new_daily_qty（削除なら None）・report_date・plan
-  - `has_opposite_plan`: 反対側の面の計画自体があるか（無ければ secondary は None で、連動しない）
-  - `secondary`: None、または method（a/b）・ambiguous・action（update/insert/delete/noop）・kitting_list_no・prod_log_id と old_daily_qty（既存行があるとき）・new_daily_qty・report_date・pre_existing_mismatch（b で、連動前の相手の実績が primary の変更前の値と食い違っていたら True。確認ダイアログで目立たせる）
-- `apply_linked_correction()` は1つのトランザクションで確定する
+- 修正・削除するのは選んだ実績1件だけ（2026-10-19、D-169）。以前は反対側の面の実績も連動させていた（D-112、`build_linked_correction_preview()`・`apply_linked_correction()`・`models/production.apply_daily_production_changes()`）が、面1に実績を書かなくなったので削除した
+- 戻り値は `{"primary": {prod_log_id・kitting_list_no・lot_no・old_daily_qty・new_daily_qty（削除なら None）・report_date・plan}}`
+- 確定の後、ロットの状態を `correction_update`／`correction_delete` として記録する
 
 ## ロットの完成数（`_compute_lot_completion()`）
 
@@ -86,16 +79,13 @@ lot_no・status・board_count（match/shortfall/excess のみ）・board_count_v
 - 以前は「その日・期間に実績がある行だけの最小値」を独自に計算していたため、未生産の file_no がある lot_no=110068 などで誤って「引落済み」になっていた。完成数・引落は `_evaluate_lot_status()` の結果を使う
 - 計画が見つからない（ValueError）か、行の file_no・面が file_actuals に無い場合は、判定できないので未完成扱い（引落0、仕掛＝その日の実績、未完了＝発注数）にする。実績はあるデータなので、行は消さない
 - lot_no は計画を引き直さず、実績の lot_id を使う（kitting_list_no は lot_no をまたいで重複し、kitting_list_no だけで計画を引くとどちらが返るか分からない）
-- 面1の除外と不整合（D-111、2026-10-08）
-  - 面2の計画がアクティブに存在するロット・ファイルNoの面1の行は表示しない（D-8）
-  - 面1合計が面2合計を上回れば inconsistency_warnings に記録する（片面だけの修正で食い違う既存データがあり得るため）
-  - 以前は面1の実績ごとに `find_opposite_side_plan()` で相手の面2を1件に絞って比べていた。複数バッチがあると別のバッチどうしを比べてしまい、実データで104件すべてが誤検出だった。ロットNo・ファイルNoごとの合計どうしで比べる方式に変えた
+- 面1の除外: 元のロット・ファイルNoに面2の有効な計画がある面1の行は表示しない（D-8・D-167。完成数の計算と同じ単位）
+  - 面1・面2の不整合の警告（D-111、inconsistency_warnings）は、面1の実績を計算に使わなくなったので廃止した（2026-10-19、D-169）
 - 構成基板数の振り分け: 未登録→unregistered_board_warnings（実際に未登録の基板名すべて）、不一致→board_count_inconsistency_warnings、不足→「未確定」の仮想行、超過→excess_file_no_warnings。仮想行と警告は、本ループの後にロット単位でまとめて追加する（実績の順では同じロットの行が連続する保証が無いため）
 - 仮想行: kitting_list_no=""（画面のダブルクリックは「空なら何もしない」）。数量に None や文字列を入れると、画面の `":.0f"` の書式化で ValueError になるので0にする
 - 確認事項・文字色（2026-09-28）: 各行に confirmation_note と status_color_category を付ける。文言と色の定義は services 側の2関数にだけ書き、画面ごとに定義しない
-- 戻り値: (report_rows, inconsistency_warnings, order_qty_inconsistency_warnings, unregistered_board_warnings, excess_file_no_warnings, board_count_inconsistency_warnings)
+- 戻り値: (report_rows, order_qty_inconsistency_warnings, unregistered_board_warnings, excess_file_no_warnings, board_count_inconsistency_warnings)
   - report_rows の主なキー: seq（表示行だけで1から振り直す）・confirmation_note・status_color_category・status（match/shortfall/excess/unregistered/board_count_inconsistent/None）・has_ng（NG 実績か NG 申告があれば True。仮想行は False）・report_date（仮想行は None）
-  - inconsistency_warnings: lot_no・setup_file_no・side1_total・side2_total・diff・side1_kitting_list_nos・side2_kitting_list_nos
   - unregistered_board_warnings の file_nos は、ロット全体・面1除外後の distinct な file_no（CSV 出力で使う）
 
 ## 未完了ロットの抽出（`list_incomplete_lots()`）
@@ -117,6 +107,6 @@ lot_no・status・board_count（match/shortfall/excess のみ）・board_count_v
 
 - 以前は日報の行（バッチ単位）の値を抽出していて、複数バッチを持つ file_no の仕掛が正しく合算されなかった。file_actuals を土台にする
 - 2026-09-28 から引落は `evaluate_lot_status()` の値を使う。以前は shortfall のロットの仕掛が0と計算され、抽出から漏れていた（lot_no=260079）
-- 面2の実績がある file_no の面1は除く。面1・面2の実績は連動で一致するので、両方を数えると1枚の基板の仕掛が二重になる
+- 面2の計画がある file_no の面1は、完成数の計算（file_actuals）に入らないので出てこない（D-167。以前はここで除いていた）。両面の製品の仕掛は面2の行だけで、面2の部品表で展開する（面1の部品は入らない。今後の課題 D-171）
 - 代表のバッチ（`_pick_representative_plan_item()`）: 生産予定日が最も新しいもの（手元に残る仕掛の実体に近い）。スナップショットは1行1 kitting_list_no のスキーマなので代表が必要
 - shortfall の「未確定」は対象外（実在の kitting_list_no が無い）

@@ -348,13 +348,13 @@ def test_double_click_then_register_in_parent(screens, events):
     parent._start_registration()
 
     assert _history("K2", "L1") == [(CSV_DATE_NORMALIZED, 100.0, "W1")]
-    assert _history("K1", "L1") == [(CSV_DATE_NORMALIZED, 100.0, "W1")]  # 反対側の面も連動
+    assert _history("K1", "L1") == []  # 面1には書かない（D-169）
     assert _pending_lots() == ["L2", "L3", "L5", "L9"]
     assert iid not in staging._row_by_iid and not staging.tree.exists(iid)
     assert staging.tree.selection() == (_iid(staging, "L2"),)   # 次の行が選ばれる
     assert parent._pending_csv_row_removal is None
     assert _messages(events, "showinfo") == [(
-        "登録完了", "実績を登録しました。アプリ入力累計：100\n反対側の面にも同じ数量を連動登録しました。",
+        "登録完了", "実績を登録しました。アプリ入力累計：100",
     )]
     assert parent.confirm_dialog_previews[0]["new_report_date"] == CSV_DATE_NORMALIZED
 
@@ -385,12 +385,12 @@ def test_right_click_registers_immediately(screens, events):
     _right_click(staging, "L1")
 
     assert _history("K2", "L1") == [(CSV_DATE_NORMALIZED, 100.0, "W1")]
-    assert _history("K1", "L1") == [(CSV_DATE_NORMALIZED, 100.0, "W1")]
+    assert _history("K1", "L1") == []
     assert _pending_lots() == ["L2", "L3", "L5", "L9"]
     assert not staging.tree.exists(iid)
     assert staging.tree.selection() == (_iid(staging, "L2"),)
     assert _messages(events, "showinfo") == [(
-        "登録完了", "実績を登録しました。アプリ入力累計：100\n反対側の面にも同じ数量を連動登録しました。",
+        "登録完了", "実績を登録しました。アプリ入力累計：100",
     )]
     assert _messages(events, "showerror") == []
     # 親の画面は登録した計画を表示し、CSV 由来の登録待ちは残らない。
@@ -474,22 +474,6 @@ def test_immediate_actual_failure(screens, events):
     assert list_operation_log() == []
 
 
-def test_immediate_opposite_failure_still_removes_row(screens, events):
-    parent, staging = screens
-    _add_abort_trigger("fail_k1", "production_daily", "NEW.kitting_list_no = 'K1'")
-    _right_click(staging, "L1")
-    assert _history("K2", "L1") == [(CSV_DATE_NORMALIZED, 100.0, "W1")]
-    assert _history("K1", "L1") == []
-    assert _pending_lots() == ["L2", "L3", "L5", "L9"]
-    (title, message), = _messages(events, "showinfo")
-    assert title == "登録完了"
-    assert message == (
-        "実績を登録しました。アプリ入力累計：100\n\n"
-        "以下の項目でエラーが発生しました（登録できた分はそのまま残っています）：\n"
-        "反対側の面への実績連動登録に失敗しました：test failure"
-    )
-
-
 # ---------------------------------------------------------------- Shift+S・Shift+Q の一括登録
 
 def _select(staging, *lots):
@@ -502,7 +486,7 @@ def test_shift_s_registers_only_eligible_rows_and_summarizes(screens, events):
     staging._on_bulk_register()
 
     assert _history("K2", "L1") == [(CSV_DATE_NORMALIZED, 100.0, "W1")]
-    assert _history("K1", "L1") == [(CSV_DATE_NORMALIZED, 100.0, "W1")]
+    assert _history("K1", "L1") == []
     assert _history("K3", "L2") == [] and _history("K4", "L3") == []
     assert _pending_lots() == ["L2", "L3", "L5", "L9"]
     assert _messages(events, "showinfo") == [(

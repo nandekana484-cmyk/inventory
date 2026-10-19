@@ -103,13 +103,14 @@ def test_merged_lot_completed_after_merge_asks(tk_root, example_db, dialogs):
     assert _qty("K500500-2", "500500") == [950]
 
 
-def test_opposite_side_link_and_completed_lot_in_one_dialog(tk_root, example_db, dialogs):
+def test_correction_is_single_side_and_completed_lot_in_one_dialog(tk_root, example_db, dialogs):
+    """修正は選んだ実績だけ（反対側の面へは連動しない。D-169）。完成済みのロットの確認は同じ1回のダイアログに出す。"""
     svc.merge_lots("500500-", "作業者A")
     dialogs["answers"] = [False]
     _correct(tk_root, "K500500-2", "500500", 960)
     asks = [c for c in dialogs["calls"] if c[0] == "askyesno"]
     assert len(asks) == 1
     message = asks[0][2]
-    assert "【連動して変わる反対側の実績】" in message and "数量：950 → 960" in message
+    assert "反対側" not in message and "数量：950 → 960" in message
     assert "・ロット 500500（+500500-） は完成済みです（完成数 1000／発注数 1000）。登録すると、完成数の計算に使う実績の合計が 1010 になります。" in message
     assert _qty("K500500-2", "500500") == [950] and _qty("K500500-1", "500500") == [950]

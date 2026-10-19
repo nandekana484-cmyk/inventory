@@ -9,8 +9,8 @@ from tkinter import ttk, messagebox
 
 from services.production_service import (
     get_daily_history,
-    build_linked_correction_preview,
-    apply_linked_correction,
+    build_correction_preview,
+    apply_correction,
     build_cancellation_preview,
     apply_cancellation,
 )
@@ -71,7 +71,7 @@ class ActualCorrectionWindow(tk.Toplevel):
                                       state=tk.DISABLED)
         self.btn_delete.pack(side=tk.LEFT, padx=5)
 
-        # 取り消し（D-129）：実績・反対側の面の実績・NG申告を取り消し、元の実績CSVの行を登録待ちに戻せる。
+        # 取り消し（D-129）：実績とNG申告（面2なら面1の分も）を取り消し、元の実績CSVの行を登録待ちに戻せる。
         self.btn_cancel_registration = ttk.Button(edit_frame, text="取り消し", command=self.on_cancel_registration,
                                                   state=tk.DISABLED)
         self.btn_cancel_registration.pack(side=tk.LEFT, padx=5)
@@ -106,8 +106,7 @@ class ActualCorrectionWindow(tk.Toplevel):
 
     def on_update(self):
         """
-        実績を修正する。両面の計画があるロットでは、反対側の面の実績も同じ数量にそろえる（D-112）。
-        連動の有無にかかわらず、確定前に必ず確認ダイアログを出す。
+        実績を修正する。修正するのは選んだ実績だけ（反対側の面へは連動しない。D-169）。確定前に必ず確認ダイアログを出す。
         """
         sel = self.tree.selection()
         if not sel:
@@ -120,7 +119,7 @@ class ActualCorrectionWindow(tk.Toplevel):
             messagebox.showwarning("入力エラー", "実績数には数値を入力してください。", parent=self.winfo_toplevel())
             return
 
-        preview = build_linked_correction_preview(prod_log_id, "update", new_daily_qty=daily_qty)
+        preview = build_correction_preview(prod_log_id, "update", new_daily_qty=daily_qty)
         # 完成済みのロットで数量を増やすときは、同じダイアログで確かめる（D-156。文言は手入力の D-133 と同じ）。
         primary = preview["primary"]
         completed_lot = preview_completed_lot_correction(primary["plan"], primary["old_daily_qty"], daily_qty)
@@ -128,7 +127,7 @@ class ActualCorrectionWindow(tk.Toplevel):
         if not self._show_correction_confirm_dialog(preview, "update", completed_lot=completed_lot):
             return
 
-        apply_linked_correction(preview, "update", self.current_worker.get("worker_id", "unknown"))
+        apply_correction(preview, "update")
         log_operation(
             self.current_worker.get("name", "unknown"),
             "生産実績修正",
@@ -141,20 +140,19 @@ class ActualCorrectionWindow(tk.Toplevel):
 
     def on_delete(self):
         """
-        実績の削除。両面の計画があるロットの場合、反対側の面の実績も連動して
-        削除する（D-112、on_update()と同じ考え方）。
+        実績の削除。削除するのは選んだ実績だけ（反対側の面へは連動しない。D-169）。
         """
         sel = self.tree.selection()
         if not sel:
             return
         prod_log_id = int(sel[0])
 
-        preview = build_linked_correction_preview(prod_log_id, "delete")
+        preview = build_correction_preview(prod_log_id, "delete")
 
         if not self._show_correction_confirm_dialog(preview, "delete"):
             return
 
-        apply_linked_correction(preview, "delete", self.current_worker.get("worker_id", "unknown"))
+        apply_correction(preview, "delete")
         log_operation(
             self.current_worker.get("name", "unknown"),
             "生産実績削除",
@@ -221,13 +219,10 @@ class ActualCorrectionWindow(tk.Toplevel):
 
     @staticmethod
     def _build_cancellation_log_detail(preview, return_to_staging, pending_row_id):
-        """操作履歴に、取り消した実績・反対側の面・NG申告・登録待ちに戻したかを残す（D-129）。"""
+        """操作履歴に、取り消した実績・NG申告・登録待ちに戻したかを残す（D-129）。"""
         p = preview["primary"]
         detail = (f"{p['kitting_list_no']} / ロットNo. {p['lot_no']} / 面{p['production_side']} / "
                   f"{p['daily_qty']:g}（{p['report_date']}）を取消")
-        o = preview["opposite"]
-        if o:
-            detail += f"（連動: {o['kitting_list_no']} / 面{o['production_side']} / {o['daily_qty']:g}（{o['report_date']}））"
         if preview["ng_declarations"]:
             detail += "（NG申告: " + "、".join(
                 f"{d['kitting_list_no']} 面{d['production_side']} {d['ng_qty']:g}" for d in preview["ng_declarations"]
@@ -239,12 +234,10 @@ class ActualCorrectionWindow(tk.Toplevel):
 
     def _show_correction_confirm_dialog(self, preview, action, completed_lot=None):
         """
-        修正・削除の確認ダイアログ（D-112）。反対側の実績の変化と、相手の特定方法（a/b）を示す。
-        b で特定した場合や、連動前から両面が食い違っていた場合は「※」で強調する。
+        修正・削除の確認ダイアログ。変えるのは選んだ実績だけ（反対側の面へは連動しない。D-169）。
         completed_lot（preview_completed_lot_correction() の結果）があれば、完成済みロットの確認も同じダイアログに出す（D-156）。
         """
         primary = preview["primary"]
-        secondary = preview.get("secondary")
 
         action_label = "修正" if action == "update" else "削除"
         lines = [f"【{action_label}する実績】"]
@@ -254,42 +247,6 @@ class ActualCorrectionWindow(tk.Toplevel):
         else:
             lines.append(f"　数量：{primary['old_daily_qty']:g}（削除）")
         lines.append(f"　日付：{primary['report_date']}")
-
-        if not preview["has_opposite_plan"]:
-            lines.append("")
-            lines.append("※ 反対側の面の計画が無いため、この面だけの変更です。")
-        elif secondary is None or secondary.get("ambiguous"):
-            lines.append("")
-            lines.append(
-                "※ 反対側の面の実績の相手を一意に特定できなかったため、"
-                "この面だけを変更します（反対側は変更しません）。"
-            )
-        else:
-            lines.append("")
-            lines.append("【連動して変わる反対側の実績】")
-            lines.append(f"　計画No：{secondary['kitting_list_no']}")
-            if secondary["action"] == "insert":
-                lines.append(f"　数量：（実績なし） → {secondary['new_daily_qty']:g}（新規登録）")
-            elif secondary["action"] == "update":
-                lines.append(f"　数量：{secondary['old_daily_qty']:g} → {secondary['new_daily_qty']:g}")
-            elif secondary["action"] == "delete":
-                lines.append(f"　数量：{secondary['old_daily_qty']:g} → （削除）")
-            else:  # noop
-                lines.append("　（実績が無いため、反対側は変更しません）")
-
-            method_text = (
-                "同じ数量・日付の実績から特定" if secondary["method"] == "a"
-                else "登録時の自動入力と同じ方法（最も近い計画）で特定"
-            )
-            lines.append(f"　相手の特定方法：{method_text}")
-            if secondary["method"] == "b":
-                lines.append("※ 修正前の数量・日付と完全に一致する実績が無かったため、bの方法で特定しました。")
-            if secondary.get("pre_existing_mismatch"):
-                lines.append(
-                    f"※ 連動前の反対側の実績（{secondary['old_daily_qty']:g}、"
-                    f"{secondary['report_date']}）は、この面の変更前の値と一致していませんでした。"
-                    "連動前から両面の実績が食い違っていた可能性があります。"
-                )
 
         if completed_lot is not None:
             lines.append("")
@@ -302,21 +259,8 @@ class ActualCorrectionWindow(tk.Toplevel):
 
     @staticmethod
     def _build_operation_log_detail(preview, action):
-        """操作履歴に、連動して変更した反対側の実績も分かる形で記録する（D-112）。"""
+        """操作履歴の詳細（修正・削除した実績）。"""
         primary = preview["primary"]
-        action_label = "修正" if action == "update" else "削除"
         if action == "update":
-            detail = f"{primary['kitting_list_no']} / ロットNo. {primary['lot_no']} / {primary['new_daily_qty']:g}"
-        else:
-            detail = f"{primary['kitting_list_no']} / ロットNo. {primary['lot_no']} / {action_label}"
-
-        secondary = preview.get("secondary")
-        if secondary and not secondary.get("ambiguous") and secondary["action"] != "noop":
-            if secondary["action"] == "insert":
-                sec_text = f"新規登録 {secondary['new_daily_qty']:g}"
-            elif secondary["action"] == "update":
-                sec_text = f"{secondary['old_daily_qty']:g}→{secondary['new_daily_qty']:g}"
-            else:
-                sec_text = f"{action_label}"
-            detail += f"（連動: {secondary['kitting_list_no']} / {sec_text}）"
-        return detail
+            return f"{primary['kitting_list_no']} / ロットNo. {primary['lot_no']} / {primary['new_daily_qty']:g}"
+        return f"{primary['kitting_list_no']} / ロットNo. {primary['lot_no']} / 削除"

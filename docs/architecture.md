@@ -28,7 +28,7 @@ import の向きだけを見ているので、実際の呼び出し回数や呼�
 | kitting/actual_correction_window.py | inventory_diff_service, production_service | operation_log | common/window_utils, kitting/cancel_registration_dialog |
 | kitting/cancel_registration_dialog.py | — | — | common/window_utils |
 | kitting/kitting_plan_import.py | csv_format_detection, kitting_import_service | kitting_plan, operation_log | common/window_utils, loading_window |
-| kitting/kitting_production_entry.py | csv_format_detection, lot_merge_service, lot_status_service, production_entry_service, production_import_service, production_service | board_structure_master, kitting_plan, ng_declarations, production, production_import_staging | common/column_filter, common/window_utils, kitting/actual_correction_window, loading_window, production/daily_drawdown_window, production/lot_progress_window, production/opposite_side_overwrite_dialog, production/production_import_staging_window, reports/unified_report_window |
+| kitting/kitting_production_entry.py | csv_format_detection, lot_merge_service, lot_status_service, production_entry_service, production_import_service, production_service | board_structure_master, kitting_plan, ng_declarations, production, production_import_staging | common/column_filter, common/window_utils, kitting/actual_correction_window, loading_window, production/daily_drawdown_window, production/lot_progress_window, production/production_import_staging_window, reports/unified_report_window |
 | kitting/plan_candidate_dialog.py | date_parsing | — | common/highlight_colors, common/window_utils |
 | loading_window.py | — | — | common/window_utils |
 | login_window.py | — | workers | common/window_utils, main_window, master/worker_registration_window |
@@ -45,8 +45,7 @@ import の向きだけを見ているので、実際の呼び出し回数や呼�
 | production/daily_drawdown_window.py | lot_status_history | — | common/lot_row_style, common/window_utils |
 | production/lot_merge_window.py | inventory_diff_service, lot_merge_items_service, lot_merge_service | — | common/window_utils, production/lot_progress_window |
 | production/lot_progress_window.py | lot_merge_items_service, lot_status_service, production_report_service, production_service | — | common/lot_row_style, common/window_utils, loading_window, production/lot_merge_window※ |
-| production/opposite_side_overwrite_dialog.py | — | — | common/window_utils |
-| production/production_import_staging_window.py | lot_merge_service, lot_status_service, production_entry_service, production_import_service, production_service, staging_eligibility | kitting_plan, production, production_import_staging | common/highlight_colors, common/window_utils, kitting/kitting_production_entry※, kitting/plan_candidate_dialog, production/opposite_side_overwrite_dialog |
+| production/production_import_staging_window.py | lot_merge_service, lot_status_service, production_entry_service, production_import_service, production_service, staging_eligibility | kitting_plan, production, production_import_staging | common/highlight_colors, common/window_utils, kitting/kitting_production_entry※, kitting/plan_candidate_dialog |
 | production/unmatched_production_window.py | — | — | common/window_utils |
 | reports/daily_report_window.py | — | board_structure_master | common/lot_row_style, common/window_utils |
 | reports/parts_ng_report_window.py | — | scrap_records | common/window_utils, reports/daily_report_window |

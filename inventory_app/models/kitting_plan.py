@@ -273,6 +273,7 @@ def find_opposite_side_plan(lot_no: str, setup_file_no: str, current_side,
     """
     同じ lot_no・setup_file_no で、反対側の面の現在アクティブな計画を1件返す（無ければ None）。
     日付違いの複数バッチがある場合は、current_plan_start_datetime に最も近いもの（無いか解釈できなければ最も古いもの）。
+    NG の欄（面2を選んだときの面1の欄）と、実績の取り消しで面1の NG を探すためだけに使う。完成数の計算・実績の登録には使わない（D-169）。
     """
     opposite_side = "2" if str(current_side).strip() == "1" else "1"
 
@@ -311,21 +312,6 @@ def find_opposite_side_plan(lot_no: str, setup_file_no: str, current_side,
 
     candidates.sort(key=diff_seconds)
     return candidates[0]
-
-
-def list_active_side_plans_for_file(lot_no: str, setup_file_no: str) -> list:
-    """
-    同じ (lot_no, setup_file_no) の、現在アクティブな面1・面2の計画を全件返す。
-    面1と面2の合計を比べる不整合判定用（find_opposite_side_plan() で1件に絞ると、複数バッチで誤った組を選んで誤検出した）。
-    """
-    with get_connection() as con:
-        cur = con.cursor()
-        cur.execute("""
-            SELECT * FROM kitting_plan_items
-            WHERE COALESCE(lot_no, '') = ? AND COALESCE(setup_file_no, '') = ?
-              AND production_side IN ('1', '2') AND COALESCE(is_active, 1) = 1
-        """, (lot_no or "", setup_file_no or ""))
-        return [dict(row) for row in cur.fetchall()]
 
 
 def list_plan_batches(include_deleted: bool = False):

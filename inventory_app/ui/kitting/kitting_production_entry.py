@@ -6,8 +6,6 @@ from tkinter import ttk, messagebox, filedialog
 from tkcalendar import DateEntry
 from services.production_service import (
     search_plan_by_kitting_no,
-    register_opposite_side_daily_result,
-    preview_opposite_side_overwrite,
     get_daily_history,
     calculate_lot_completion,
 )
@@ -31,7 +29,6 @@ from ui.reports.unified_report_window import UnifiedReportWindow
 from ui.production.lot_progress_window import LotProgressWindow
 from ui.production.daily_drawdown_window import DailyDrawdownWindow
 from ui.production.production_import_staging_window import open_or_notify, format_completed_lot_warning
-from ui.production.opposite_side_overwrite_dialog import format_opposite_change
 from ui.loading_window import LoadingWindow
 from ui.common.window_utils import center_window
 from ui.common.column_filter import CheckboxFilterPopup, build_filter_predicates, row_matches, filter_rows, date_range_predicate, make_sort_key
@@ -1270,7 +1267,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
     def _build_registration_preview(self, daily_qty, save_qty_by_side):
         """
         登録確認ダイアログの内容を、DB に書き込まずに計算する。
-        既存の実績は選択中の面だけ確認する。反対側の面は確認なしで上書きする（選択中の面で確認済みという前提）。
+        既存の実績は選択中の面だけ確認する（反対側の面には書かない。D-169）。
         登録後の実績は必ず daily_qty になる（1計画＝1レコードで上書き）ので、書き込み前に不一致を判定できる。
         不一致は予定生産数（planned_qty、その面の計画数）と比べる。発注数（order_qty）ではない。
         """
@@ -1299,11 +1296,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         # 面1だけの計画で b（面2待ち）・c（生産面マスター未登録）なら、確認ダイアログで理由を示す（D-9x。登録は禁止しない）。
         side1_only_classification = classify_side1_only_plan(self.current_plan)
 
-        # 反対側の面の既存の実績が、連動で数量か日付を変えられるなら、確認ダイアログで示す（D-126）。
-        # _perform_registration() と同じ日付（転記した CSV の払い出し日、手入力なら None）で判定する。
-        opposite_change = preview_opposite_side_overwrite(self.current_plan, daily_qty, new_report_date)
-
-        # ロットが完成済みなら確認ダイアログで示す（D-130。手入力も対象、D-133）。面2の置き換え（D-126）と同じダイアログに並べる。
+        # ロットが完成済みなら確認ダイアログで示す（D-130。手入力も対象、D-133）。
         completed_lot = preview_completed_lot_registration(self.current_plan, daily_qty)
 
         return {
@@ -1314,7 +1307,6 @@ class KittingProductionEntryWindow(tk.Toplevel):
             "save_qty_by_side": save_qty_by_side,
             "mismatch_lines": mismatch_lines,
             "side1_only_classification": side1_only_classification,
-            "opposite_change": opposite_change,
             "completed_lot": completed_lot,
         }
 
@@ -1343,12 +1335,6 @@ class KittingProductionEntryWindow(tk.Toplevel):
                     f"・面{side}（{side_plan['kitting_list_no']}）のNG数量："
                     f"{preview['save_qty_by_side'][side]:g}"
                 )
-
-        opposite_change = preview.get("opposite_change")
-        if opposite_change is not None:
-            lines.append("")
-            lines.append(f"・{format_opposite_change(opposite_change)}（計画 {opposite_change['kitting_list_no']}）。")
-            lines.append("・キャンセルすると、どちらの面も登録しません。")
 
         completed_lot = preview.get("completed_lot")
         if completed_lot is not None:
@@ -1468,7 +1454,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
     def _perform_registration(self, daily_qty, preview, record_history=True):
         """
-        確認ダイアログで「登録」が選ばれた後、実績→反対側の面→NG の順に登録する（書き込みは register_actual_and_ng()）。
+        確認ダイアログで「登録」が選ばれた後、実績→NG の順に登録する（書き込みは register_actual_and_ng()）。
         途中でエラーが出ても、成功した分は残してエラーを表示する（ロールバックしない）。
         record_history=False は Shift+S 一括登録用（呼び出し元が最後にロット単位でまとめて記録する）。
         実績の日付は CSV の払い出し日（手入力なら実行日）、NG の日付は当日。
@@ -1492,7 +1478,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
             return
 
         # CSV 経由なら、実績の登録が成功したらその行を一覧から消す。
-        # NG・反対側連動の成否は問わない（CSV 行が表すのは実績数量だけで、NG は別枠のため）。
+        # NG の保存の成否は問わない（CSV 行が表すのは実績数量だけで、NG は別枠のため）。
         if self._pending_csv_row_removal is not None:
             self._pending_csv_row_removal()
             self._pending_csv_row_removal = None
@@ -1503,7 +1489,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         self.load_today_log()
         self._load_current_daily_qty(kitting_no, lot_no)
         self._setup_ng_side_ui(self.current_plan)
-        # 同じ lot_no の行だけ部分更新する。すべての書き込み（実績・反対側連動・NG）の後に呼ぶこと。
+        # 同じ lot_no の行だけ部分更新する。すべての書き込み（実績・NG）の後に呼ぶこと。
         self._refresh_plan_list_for_lot(lot_no)
 
         messagebox.showinfo(
@@ -1522,18 +1508,6 @@ class KittingProductionEntryWindow(tk.Toplevel):
         else:
             # 手動登録では、続けて入力できるよう実績記入欄へ戻す。
             self.entry_daily_qty.focus_set()
-
-    def _register_opposite_side_daily_result(self, daily_qty, worker_id, report_date=None,
-                                               record_history=True):
-        """
-        反対側の面へ同じ数量を連動登録する（register_opposite_side_daily_result() の薄いラッパー）。
-        report_date には主たる面と同じ値を渡す（渡さないと反対側だけ実行日になる）。
-        反対側へ登録したら True、反対側が無ければ False。
-        """
-        return register_opposite_side_daily_result(
-            self.current_plan, daily_qty, worker_id, report_date=report_date,
-            record_history=record_history,
-        )
 
     def _setup_ng_side_ui(self, plan):
         """

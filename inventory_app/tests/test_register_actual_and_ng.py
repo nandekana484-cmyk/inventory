@@ -15,7 +15,6 @@ def test_success(monthly_db):
         "actual_registered": True,
         "actual_error": None,
         "new_cumulative": 90.0,
-        "opposite_registered": True,
         "declared_sides": ["1", "2"],
         "errors": [],
     }
@@ -24,7 +23,6 @@ def test_success(monthly_db):
 def test_single_side_plan(monthly_db):
     p3 = _plan("K3", "L2")
     result = _call(p3, {"1": None, "2": p3})
-    assert result["opposite_registered"] is False
     assert result["declared_sides"] == []
 
 
@@ -44,4 +42,4 @@ def test_actual_failure_returns_error_and_stops(monthly_db):
     assert result["actual_registered"] is False
     assert result["new_cumulative"] is None
     assert str(result["actual_error"]) == "test failure"
-    assert result["opposite_registered"] is False and result["declared_sides"] == [] and result["errors"] == []
+    assert result["declared_sides"] == [] and result["errors"] == []

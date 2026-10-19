@@ -18,7 +18,6 @@ from services.production_import_service import (
 )
 from services.production_service import (
     search_plan_by_kitting_no, get_daily_history, record_lot_status_snapshot,
-    preview_opposite_side_overwrite, preview_opposite_side_overwrites,
 )
 from services.lot_status_service import preview_completed_lot_registration, lot_completion_state
 from services.lot_merge_service import match_lot_of
@@ -52,9 +51,6 @@ from ui.kitting.plan_candidate_dialog import (
 )
 from ui.common.window_utils import center_window
 from ui.common.highlight_colors import MISMATCH_RED
-from ui.production.opposite_side_overwrite_dialog import (
-    format_opposite_change, ask_bulk_opposite_overwrite, BULK_CANCEL, BULK_SKIP_REPLACED,
-)
 
 # 「候補なし」行を CSV 出力するときの理由。import_production_csv() の unmatched の理由と同じ文言。
 REASON_NO_CANDIDATES = "計画が見つからない（該当lot_noの計画なし）"
@@ -106,7 +102,6 @@ from services.staging_eligibility import (  # noqa: E402,F401 （re-export）
     REASON_QTY_MISMATCH,
     REASON_DATE_UNPARSEABLE,
     REASON_DATE_DIFF_TOO_LARGE,
-    REASON_OPPOSITE_OVERWRITE,
     AUTO_REGISTER_SKIP_REASON_LABELS,
     _date_only_diff_days,
     _is_qty_mismatch,
@@ -732,14 +727,14 @@ class ProductionImportStagingWindow(tk.Toplevel):
         self._register_candidate_immediately(row, staging_iid, candidate)
 
     def _register_staged_row(self, row, staging_iid, candidate, record_history=True, show_in_parent=True,
-                             opposite_overwrite_confirmed=False, lot_completion_checked=False):
+                             lot_completion_checked=False):
         """
         保留行1件を、確認ダイアログ（親の _start_registration()）を通さずに登録する。右クリックの即時登録と一括登録の共通部分。
         既に実績があるとき・面1だけの計画のときは確認し、「いいえ」なら何もせず None を返す（保留行は残る）。
         登録は register_actual_and_ng() を直接呼び、戻り値をそのまま返す。実績の登録が成功したら保留行を消し、失敗したらエラーを出す。
         NG は登録しない（save_qty_by_side={}。自動確定の要件は実績数量と日付だけで、NG 欄の値を誤って使わないため）。
         show_in_parent=True なら、登録の前に親の画面へ計画を表示し、登録の後に親の画面を更新する（一括登録は最後に1回だけ行う）。
-        反対側の面の既存の実績が置き換わるなら確認する（D-126）。opposite_overwrite_confirmed=True は一括登録で確認済みのとき。
+        反対側の面には実績を書かない（面1への自動入力は廃止。D-169）。
         ロットが完成済みなら確認する（D-130）。lot_completion_checked=True は一括登録で除外済みのとき。
         """
         parent = self._parent
@@ -765,19 +760,8 @@ class ProductionImportStagingWindow(tk.Toplevel):
             ):
                 return None
 
-        # 反対側の面の既存の実績が連動で変わるなら、登録の直前の状態で判定して確認する（D-126）。「いいえ」ならどちらの面も登録しない。
         report_date = resolve_csv_report_date(row.get("report_date"))
         plan, _candidates = search_plan_by_kitting_no(kitting_list_no, lot_no)
-        if not opposite_overwrite_confirmed:
-            change = preview_opposite_side_overwrite(plan, daily_qty, report_date)
-            if change is not None and not messagebox.askyesno(
-                "反対側の面の実績の置き換え",
-                f"{format_opposite_change(change)}（計画 {change['kitting_list_no']}）。\n\n"
-                "続けると、反対側の面の実績は置き換えられます。登録しますか？\n"
-                "（「いいえ」なら、どちらの面も登録しません）",
-                parent=self.winfo_toplevel(),
-            ):
-                return None
 
         remove_callback = self._make_remove_callback(staging_iid)
         if show_in_parent:
@@ -797,7 +781,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
             )
             return result
 
-        # NG・反対側連動の成否は問わない（CSV 行が表すのは実績数量だけ）。
+        # NG の成否は問わない（CSV 行が表すのは実績数量だけ）。
         remove_callback()
         if show_in_parent:
             parent.refresh_after_external_registration([lot_no], new_cumulative=result["new_cumulative"])
@@ -963,26 +947,10 @@ class ProductionImportStagingWindow(tk.Toplevel):
             if not messagebox.askyesno(f"{shortcut_label}一括登録の確認", confirm_message, parent=self):
                 return
 
-        # 反対側の面の既存の実績が置き換わる行があれば、登録の前に1回だけ一覧で確認する（D-126）。
-        # 同じ一括の中で前の行が書く実績も数える。「除いて登録」なら、各行の登録の直前にもう一度判定して除く。
-        changes = preview_opposite_side_overwrites([
-            (iid, candidate, row["daily_qty"], resolve_csv_report_date(row.get("report_date")))
-            for iid, row, _e, _r, candidate, _d in eligible_items
-        ])
-        overwrite_choice = None
-        if changes:
-            overwrite_choice = ask_bulk_opposite_overwrite(self, [
-                {"lot_no": row["lot_no"], "kitting_list_no": candidate["kitting_list_no"], "change": changes[iid]}
-                for iid, row, _e, _r, candidate, _d in eligible_items if iid in changes
-            ])
-            if overwrite_choice == BULK_CANCEL:
-                self._refocus_staging_window()
-                return
-
         registered_count = 0
         failed_count = 0
         skip_reason_counts = {}
-        # 登録できた行の lot_no（反対側の面も同じ lot_no なので追加は不要）。最後にまとめて履歴を記録し、親の計画一覧も更新する。
+        # 登録できた行の lot_no。最後にまとめて履歴を記録し、親の計画一覧も更新する。
         affected_lot_nos = []
         # 確認ダイアログを通って登録まで進んだ最後の行。最後に親の画面に表示する。
         last_attempted = None
@@ -997,15 +965,10 @@ class ProductionImportStagingWindow(tk.Toplevel):
                 skip_reason_counts[REASON_LOT_COMPLETED] = skip_reason_counts.get(REASON_LOT_COMPLETED, 0) + 1
                 continue
 
-            if overwrite_choice == BULK_SKIP_REPLACED and preview_opposite_side_overwrite(
-                    candidate, row["daily_qty"], resolve_csv_report_date(row.get("report_date"))) is not None:
-                skip_reason_counts[REASON_OPPOSITE_OVERWRITE] = skip_reason_counts.get(REASON_OPPOSITE_OVERWRITE, 0) + 1
-                continue
-
             # 行ごとに履歴を記録すると100件規模で数秒かかるため、最後にロット単位でまとめて記録する。
             # 親の画面も行ごとには更新しない（登録の内容は親の画面の状態に依存しないため）。最後に1回だけ更新する。
             result = self._register_staged_row(row, iid, candidate, record_history=False, show_in_parent=False,
-                                               opposite_overwrite_confirmed=True, lot_completion_checked=True)
+                                               lot_completion_checked=True)
             if result is not None:
                 last_attempted = (iid, row, candidate)
             if iid not in self._row_by_iid:

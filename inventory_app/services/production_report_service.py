@@ -3,11 +3,7 @@
 段階5で services/production_service.py から移した（関数の中身は変えていない）。production_service.py からも re-export している。
 ロット状態の判定は services/lot_status_service.py の evaluate_lot_status() に一本化している。
 """
-from models.kitting_plan import (
-    find_plan_item_by_kitting_no,
-    find_opposite_side_plan,
-    list_active_side_plans_for_file,
-)
+from models.kitting_plan import find_plan_item_by_kitting_no, list_plan_items_by_lot
 from models.production import (
     get_app_cumulative_qty,
     list_daily_production_today,
@@ -50,19 +46,15 @@ def _build_report_rows(records):
     production_daily のレコードから、日報・月報共通の表示行と警告を作る。
     - 引落・仕掛・未完了は _evaluate_lot_status() の結果をそのまま使う（判定は全画面でそこに一本化）。判定できないロットは未完成扱い
     - lot_no は計画を引き直さず、実績の lot_id を使う（kitting_list_no は lot_no をまたいで重複するため）
-    - 面2の計画があるロット・ファイルNoの面1の行は表示しない（D-8）。面1合計が面2合計を上回れば inconsistency_warnings に記録する（D-111）
+    - 元のロット・ファイルNoに面2の計画がある面1の行は表示しない（D-8・D-167。完成数の計算と同じ単位）
     - 構成基板数が不足するロットには、不足分の「未確定」仮想行を追加する（kitting_list_no=""、数量は None でなく 0）
-    戻り値は (report_rows, inconsistency_warnings, order_qty_inconsistency_warnings, unregistered_board_warnings,
+    戻り値は (report_rows, order_qty_inconsistency_warnings, unregistered_board_warnings,
     excess_file_no_warnings, board_count_inconsistency_warnings)。各要素の形と経緯は docs/domain/lot_completion.md。
-    統合したロット（D-150）: 評価・面1を隠す判定・警告は統合後のロットで行う。行の lot_no は実績の元のロットNoのまま
+    面1・面2の不整合の警告（D-111）は、面1の実績を計算に使わなくなったので廃止した（D-169）。
+    統合したロット（D-150）: 評価・警告は統合後のロットで行う。行の lot_no は実績の元のロットNoのまま
     （実績修正・NG・仕掛の抽出で使う）で、表示用に lot_label・file_label を足し、統合されるロットの行の発注数は統合先にそろえる。
     """
     merge_map = load_lot_merge_map()
-
-    def group_lots(lot_no):
-        target = merge_map.target_of(lot_no)
-        members = merge_map.members_of(target)
-        return [target] + members if members else [lot_no]
 
     enriched = []
     for rec in records:
@@ -79,47 +71,22 @@ def _build_report_rows(records):
             "report_date": rec["report_date"],
         })
 
-    # 面1の除外は「面2がアクティブな計画として存在するか」だけで判定する（D-8）。find_opposite_side_plan() は複数バッチを
-    # 1件に絞る関数なので、ここで使うと誤った絞り込みに引き込まれる（D-111）。
-    excluded_indices = set()
-    file_keys_with_opposite = set()
-    for idx, item in enumerate(enriched):
-        plan = item["plan"]
-        if plan is None:
-            continue
-        side = str(plan.get("production_side") or "").strip()
-        if side != "1":
-            continue
+    # 面1の除外は、元のロットのそのファイルNoに面2の有効な計画があるかだけで判定する（D-8・D-167）。ロットごとに1回だけ読む。
+    side2_files_by_lot = {}
 
-        setup_file_no = plan.get("setup_file_no")
-        lot_no = item["lot_no"]
-        # 統合したロットでは、統合後のロットのどれかに面2の計画があれば隠す（D-150）。統合していなければ従来どおり lot_no だけ。
-        if all(find_opposite_side_plan(lot, setup_file_no, "1") is None for lot in group_lots(lot_no)):
-            continue  # 面2計画が無い（片面のみの計画）→ 除外しない
+    def has_side2(lot_no, setup_file_no):
+        if lot_no not in side2_files_by_lot:
+            side2_files_by_lot[lot_no] = {
+                p["setup_file_no"] for p in list_plan_items_by_lot(lot_no)
+                if str(p.get("production_side") or "").strip() == "2"
+            }
+        return setup_file_no in side2_files_by_lot[lot_no]
 
-        excluded_indices.add(idx)
-        file_keys_with_opposite.add((merge_map.target_of(lot_no), setup_file_no))
-
-    # 不整合は、ロットNo・ファイルNoごとの面1合計と面2合計で比べる（D-111。計画どうしを1対1で対応づけないので、複数バッチでも誤検出しない）。
-    inconsistency_warnings = []
-    for lot_no, setup_file_no in sorted(file_keys_with_opposite):
-        lots = group_lots(lot_no)
-        side_plans = [(lot, p) for lot in lots for p in list_active_side_plans_for_file(lot, setup_file_no)]
-        side1_plans = [(lot, p) for lot, p in side_plans if str(p.get("production_side") or "").strip() == "1"]
-        side2_plans = [(lot, p) for lot, p in side_plans if str(p.get("production_side") or "").strip() == "2"]
-        side1_total = sum(get_app_cumulative_qty(p["kitting_list_no"], lot) for lot, p in side1_plans)
-        side2_total = sum(get_app_cumulative_qty(p["kitting_list_no"], lot) for lot, p in side2_plans)
-
-        if side1_total > side2_total:
-            inconsistency_warnings.append({
-                "lot_no": lot_no,
-                "setup_file_no": setup_file_no,
-                "side1_total": side1_total,
-                "side2_total": side2_total,
-                "diff": side1_total - side2_total,
-                "side1_kitting_list_nos": [p["kitting_list_no"] for _lot, p in side1_plans],
-                "side2_kitting_list_nos": [p["kitting_list_no"] for _lot, p in side2_plans],
-            })
+    excluded_indices = {
+        idx for idx, item in enumerate(enriched)
+        if item["plan"] is not None and str(item["plan"].get("production_side") or "").strip() == "1"
+        and has_side2(item["lot_no"], item["plan"].get("setup_file_no"))
+    }
 
     # 「NGの有無」の絞り込み用に、NG 実績か NG 申告がある (kitting_list_no, lot_no, production_side) を先にまとめて取得する（N+1 回避）。
     ng_exists_keys = {
@@ -280,7 +247,7 @@ def _build_report_rows(records):
                 seq += 1
 
     return (
-        report_rows, inconsistency_warnings, order_qty_inconsistency_warnings,
+        report_rows, order_qty_inconsistency_warnings,
         unregistered_board_warnings, excess_file_no_warnings,
         board_count_inconsistency_warnings,
     )

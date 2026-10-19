@@ -92,9 +92,6 @@ class _FakeEntryWindow:
         self.lbl_app_cum = _Recorder(events, "lbl_app_cum")
         self.entry_daily_qty = _Recorder(events, "entry_daily_qty")
 
-    def _register_opposite_side_daily_result(self, *args, **kwargs):
-        return KPE._register_opposite_side_daily_result(self, *args, **kwargs)
-
     def load_today_log(self):
         self._events.append(("load_today_log",))
 
@@ -124,8 +121,9 @@ def events(monkeypatch):
 
 
 def _both_sides_window(events, **kwargs):
+    """両面の計画の面2（K2）を選んだ画面。面2がある面1（K1）は登録の対象にしない（D-167）。NG の欄は面1・面2の両方。"""
     p1, p2 = _plan("K1", "L1"), _plan("K2", "L1")
-    return _FakeEntryWindow(p1, {"1": p1, "2": p2}, events, **kwargs)
+    return _FakeEntryWindow(p2, {"1": p1, "2": p2}, events, **kwargs)
 
 
 def _register(window, daily_qty, save_qty_by_side=None, existing_daily_qty=None, record_history=True):
@@ -155,72 +153,60 @@ def _messages(events, name):
 def test_actual_uses_csv_date_and_ng_uses_today(monthly_db, events):
     window = _both_sides_window(events, pending_report_date="2026/3/18")
     _register(window, 90, {"1": 4.0})
-    assert _history("K1", "L1") == [("2026-03-18", 90.0, "W1")]  # CSV の払い出し日を正規化した日付
+    assert _history("K2", "L1") == [("2026-03-18", 90.0, "W1")]  # CSV の払い出し日を正規化した日付
     assert _ng("K1", 1) == (4.0, _today())                         # NG は登録した当日
     assert window._pending_csv_report_date is None                 # 使った CSV の日付はクリアする
 
 
 def test_manual_entry_uses_today(monthly_db, events):
     _register(_both_sides_window(events), 90)
-    assert _history("K1", "L1") == [(_today(), 90.0, "W1")]
+    assert _history("K2", "L1") == [(_today(), 90.0, "W1")]
 
 
 def test_unparseable_csv_date_falls_back_to_today(monthly_db, events):
     _register(_both_sides_window(events, pending_report_date="2026.03.18"), 90)
-    assert _history("K1", "L1") == [(_today(), 90.0, "W1")]
+    assert _history("K2", "L1") == [(_today(), 90.0, "W1")]
 
 
 def test_overwrite_replaces_existing_and_keeps_its_date_when_manual(monthly_db, events):
     """既存の実績があれば上書き（1計画＝1レコード）。手入力（日付なし）なら既存の日付を引き継ぐ。"""
-    p1 = _plan("K1", "L1")
-    insert_daily_production(p1["plan_item_id"], "K1", "L1", "BoardA", "2026-07-20", 50, "W0")
+    p2 = _plan("K2", "L1")
+    insert_daily_production(p2["plan_item_id"], "K2", "L1", "BoardA", "2026-07-20", 50, "W0")
     _register(_both_sides_window(events), 90, existing_daily_qty=50)
-    assert _history("K1", "L1") == [("2026-07-20", 90.0, "W1")]
+    assert _history("K2", "L1") == [("2026-07-20", 90.0, "W1")]
 
 
 def test_overwrite_with_csv_date(monthly_db, events):
-    p1 = _plan("K1", "L1")
-    insert_daily_production(p1["plan_item_id"], "K1", "L1", "BoardA", "2026-07-20", 50, "W0")
-    _register(_both_sides_window(events, pending_report_date="2026/7/23"), 90, existing_daily_qty=50)
-    assert _history("K1", "L1") == [("2026-07-23", 90.0, "W1")]
-
-
-# ---------------------------------------------------------------- 反対側の面の連動
-
-def test_opposite_side_registered_with_same_qty_and_date(monthly_db, events):
-    _register(_both_sides_window(events, pending_report_date="2026/3/18"), 90)
-    assert _history("K2", "L1") == [("2026-03-18", 90.0, "W1")]
-    assert "反対側の面にも同じ数量を連動登録しました。" in _messages(events, "showinfo")[0][3]
-
-
-def test_opposite_side_existing_is_overwritten_without_check(monthly_db, events):
     p2 = _plan("K2", "L1")
-    insert_daily_production(p2["plan_item_id"], "K2", "L1", "BoardA", "2026-07-20", 30, "W0")
-    _register(_both_sides_window(events, pending_report_date="2026/7/23"), 90)
+    insert_daily_production(p2["plan_item_id"], "K2", "L1", "BoardA", "2026-07-20", 50, "W0")
+    _register(_both_sides_window(events, pending_report_date="2026/7/23"), 90, existing_daily_qty=50)
     assert _history("K2", "L1") == [("2026-07-23", 90.0, "W1")]
 
 
-def test_single_side_plan_has_no_opposite_registration(monthly_db, events):
+# ---------------------------------------------------------------- 面1には書かない（D-169。面1への自動入力は廃止）
+
+def test_side2_registration_writes_nothing_to_side1(monthly_db, events):
+    _register(_both_sides_window(events, pending_report_date="2026/3/18"), 90)
+    assert _history("K2", "L1") == [("2026-03-18", 90.0, "W1")]
+    assert _history("K1", "L1") == []
+    assert "反対側" not in _messages(events, "showinfo")[0][3]
+
+
+def test_side2_registration_keeps_old_side1_record_untouched(monthly_db, events):
+    """古い版で面1に入った写しがあっても、面2の登録では書き換えない（計算には使わない）。"""
+    p1 = _plan("K1", "L1")
+    insert_daily_production(p1["plan_item_id"], "K1", "L1", "BoardA", "2026-07-20", 30, "W0")
+    _register(_both_sides_window(events, pending_report_date="2026/7/23"), 90)
+    assert _history("K1", "L1") == [("2026-07-20", 30.0, "W0")]
+
+
+def test_single_side_plan_registration(monthly_db, events):
     p3 = _plan("K3", "L2")
     window = _FakeEntryWindow(p3, {"2": p3, "1": None}, events)
     _register(window, 90)
     assert _history("K3", "L2") == [(_today(), 90.0, "W1")]
     message = _messages(events, "showinfo")[0][3]
     assert "反対側" not in message
-
-
-def test_opposite_failure_keeps_actual_and_reports_error(monthly_db, events):
-    _add_abort_trigger("fail_k2", "production_daily", "NEW.kitting_list_no = 'K2'")
-    removed = []
-    window = _both_sides_window(events, removal=lambda: removed.append(True))
-    _register(window, 90, {"1": 4.0})
-    assert _history("K1", "L1") == [(_today(), 90.0, "W1")]
-    assert _history("K2", "L1") == []
-    assert _ng("K1", 1) == (4.0, _today())  # 反対側が失敗しても NG は続けて保存する
-    assert removed == [True]
-    message = _messages(events, "showinfo")[0][3]
-    assert "反対側の面への実績連動登録に失敗しました：test failure" in message
-    assert "反対側の面にも同じ数量を連動登録しました。" not in message
 
 
 # ---------------------------------------------------------------- NG の保存値
@@ -271,8 +257,8 @@ def test_ng_failure_keeps_actual_and_removes_pending_row(monthly_db, events):
     window = _both_sides_window(events, pending_report_date="2026/3/18", removal=lambda: removed.append(True))
     _register(window, 90, {"1": 8.0, "2": 5.0})
 
-    assert _history("K1", "L1") == [("2026-03-18", 90.0, "W1")]  # 実績は残る（ロールバックしない）
-    assert _history("K2", "L1") == [("2026-03-18", 90.0, "W1")]
+    assert _history("K2", "L1") == [("2026-03-18", 90.0, "W1")]  # 実績は残る（ロールバックしない）
+    assert _history("K1", "L1") == []
     assert _ng("K2", 2) == (5.0, _today())                         # 失敗しなかった面は保存される
     assert removed == [True]                                       # 保留行は NG の成否を問わず消す
     assert window._pending_csv_row_removal is None
@@ -289,13 +275,13 @@ def test_ng_failure_keeps_actual_and_removes_pending_row(monthly_db, events):
 # ---------------------------------------------------------------- 実績の登録の失敗
 
 def test_actual_failure_writes_nothing_and_keeps_pending_row(monthly_db, events):
-    _add_abort_trigger("fail_k1", "production_daily", "NEW.kitting_list_no = 'K1'")
+    _add_abort_trigger("fail_k2", "production_daily", "NEW.kitting_list_no = 'K2'")
     removed = []
     window = _both_sides_window(events, pending_report_date="2026/3/18", removal=lambda: removed.append(True))
     _register(window, 90, {"1": 8.0, "2": 5.0})
 
+    assert _history("K2", "L1") == []
     assert _history("K1", "L1") == []
-    assert _history("K2", "L1") == []         # 反対側にも進まない
     assert _ng("K1", 1) is None and _ng("K2", 2) is None
     assert removed == []                       # 保留行は消さない
     assert window._pending_csv_row_removal is not None
@@ -313,15 +299,15 @@ def test_actual_failure_writes_nothing_and_keeps_pending_row(monthly_db, events)
 def test_operation_log_records_actual_registration(monthly_db, events):
     _register(_both_sides_window(events), 90, {"1": 4.0})
     logs = list_operation_log()
-    assert len(logs) == 1  # 反対側の連動・NG は別に記録しない
+    assert len(logs) == 1  # NG は別に記録しない
     assert logs[0]["worker_name"] == "作業者A"
     assert logs[0]["operation_name"] == "生産実績登録"
-    assert logs[0]["detail"] == "K1 / ロットNo. L1 / 90"
+    assert logs[0]["detail"] == "K2 / ロットNo. L1 / 90"
 
 
 def test_operation_log_formats_fractional_qty(monthly_db, events):
     _register(_both_sides_window(events), 12.5)
-    assert list_operation_log()[0]["detail"] == "K1 / ロットNo. L1 / 12.5"
+    assert list_operation_log()[0]["detail"] == "K2 / ロットNo. L1 / 12.5"
 
 
 # ---------------------------------------------------------------- 画面側の動き（順序）
@@ -332,8 +318,8 @@ def test_screen_updates_order_for_manual_entry(monthly_db, events):
     assert names == [
         ("lbl_app_cum", "config"),
         ("load_today_log",),
-        ("_load_current_daily_qty", "K1", "L1"),
-        ("_setup_ng_side_ui", "K1"),
+        ("_load_current_daily_qty", "K2", "L1"),
+        ("_setup_ng_side_ui", "K2"),
         ("_refresh_plan_list_for_lot", "L1"),
         ("messagebox", "showinfo"),
         ("entry_daily_qty", "focus_set"),   # 手入力では記入欄へ戻す
@@ -353,8 +339,8 @@ def test_screen_updates_order_for_csv_staging(monthly_db, events):
         ("removal",),                       # 画面の更新より前に保留行を消す
         ("lbl_app_cum", "config"),
         ("load_today_log",),
-        ("_load_current_daily_qty", "K1", "L1"),
-        ("_setup_ng_side_ui", "K1"),
+        ("_load_current_daily_qty", "K2", "L1"),
+        ("_setup_ng_side_ui", "K2"),
         ("_refresh_plan_list_for_lot", "L1"),
         ("messagebox", "showinfo"),
         ("staging", "lift"),                # CSV 経由なら一覧を手前に戻し、フォーカスも渡す（D-84）
@@ -364,12 +350,12 @@ def test_screen_updates_order_for_csv_staging(monthly_db, events):
 
 
 def test_cumulative_label_shows_new_cumulative(monthly_db, events):
-    p1 = _plan("K1", "L1")
-    insert_daily_production(p1["plan_item_id"], "K1", "L1", "BoardA", "2026-07-20", 50, "W0")
+    p2 = _plan("K2", "L1")
+    insert_daily_production(p2["plan_item_id"], "K2", "L1", "BoardA", "2026-07-20", 50, "W0")
     _register(_both_sides_window(events), 30)  # 既存ありでも existing_daily_qty=None なら追記（呼び出し側の判定に従う）
     assert events[0][:2] == ("lbl_app_cum", "config")
     assert events[0][3] == {"text": "80"}
-    assert sorted(_history("K1", "L1")) == [("2026-07-20", 50.0, "W0"), (_today(), 30.0, "W1")]
+    assert sorted(_history("K2", "L1")) == [("2026-07-20", 50.0, "W0"), (_today(), 30.0, "W1")]
 
 
 # ---------------------------------------------------------------- record_history
@@ -384,8 +370,8 @@ def _lot_history_count():
 def test_record_history_false_writes_no_lot_history(monthly_db, events):
     _register(_both_sides_window(events), 90, record_history=False)
     assert _lot_history_count() == 0
-    assert _history("K1", "L1") == [(_today(), 90.0, "W1")]
     assert _history("K2", "L1") == [(_today(), 90.0, "W1")]
+    assert _history("K1", "L1") == []
 
 
 def test_record_history_true_writes_lot_history(monthly_db, events):
