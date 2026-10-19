@@ -92,15 +92,15 @@ def test_incomplete_lot_increase_does_not_ask(tk_root, sample_db, dialogs):
 def test_merged_lot_completed_after_merge_asks(tk_root, example_db, dialogs):
     # 500500 単独は 950／1000 で未完成。500500- と統合すると 1000／1000 で完成済み（統合後のロットで判定する）
     dialogs["answers"] = [False]
-    _correct(tk_root, "K500500-1", "500500", 960)
+    _correct(tk_root, "K500500-2", "500500", 960)
     assert LINE not in _confirm(dialogs)
     dialogs["calls"].clear()
     svc.merge_lots("500500-", "作業者A")
     dialogs["answers"] = [False]
-    _correct(tk_root, "K500500-1", "500500", 960)
-    # 面1には 500500- の面2の 50 も数える（D-151）ので、面1の合計は 950＋50 → 960＋50
+    _correct(tk_root, "K500500-2", "500500", 960)
+    # 面2の合計は元のロットごとの面2を足した 950＋50（D-167。面1の計画は計算に使わない）→ 960＋50
     assert "・ロット 500500（+500500-） は完成済みです（完成数 1000／発注数 1000）。登録すると、完成数の計算に使う実績の合計が 1010 になります。" in _confirm(dialogs)
-    assert _qty("K500500-1", "500500") == [950]
+    assert _qty("K500500-2", "500500") == [950]
 
 
 def test_opposite_side_link_and_completed_lot_in_one_dialog(tk_root, example_db, dialogs):

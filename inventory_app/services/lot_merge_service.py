@@ -6,8 +6,9 @@
 既定DB（未選択）では DB に触れない（D-56・D-57）。
 """
 import config
-from models.kitting_plan import list_plan_items_for_all_lots
+from models.kitting_plan import list_plan_items_for_all_lots, list_plan_items_by_lot
 from models.lot_merges import MERGE_SUFFIX, delete_lot_merge, insert_lot_merge, is_valid_merge_pair, list_lot_merges
+from services.lot_merge_items_service import find_side_composition_conflicts, format_side_conflict
 
 OPERATION_NAME_MERGE = "ロット統合"
 OPERATION_NAME_UNMERGE = "ロット統合解除"
@@ -121,11 +122,19 @@ def active_plan_lot_nos() -> set:
     return set() if config.is_default_db() else _active_lot_nos()
 
 
+def side_conflicts_of_pair(target_lot: str, member_lot: str) -> list:
+    """統合先と統合されるロットの、面の構成が食い違うファイルNo（D-168。lot_merge_items_service.find_side_composition_conflicts()）。"""
+    items = list_plan_items_by_lot(target_lot) + list_plan_items_by_lot(member_lot)
+    return find_side_composition_conflicts(target_lot, [member_lot], items)
+
+
 def list_merge_candidates() -> list:
     """
     統合の画面に並べる組。今の月次DB の有効な計画に X と X- の両方があるロットの組と、統合済みの組（計画が無くなっていても出す）。
     各組の lots には、ロットごとの評価（evaluate_lot_status()。統合済みの組でも、統合しない計算）を入れる。計画が無いロットは None。
-    戻り値: [{"target_lot", "member_lot", "merged"（bool）, "merge"（統合の行 or None）, "lots": {ロットNo: 評価 or None}}]（統合先の順）
+    side_conflicts は、面の構成が食い違うファイルNo（D-168。あれば統合させない。統合済みならロット進捗チェックでエラー）。
+    戻り値: [{"target_lot", "member_lot", "merged"（bool）, "merge"（統合の行 or None）, "lots": {ロットNo: 評価 or None},
+             "side_conflicts": [...]}]（統合先の順）
     """
     # lot_status_service がこのモジュールを import するので、ここで import する（循環 import を避ける）。
     from services.lot_status_service import evaluate_lot_status
@@ -151,6 +160,7 @@ def list_merge_candidates() -> list:
             "merge": merges.get(member),
             "lots": {lot: (evaluate_lot_status(lot, merge_map=unmerged) if lot in lots else None)
                      for lot in (target, member)},
+            "side_conflicts": side_conflicts_of_pair(target, member),
         })
     return results
 
@@ -186,7 +196,10 @@ def preview_merge(member_lot: str) -> dict:
 
 
 def check_merge(member_lot) -> list:
-    """統合できない理由のリスト（できるなら空）。D-136：末尾「-」だけ、両方に有効な計画があること、まだ統合していないこと。"""
+    """
+    統合できない理由のリスト（できるなら空）。D-136：末尾「-」だけ、両方に有効な計画があること、まだ統合していないこと。
+    D-168：同じファイルNoの面の構成（面2あり／面1のみ）が統合先と食い違うときも統合しない（手入力で対応してもらう）。
+    """
     problems = []
     target = target_lot_for_member(member_lot)
     if target is None:
@@ -198,6 +211,7 @@ def check_merge(member_lot) -> list:
         problems.append(f"{member_lot} に有効な計画がありません。")
     if load_lot_merge_map().is_merged_member(member_lot):
         problems.append(f"{member_lot} はすでに統合済みです。")
+    problems += [format_side_conflict(c) + "。" for c in side_conflicts_of_pair(target, member_lot)]
     return problems
 
 

@@ -43,8 +43,8 @@ import の向きだけを見ているので、実際の呼び出し回数や呼�
 | ng_wip/wip_expansion_window.py | bom_service, wip_list_service | operation_log, wip_board_snapshot, wip_exclusion_list, wip_scrap_records | common/checkable_treeview, common/column_filter, common/window_utils, loading_window, ng_wip/wip_scrap_correction_window, reports/wip_parts_report_window※, reports/wip_product_report_window※ |
 | ng_wip/wip_scrap_correction_window.py | — | operation_log, wip_scrap_records | common/window_utils |
 | production/daily_drawdown_window.py | lot_status_history | — | common/lot_row_style, common/window_utils |
-| production/lot_merge_window.py | inventory_diff_service, lot_merge_service | — | common/window_utils, production/lot_progress_window |
-| production/lot_progress_window.py | lot_status_service, production_report_service, production_service | — | common/lot_row_style, common/window_utils, loading_window, production/lot_merge_window※ |
+| production/lot_merge_window.py | inventory_diff_service, lot_merge_items_service, lot_merge_service | — | common/window_utils, production/lot_progress_window |
+| production/lot_progress_window.py | lot_merge_items_service, lot_status_service, production_report_service, production_service | — | common/lot_row_style, common/window_utils, loading_window, production/lot_merge_window※ |
 | production/opposite_side_overwrite_dialog.py | — | — | common/window_utils |
 | production/production_import_staging_window.py | lot_merge_service, lot_status_service, production_entry_service, production_import_service, production_service, staging_eligibility | kitting_plan, production, production_import_staging | common/highlight_colors, common/window_utils, kitting/kitting_production_entry※, kitting/plan_candidate_dialog, production/opposite_side_overwrite_dialog |
 | production/unmatched_production_window.py | — | — | common/window_utils |
@@ -76,7 +76,7 @@ import の向きだけを見ているので、実際の呼び出し回数や呼�
 | inventory_diff_service.py | inventory, operation_log, scrap_records, theoretical_inventory, wip_board_snapshot, wip_scrap_records | — | — |
 | kitting_import_service.py | board_structure_master, kitting_plan | — | — |
 | lot_merge_items_service.py | kitting_plan | — | — |
-| lot_merge_service.py | kitting_plan, lot_merges | lot_status_service※ | — |
+| lot_merge_service.py | kitting_plan, lot_merges | lot_merge_items_service, lot_status_service※ | — |
 | lot_status_history.py | — | lot_status_history_service | — |
 | lot_status_history_service.py | production | production_report_service, production_service | — |
 | lot_status_remarks.py | — | — | — |

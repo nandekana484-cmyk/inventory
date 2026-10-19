@@ -19,6 +19,7 @@ from tkinter import ttk, messagebox, filedialog
 
 from services.production_service import check_lot_progress
 from services.lot_status_service import ORDER_QTY_REMARK_BETWEEN_FILES, ORDER_QTY_REMARK_WITHIN_FILE
+from services.lot_merge_items_service import format_side_conflict
 from services.production_report_service import file_label_for
 from ui.common.window_utils import center_window
 from ui.loading_window import LoadingWindow
@@ -107,6 +108,10 @@ def build_display_rows(lot_results):
         remarks = lot["status_remarks"]
         if lot["order_qty_inconsistent_between_files"]:
             remarks = f"{remarks} / {ORDER_QTY_REMARK_BETWEEN_FILES}" if remarks else ORDER_QTY_REMARK_BETWEEN_FILES
+        # 統合した後に面の構成が食い違った（計画が後から取り込まれたなど）ファイルNoはエラーとして示す（D-168。色は赤）。
+        for conflict in lot.get("merge_side_conflicts", []):
+            text = "エラー：" + format_side_conflict(conflict)
+            remarks = f"{remarks} / {text}" if remarks else text
         # 発注数の食い違いも赤にする区分（実績レポートの status_color_category とは別。D-127）。
         status_color_category = lot["progress_color_category"]
 

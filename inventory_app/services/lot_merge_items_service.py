@@ -16,13 +16,47 @@ def _side_of(item) -> str:
     return str(item.get("production_side") or "").strip()
 
 
+def side2_file_keys(items: list) -> set:
+    """面2の計画がある (元のロットNo, ファイルNo) の集合。この組の面1の計画は、完成数・表示に使わない（D-167）。"""
+    return {(it["lot_no"], it["setup_file_no"]) for it in items if _side_of(it) == "2"}
+
+
+def find_side_composition_conflicts(target_lot: str, member_lots: list, items: list) -> list:
+    """
+    統合先と統合されるロットの両方にあるファイルNoで、面の構成（面2あり／面1のみ）が食い違うものを返す（D-168。統合させない・エラーにする）。
+    items は統合先と統合されるロットの計画の行（lot_no は元のまま）。
+    戻り値: [{"setup_file_no", "target_lot", "target_label", "member_lot", "member_label"}, ...]（統合されるロット・ファイルNoの順）。
+    """
+    files_by_lot = {}
+    for it in items:
+        if _side_of(it) in ("1", "2"):
+            files_by_lot.setdefault(it["lot_no"], set()).add(it["setup_file_no"])
+    side2 = side2_file_keys(items)
+
+    def label(lot, file_no):
+        return "面2あり" if (lot, file_no) in side2 else "面1のみ"
+
+    conflicts = []
+    for member in member_lots:
+        for file_no in sorted(files_by_lot.get(target_lot, set()) & files_by_lot.get(member, set())):
+            if label(target_lot, file_no) != label(member, file_no):
+                conflicts.append({"setup_file_no": file_no, "target_lot": target_lot, "target_label": label(target_lot, file_no),
+                                  "member_lot": member, "member_label": label(member, file_no)})
+    return conflicts
+
+
+def format_side_conflict(conflict: dict) -> str:
+    """例「ファイル0553：面の構成が食い違っています（123456 は面1のみ、123456- は面2あり）。手入力で対応してください」（D-168）。"""
+    return (f"ファイル{conflict['setup_file_no']}：面の構成が食い違っています（{conflict['target_lot']} は{conflict['target_label']}、"
+            f"{conflict['member_lot']} は{conflict['member_label']}）。手入力で対応してください")
+
+
 def _merge_lot_items(target_lot: str, items: list, member_lots: list):
     """
     統合後のロット（D-150）の評価に使う計画の行と、統合の扱い（merge_ctx）を作る。保存値・計画の行の lot_no は変えない。
     - 統合されるロットの行は、発注数を統合先の代表値に、基板名を統合先の同じファイルNoの基板名（1種類のときだけ）にそろえた写しにする
-    - 統合されるロットのファイルNoに面2の計画があれば、そのファイルNoの面1の数量として面2の実績を使う（side1_extra。D-157、
-      「面2があるということは、面1もあるとみなす」）。そのファイルNoの統合されるロット自身の面1の実績は使わない（side1_replaced。
-      面2の登録で面1へ自動入力された実績 D-113 を二重に足さないため）。面1の計画が統合後のロットのどこにも無いファイルNoには足さない
+    - 面2を面1に数える扱いは無い。完成数は元のロットごとに「面2があれば面2」の規則で求めて足す（D-167。D-151・D-157 は廃止）
+    - 同じファイルNoの面の構成が統合先と食い違えば side_conflicts に入れる（ロット進捗チェックでエラーにする。D-168）
     統合先に計画が無いときは、そろえる元が無いので、統合されるロットの行の発注数・基板名はそのまま使う。
     """
     target_items = [it for it in items if it["lot_no"] == target_lot]
@@ -32,24 +66,8 @@ def _merge_lot_items(target_lot: str, items: list, member_lots: list):
         "member_lots": list(member_lots),
         "display_lot_no": f"{target_lot}（" + "、".join(f"+{m}" for m in member_lots) + "）",
         "aligned_order_qty": None,
-        "side1_extra": [],
-        "side1_replaced": set(),
+        "side_conflicts": find_side_composition_conflicts(target_lot, member_lots, items),
     }
-    # 面1のキーは統合先の面1の計画を優先し、無ければ統合されるロットの面1の計画から取る（新しい (ファイルNo, 面1) は作らない）
-    side1_key_by_file = {}
-    for it in member_items + target_items:
-        if _side_of(it) == "1":
-            side1_key_by_file[it["setup_file_no"]] = (it["setup_file_no"], it["production_side"])
-    side2_files = {it["setup_file_no"] for it in member_items if _side_of(it) == "2"}
-    for it in member_items:
-        key = side1_key_by_file.get(it["setup_file_no"])
-        if it["setup_file_no"] not in side2_files or key is None:
-            continue
-        pair = (it["kitting_list_no"], it["lot_no"])
-        if _side_of(it) == "2":
-            ctx["side1_extra"].append((pair, key))
-        elif _side_of(it) == "1":
-            ctx["side1_replaced"].add(pair)
     if not target_items:
         return items, ctx
 
@@ -110,4 +128,5 @@ def _merge_result_fields(merge_ctx: dict) -> dict:
         "merged_lot_nos": list(merge_ctx["member_lots"]),
         "display_lot_no": merge_ctx["display_lot_no"],
         "aligned_order_qty": merge_ctx["aligned_order_qty"],
+        "merge_side_conflicts": merge_ctx["side_conflicts"],
     }

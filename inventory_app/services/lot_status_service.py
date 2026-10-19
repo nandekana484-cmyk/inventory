@@ -34,32 +34,41 @@ def record_lot_status_snapshot(lot_no: str, trigger_source: str) -> int:
     return insert_lot_status_snapshot(lot_status["lot_no"], lot_status, trigger_source)
 
 
+def _side2_keys(lot_no: str, plan_items: list, merge_ctx) -> set:
+    """面2の有効な計画がある (元のロットNo, ファイルNo)。統合していないロットの行は lot_no のロットとして扱う。"""
+    return {(lot_no if merge_ctx is None else it["lot_no"], it["setup_file_no"])
+            for it in plan_items if _side_of(it) == "2"}
+
+
+def _hidden_side1(item, source_lot: str, side2_keys: set) -> bool:
+    """元のロット・ファイルNoに面2の計画がある面1の計画か（完成数・表示に使わない。D-167）。"""
+    return _side_of(item) == "1" and (source_lot, item["setup_file_no"]) in side2_keys
+
+
 def _compute_lot_completion(lot_no: str, plan_items: list, cumulative_by_pair: dict,
                               cutoff_date: str = None, merge_ctx: dict = None) -> dict:
     """
     calculate_lot_completion()・list_incomplete_lots() の共通ロジック。完成数＝(setup_file_no, production_side) ごとの実績合計の最小値。
+    元のロット・ファイルNoに面2の有効な計画があれば、その面1の計画の実績は使わない（実績は完成品の入力で、面2が正。D-167）。
+    面1と面2の計画を1対1で組にしない（面2が複数バッチでも、面2の合計で数える）。
     キーは2要素で、代入ではなく必ず加算する。同じファイルNo・面に別バッチが同時にアクティブなことがあり（実データで222件）、
     代入だと片方の実績が消える。3要素（kitting_list_no を含む）にすると完成数が少なく出る（CANONICAL_DESIGN_DECISIONS.md §5）。
     order_qty がファイルNoで食い違うロットがある（301件中3件）。そのときは先頭行の値を使い、order_qty_inconsistent で知らせる。
     cutoff_date は戻り値に記録するだけで、日付の絞り込みは呼び出し元が cumulative_by_pair で行う。
-    merge_ctx（統合したロット、_merge_lot_items()）があれば、実績を計画ごとの元のロットNoで引き、side1_extra を面1にも足し、
-    side1_replaced の面1の実績は使わない（D-150・D-157）。
+    merge_ctx（統合したロット、_merge_lot_items()）があれば、実績を計画ごとの元のロットNoで引き、上の規則も元のロットごとに当てる（D-167）。
     """
     order_qty_values = sorted({item["order_qty"] for item in plan_items})
     order_qty_inconsistent = len(order_qty_values) > 1
     order_qty = plan_items[0]["order_qty"] if order_qty_inconsistent else order_qty_values[0]
 
+    side2_keys = _side2_keys(lot_no, plan_items, merge_ctx)
     file_actuals = {}
     for item in plan_items:
-        kitting_list_no = item["kitting_list_no"]
-        key = (item["setup_file_no"], item["production_side"])
         source_lot = lot_no if merge_ctx is None else item["lot_no"]
-        if merge_ctx is not None and (kitting_list_no, source_lot) in merge_ctx["side1_replaced"]:
+        if _hidden_side1(item, source_lot, side2_keys):
             continue
-        file_actuals[key] = file_actuals.get(key, 0) + cumulative_by_pair[(kitting_list_no, source_lot)]
-    if merge_ctx is not None:
-        for pair, side1_key in merge_ctx["side1_extra"]:
-            file_actuals[side1_key] = file_actuals.get(side1_key, 0) + cumulative_by_pair[pair]
+        key = (item["setup_file_no"], item["production_side"])
+        file_actuals[key] = file_actuals.get(key, 0) + cumulative_by_pair[(item["kitting_list_no"], source_lot)]
 
     completed = min(file_actuals.values())
     remaining = order_qty - completed
@@ -111,18 +120,17 @@ def _evaluate_lot_status(lot_no: str, plan_items: list, cumulative_by_pair: dict
       7. shortfall なら、不足分の「未確定」エントリを足す
     cutoff_date は _compute_lot_completion() に渡すだけ。board_structure_cache を渡すと、マスタの検索結果を使い回す
     （1057ロットで5〜10秒かかっていたのを、1秒程度にするため）。戻り値のキーは docs/domain/lot_completion.md。
-    merge_ctx（統合したロット）では、plan_items は _merge_lot_items() でそろえた行。面1を隠す判定・基板名・発注数の食い違いも
-    統合後のロットで判定し、ファイルNoの行に元のロットNo（source_lot_nos）を足す（D-150）。
+    merge_ctx（統合したロット）では、plan_items は _merge_lot_items() でそろえた行。基板名・発注数の食い違いは
+    統合後のロットで判定し、ファイルNoの行に元のロットNo（source_lot_nos）を足す（D-150）。面1を隠す判定は元のロットごと（D-167）。
+    面の構成が統合先と食い違うファイルNoがあれば、merge_side_conflicts を返し、progress_color_category を赤にする（D-168）。
     """
     lot_info = _compute_lot_completion(lot_no, plan_items, cumulative_by_pair, cutoff_date=cutoff_date,
                                        merge_ctx=merge_ctx)
 
-    second_side_setup_files = {
-        it["setup_file_no"] for it in plan_items if str(it["production_side"]).strip() == "2"
-    }
+    side2_keys = _side2_keys(lot_no, plan_items, merge_ctx)
     visible_items = [
         it for it in plan_items
-        if not (str(it["production_side"]).strip() == "1" and it["setup_file_no"] in second_side_setup_files)
+        if not _hidden_side1(it, lot_no if merge_ctx is None else it["lot_no"], side2_keys)
     ]
     visible_file_nos = sorted({it["setup_file_no"] for it in visible_items})
 
@@ -233,8 +241,10 @@ def _evaluate_lot_status(lot_no: str, plan_items: list, cumulative_by_pair: dict
     )
     # ロット進捗チェック・日々の引落一覧の文字色。発注数の食い違いは構成基板数不一致と同じ赤にする。
     # 実績レポートは status_color_category を使い続ける（発注数の食い違いを出さない）。
+    # 統合したロットで面の構成が食い違うファイルNoも、エラーとして赤にする（D-168）。
+    merge_side_conflicts = merge_ctx["side_conflicts"] if merge_ctx is not None else []
     progress_color_category = (
-        "needs_review" if order_qty_inconsistent_between_files or order_qty_inconsistent_within_file
+        "needs_review" if order_qty_inconsistent_between_files or order_qty_inconsistent_within_file or merge_side_conflicts
         else status_color_category
     )
 

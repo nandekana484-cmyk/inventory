@@ -9,6 +9,7 @@ from tkinter import messagebox, ttk
 
 from services.inventory_diff_service import is_current_db_inventory_exported
 from services.lot_merge_service import LotMergeError, list_merge_candidates, merge_lots, preview_merge, unmerge_lot
+from services.lot_merge_items_service import format_side_conflict
 from ui.common.window_utils import center_window
 from ui.production.lot_progress_window import STATUS_LABELS
 
@@ -51,7 +52,7 @@ def build_candidate_rows(candidates):
             m = pair["merge"]
             state = f"統合済み（{m['merged_at'][:10]}）"
         else:
-            state = "未統合"
+            state = "未統合（面の構成が食い違い）" if pair.get("side_conflicts") else "未統合"
         for lot_no, role in ((pair["target_lot"], "統合先"), (pair["member_lot"], "統合される")):
             lot = pair["lots"][lot_no]
             base = {"merge_state": state, "lot_no": lot_no, "role": role, "_member_lot": pair["member_lot"],
@@ -78,6 +79,7 @@ class LotMergeWindow(tk.Toplevel):
         self.current_worker = current_worker or {}
         self._member_by_iid = {}
         self._merged_by_member = {}
+        self._conflicts_by_member = {}
 
         # 下の要素を先に pack する（Treeview を先に pack するとボタンが潰れる）。
         btn_frame = ttk.Frame(self, padding=10)
@@ -119,6 +121,7 @@ class LotMergeWindow(tk.Toplevel):
         self.tree.delete(*self.tree.get_children())
         self._member_by_iid.clear()
         self._merged_by_member = {p["member_lot"]: p["merged"] for p in candidates}
+        self._conflicts_by_member = {p["member_lot"]: p.get("side_conflicts", []) for p in candidates}
         for i, row in enumerate(build_candidate_rows(candidates)):
             iid = f"r{i}"
             self.tree.insert("", tk.END, iid=iid, values=[row[c] for c in COLUMNS],
@@ -153,6 +156,13 @@ class LotMergeWindow(tk.Toplevel):
             messagebox.showinfo("ロット統合", f"{member} はすでに統合済みです。", parent=self)
             return
         target = member[:-1]
+        conflicts = self._conflicts_by_member.get(member)
+        if conflicts:
+            # 面の構成が食い違う組は統合させない（D-168）。merge_lots() 側でも同じ理由で断る。
+            messagebox.showwarning(
+                "統合できません", "\n".join(format_side_conflict(c) + "。" for c in conflicts), parent=self,
+            )
+            return
         if not self._confirm_exported_db():
             return
         try:

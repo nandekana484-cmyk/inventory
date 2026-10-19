@@ -250,7 +250,6 @@
    "completed_quantity": 80,
    "cutoff_date": null,
    "file_actuals": {
-    "('F1', '1')": 100,
     "('F1', '2')": 80
    },
    "lot_no": "L1",
@@ -343,7 +342,6 @@
    "cutoff_date": null,
    "excess_file_nos": null,
    "file_actuals": {
-    "('F1', '1')": 100,
     "('F1', '2')": 80
    },
    "lot_completed": 80,
@@ -583,7 +581,6 @@
    "cutoff_date": null,
    "excess_file_nos": null,
    "file_actuals": {
-    "('F1', '1')": 100,
     "('F1', '2')": 80
    },
    "lot_completed": 80,
@@ -823,7 +820,6 @@
    "cutoff_date": "2026-07-22",
    "excess_file_nos": null,
    "file_actuals": {
-    "('F1', '1')": 100,
     "('F1', '2')": 0.0
    },
    "lot_completed": 0.0,
@@ -1063,7 +1059,6 @@
    "cutoff_date": null,
    "excess_file_nos": null,
    "file_actuals": {
-    "('F1', '1')": 100,
     "('F1', '2')": 80
    },
    "lot_completed": 80,
@@ -1303,7 +1298,6 @@
    "cutoff_date": "2026-07-21",
    "excess_file_nos": null,
    "file_actuals": {
-    "('F1', '1')": 0.0,
     "('F1', '2')": 0.0
    },
    "lot_completed": 0.0,

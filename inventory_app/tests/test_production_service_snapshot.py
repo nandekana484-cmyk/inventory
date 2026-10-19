@@ -3,7 +3,7 @@ services/production_service.py の帳票・ロット状態の出力を、スナ�
 段階5で関数を production_report_service・lot_status_service へ移しても、出力がそのまま一致することを確かめる。
 
 テストデータのケース:
-  L1: 両面の計画（K1=面1・K2=面2、F1）。面1の実績100 > 面2の実績80（面1・面2の不整合の警告、面1の行は表示しない）
+  L1: 両面の計画（K1=面1・K2=面2、F1）。面1の実績100 > 面2の実績80（面1の行は表示しない。完成数は面2の 80 だけで決まる、D-167）
   L2: 同じファイルNo・同じ面（F2・面2）に別バッチの計画が2件（K3・K4）。完成数は2要素のキーで加算する（60＋40＝100）
   L3: NG のある計画（K5。NG 申告と NG 実績）。構成基板数2に対してファイルNoが1つ（不足）
   L4: 実績の無い未完了のロット（K6）。構成基板数マスタ未登録
@@ -123,7 +123,7 @@ def test_snapshot_covers_required_cases():
     """必須のケース（両面・同じファイルNo・面の複数バッチの加算・NG・未完了）がスナップショットに入っていること。"""
     expected = json.loads(SNAPSHOT.read_text(encoding="utf-8"))
     completion = expected["calculate_lot_completion"]
-    assert completion["L1"]["file_actuals"] == {"('F1', '1')": 100, "('F1', '2')": 80}   # 両面
+    assert completion["L1"]["file_actuals"] == {"('F1', '2')": 80}   # 両面（面2があるので面1の 100 は使わない。D-167）
     assert completion["L2"]["file_actuals"] == {"('F2', '2')": 100}                        # 2バッチの加算（60＋40）
     assert completion["L2"]["completed_quantity"] == 100
     assert [lot["lot_no"] for lot in expected["list_incomplete_lots"]] == ["L1", "L3", "L4"]  # 未完了

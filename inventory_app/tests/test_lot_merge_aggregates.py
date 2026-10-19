@@ -130,27 +130,45 @@ def test_unmerged_lots_are_unchanged(sample_db):
         assert after[lot_no] == before[lot_no]
 
 
-# ---------------------------------------------------------------- 面2を面1にも数える条件（D-151）
+# ---------------------------------------------------------------- 元のロットごとに「面2があれば面2」（D-167）・面の構成の食い違い（D-168）
 
 def _item(kitting, lot, file_no, side, order=100, board="B"):
     return {"kitting_list_no": kitting, "lot_no": lot, "setup_file_no": file_no, "production_side": side,
             "order_qty": order, "board_name": board}
 
 
-def test_side2_counted_as_side1_per_file():
-    """D-157: 統合されるロットのファイルNoに面2があれば、そのファイルNoの面1の数量として面2を使う（面1の計画の有無を問わない）。"""
-    target = [_item("T1", "X", "F1", "1"), _item("T2", "X", "F1", "2"), _item("T3", "X", "F2", "2")]
-    _, ctx = _merge_lot_items("X", target + [_item("M2", "X-", "F1", "2", 10)], ["X-"])
-    assert ctx["side1_extra"] == [(("M2", "X-"), ("F1", "1"))] and ctx["side1_replaced"] == set()
-    # 面1の計画が統合後のロットのどこにも無いファイルNo（F2）には足さない（新しい (ファイルNo, 面1) を作らない）
-    _, ctx = _merge_lot_items("X", target + [_item("M3", "X-", "F2", "2", 10)], ["X-"])
-    assert ctx["side1_extra"] == []
-    # 統合されるロットに別のファイルNoの面1の計画があっても、ファイルNoごとに判断する（D-151 の「面1が1件も無いとき」から変えた）
-    _, ctx = _merge_lot_items("X", target + [_item("M2", "X-", "F1", "2", 10), _item("M1", "X-", "F9", "1", 10)], ["X-"])
-    assert ctx["side1_extra"] == [(("M2", "X-"), ("F1", "1"))] and ctx["side1_replaced"] == set()
-    # 同じファイルNoに統合されるロットの面1の計画もあれば、その面1の実績は使わず、面2を使う（二重に足さない）
-    _, ctx = _merge_lot_items("X", target + [_item("M2", "X-", "F1", "2", 10), _item("M1", "X-", "F1", "1", 10)], ["X-"])
-    assert ctx["side1_extra"] == [(("M2", "X-"), ("F1", "1"))] and ctx["side1_replaced"] == {("M1", "X-")}
+def test_side_composition_conflicts():
+    """D-168: 両方にあるファイルNoで、面2あり／面1のみ が食い違えばエラー。片方にしか無いファイルNoは食い違いにしない。"""
+    target = [_item("T1", "X", "F1", "1"), _item("T2", "X", "F1", "2"), _item("T3", "X", "F2", "1")]
+    _, ctx = _merge_lot_items("X", target + [_item("M2", "X-", "F1", "2", 10), _item("M9", "X-", "F9", "1", 10)], ["X-"])
+    assert ctx["side_conflicts"] == []
+    _, ctx = _merge_lot_items("X", target + [_item("M2", "X-", "F2", "2", 10)], ["X-"])
+    assert ctx["side_conflicts"] == [{"setup_file_no": "F2", "target_lot": "X", "target_label": "面1のみ",
+                                      "member_lot": "X-", "member_label": "面2あり"}]
+    from services.lot_merge_items_service import format_side_conflict
+    assert format_side_conflict(ctx["side_conflicts"][0]) == \
+        "ファイルF2：面の構成が食い違っています（X は面1のみ、X- は面2あり）。手入力で対応してください"
+
+
+def test_side_conflict_refuses_merge_and_shows_error(sample_db):
+    """D-168: 食い違う組は統合させない。統合した後に食い違った（計画が後から来た）ら、ロット進捗チェックで赤・エラーの文言。"""
+    from ui.production.lot_progress_window import build_display_rows
+    _add_lot([("C-F1-1", "700700", "F1", "1", 100), ("CM-F1-2", "700700-", "F1", "2", 10)],
+             [("C-F1-1", "700700", "2026-07-02", 100), ("CM-F1-2", "700700-", "2026-07-09", 10)])
+    message = "ファイルF1：面の構成が食い違っています（700700 は面1のみ、700700- は面2あり）。手入力で対応してください。"
+    assert message in svc.check_merge("700700-")
+    with pytest.raises(svc.LotMergeError):
+        svc.merge_lots("700700-", "作業者A")
+    pair = next(p for p in svc.list_merge_candidates() if p["member_lot"] == "700700-")
+    assert [c["setup_file_no"] for c in pair["side_conflicts"]] == ["F1"]
+
+    # 統合した後に食い違いが生じた場合（ここでは統合の行を直接書いて再現する）
+    from models.lot_merges import insert_lot_merge
+    insert_lot_merge("700700-", "700700", "作業者A")
+    lot = _lot("700700")
+    assert lot["progress_color_category"] == "needs_review" and len(lot["merge_side_conflicts"]) == 1
+    rows = build_display_rows([lot])
+    assert all("エラー：ファイルF1：面の構成が食い違っています（700700 は面1のみ、700700- は面2あり）" in r["remarks"] for r in rows)
 
 
 def _add_lot(plans, actuals, board="BRD-6000"):
@@ -173,16 +191,17 @@ def _target_plans(lot):
 
 
 @pytest.mark.parametrize("member_plans, member_actuals, expected_file_actuals", [
-    # (a) X- の F1 に面2の計画だけ: 面1にも面2の 10 を数える → 完成数 100
+    # D-167: 面2があるファイルNoは、元のロットごとに面2の実績だけを使い、統合後のロットとして足す（面1のキーは作らない）
+    # (a) X- の F1 に面2の計画だけ → F1 は 90＋10。F2 は 90 なので完成数は 90
     ([("M-F1-2", "F1", "2")], [("M-F1-2", 10)],
-     {("F1", "1"): 100, ("F1", "2"): 100, ("F2", "1"): 90, ("F2", "2"): 90}),
-    # (b) X- の F1 に面1・面2 の両方（面2の登録で面1へ自動入力された 10 も実績にある）: 面1は面2の 10 だけを使い、110 にしない
+     {("F1", "2"): 100, ("F2", "2"): 90}),
+    # (b) X- の F1 に面1・面2 の両方（古い版で自動入力された面1の 10 もある）: 面1は使わないので 110 にならない
     ([("M-F1-1", "F1", "1"), ("M-F1-2", "F1", "2")], [("M-F1-1", 10), ("M-F1-2", 10)],
-     {("F1", "1"): 100, ("F1", "2"): 100, ("F2", "1"): 90, ("F2", "2"): 90}),
+     {("F1", "2"): 100, ("F2", "2"): 90}),
     # (c) 混ざる組: F1 は面2だけ、F2 は面1・面2 の両方
     ([("M-F1-2", "F1", "2"), ("M-F2-1", "F2", "1"), ("M-F2-2", "F2", "2")],
      [("M-F1-2", 10), ("M-F2-1", 10), ("M-F2-2", 10)],
-     {("F1", "1"): 100, ("F1", "2"): 100, ("F2", "1"): 100, ("F2", "2"): 100}),
+     {("F1", "2"): 100, ("F2", "2"): 100}),
 ])
 def test_side1_from_side2_on_real_db(sample_db, member_plans, member_actuals, expected_file_actuals):
     plans, actuals = _target_plans("600600")
