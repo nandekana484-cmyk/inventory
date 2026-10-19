@@ -13,7 +13,7 @@
 |---|---|---|
 | R1 | kitting_list_no は lot_no をまたいで重複する（実データで478件）。計画や実績を特定するときは、必ず lot_no も条件に入れる | `services/production_service.py` `register_daily_result()`、`services/db_migration_carryover.py` `_fetch_production_daily_for_lot()` |
 | R2 | 同じ (kitting_list_no, lot_no) でアクティブ（is_active=1）な版は最大1件。新しい版を作るときに旧版を is_active=0 にする | `models/kitting_plan.py` `list_active_plan_items_by_kitting_no()` |
-| R3 | 面2の計画があるロット・ファイルNoでは、面1の計画を一覧から除く（D-8） | `models/kitting_plan.py` `classify_side1_only_plan()`、`list_active_plan_items()` |
+| R3 | 面2の計画があるロット・ファイルNoでは、面1の計画を無いものとして扱う（一覧・候補・検索・履歴に出さない、登録させない、計算に使わない。D-8・D-167・D-170） | `models/kitting_plan.py` `list_active_plan_items()`、`services/production_service.py` `side2_plans_hiding()`・`side1_registration_block()`、`services/lot_status_service.py` `_hidden_side1()` |
 | R4 | 実績CSVの自動取込で使う計画の検索は、完了済みを除く既定のままで呼ぶ（そうしないと一意に特定できなくなる） | `models/kitting_plan.py` `list_active_plan_items()` |
 | R5 | 製品名の照合は完全一致（正規化したうえで）のみ。あいまい一致は実装しないと決まっている | `models/kitting_plan.py` `find_matching_plan_items()` のコメント |
 
@@ -21,7 +21,7 @@
 
 | # | ルール | 出典 |
 |---|---|---|
-| R6 | 面1だけの計画は、生産面マスターで「片面の製品／面2待ち／生産面マスター未登録」(a/b/c) に分ける。b と c は確認ダイアログを出すが、登録は禁止しない | `ui/kitting/kitting_production_entry.py` `_build_registration_preview()`、`ui/production/production_import_staging_window.py` `_register_candidate_immediately()`・`_confirm_side1_only_if_applicable()` |
+| R6 | 面1だけの計画は、生産面マスターで「片面の製品／面2待ち／生産面マスター未登録」(a/b/c) に分ける。c は確認ダイアログを出すが、登録は禁止しない。b（面2待ち）は登録を受け付けない（2026-10-19、D-170） | `ui/kitting/kitting_production_entry.py` `_build_registration_preview()`、`ui/production/production_import_staging_window.py` `_register_candidate_immediately()`・`_confirm_side1_only_if_applicable()` |
 | R7 | 後行面（面2）があるかどうかはセットアップファイルNo単位で判定する（実装ラインは問わない）（D-104、D-107） | `models/kitting_plan.py` `classify_side1_only_plan()` |
 | R8 | 両面の計画があるロットで実績を修正・削除するときは、反対側の面の実績も連動させる。確定の前に必ず確認ダイアログを出す（D-112） | `ui/kitting/kitting_production_entry.py` `ActualCorrectionWindow.on_update()` |
 | R9 | ~~面1/面2 の不整合は、ロットNo・ファイルNoごとの合計で比べる（D-111）~~ → 2026-10-19 に判定ごと廃止（D-169） | — |

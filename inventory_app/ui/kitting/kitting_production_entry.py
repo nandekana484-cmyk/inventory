@@ -7,6 +7,8 @@ from tkcalendar import DateEntry
 from services.production_service import (
     search_plan_by_kitting_no,
     get_daily_history,
+    side2_plans_hiding,
+    side1_registration_block,
     calculate_lot_completion,
 )
 from services.lot_status_service import preview_completed_lot_registration
@@ -20,7 +22,7 @@ from services.csv_format_detection import (
 from models.production_import_staging import list_pending_csv_import_rows
 from models.kitting_plan import (
     list_active_plan_items, find_opposite_side_plan, find_plan_item_by_kitting_no,
-    classify_side1_only_plan, SIDE1_ONLY_CLASS_WAITING_SIDE2, SIDE1_ONLY_CLASS_UNREGISTERED,
+    classify_side1_only_plan, SIDE1_ONLY_CLASS_UNREGISTERED,
 )
 from models.production import list_daily_production_today
 from models.ng_declarations import get_ng_declaration
@@ -826,10 +828,28 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
         if not plan:
             messagebox.showerror("検索エラー", f"キッティングリストNo. {kitting_list_no} の計画が見つかりません。", parent=self.winfo_toplevel())
-            self.current_plan = None
-            self.btn_register.config(state=tk.DISABLED)
-            self.btn_correction.config(state=tk.DISABLED)
-            self._reset_ng_side_ui()
+            self._clear_current_plan()
+            return
+
+        # 面2がある面1の計画は無いものとして扱い、面2の計画に切り替える（D-170）。面2が複数あるときは、どれかを決められないので選んでもらう。
+        hiding = side2_plans_hiding(plan)
+        if len(hiding) == 1:
+            messagebox.showinfo(
+                "面2の計画に切り替えました",
+                f"計画 {plan['kitting_list_no']} は面1です。同じロット・ファイルNoに面2の計画があるため、"
+                f"面2の計画 {hiding[0]['kitting_list_no']} を表示します。",
+                parent=self.winfo_toplevel(),
+            )
+            self.search_plan(hiding[0]["kitting_list_no"], lot_no=hiding[0]["lot_no"])
+            return
+        if hiding:
+            messagebox.showwarning(
+                "面2の計画を選んでください",
+                f"計画 {plan['kitting_list_no']} は面1です。同じロット・ファイルNoに面2の計画が複数あります"
+                f"（{'、'.join(p['kitting_list_no'] for p in hiding)}）。計画一覧から面2の計画を選んでください。",
+                parent=self.winfo_toplevel(),
+            )
+            self._clear_current_plan()
             return
 
         self.current_plan = plan
@@ -882,6 +902,13 @@ class KittingProductionEntryWindow(tk.Toplevel):
         self._setup_ng_side_ui(plan)
         self._load_current_daily_qty(plan["kitting_list_no"], plan["lot_no"])
 
+    def _clear_current_plan(self):
+        """計画を未選択の状態に戻す（登録・実績修正を押せなくし、NG の欄を空にする）。"""
+        self.current_plan = None
+        self.btn_register.config(state=tk.DISABLED)
+        self.btn_correction.config(state=tk.DISABLED)
+        self._reset_ng_side_ui()
+
     def _load_current_daily_qty(self, kitting_no, lot_no):
         """
         選択中の計画に登録済みの実績があれば、記入欄に表示する。
@@ -896,7 +923,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         """
         本日（report_date＝今日）に入力された全計画分の実績を表示する。計画を切り替えても消えない。
         計画の検索には実績の lot_id も渡す（kitting_list_no は lot_no をまたいで重複するため）。
-        同じ (lot_no, setup_file_no) に面2がある面1の行は表示しない。表示と _today_all_rows の並びがずれるので、
+        元のロット・ファイルNoに面2の有効な計画がある面1の行（古い版で入った写しなど）は表示しない（D-170）。表示と _today_all_rows の並びがずれるので、
         ダブルクリックでは位置ではなく iid -> レコードの対応（_today_row_by_iid）で引く。
         """
         for item in self.tree.get_children():
@@ -921,17 +948,13 @@ class KittingProductionEntryWindow(tk.Toplevel):
                 board_name = rec["group_id"] or ""
             resolved_rows.append((rec, plan, lot_no, board_name))
 
-        second_side_keys = {
-            (lot_no, plan.get("setup_file_no"))
-            for _rec, plan, lot_no, _board_name in resolved_rows
-            if plan and str(plan.get("production_side")).strip() == "2"
-        }
-
+        hidden_by_key = {}
         for rec, plan, lot_no, board_name in resolved_rows:
             if plan:
-                production_side = str(plan.get("production_side")).strip()
-                key = (lot_no, plan.get("setup_file_no"))
-                if production_side == "1" and key in second_side_keys:
+                key = (plan.get("lot_no"), plan.get("setup_file_no"))
+                if key not in hidden_by_key:
+                    hidden_by_key[key] = bool(side2_plans_hiding(plan))
+                if str(plan.get("production_side")).strip() == "1" and hidden_by_key[key]:
                     continue
 
             iid = self.tree.insert("", tk.END, values=(
@@ -1211,6 +1234,12 @@ class KittingProductionEntryWindow(tk.Toplevel):
         if not self.current_plan:
             return
 
+        # 面2がある面1・「面2待ち」の面1には登録させない（D-170。サービスの入口でも断る）。
+        block_reason = side1_registration_block(self.current_plan)
+        if block_reason is not None:
+            messagebox.showwarning("登録できません", block_reason + "。", parent=self.winfo_toplevel())
+            return
+
         try:
             daily_qty = float(self.entry_daily_qty.get().strip())
         except ValueError:
@@ -1293,7 +1322,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
                     f"NG{ng_qty:.0f} = {total:.0f}（予定生産数{planned_qty:.0f}と不一致）"
                 )
 
-        # 面1だけの計画で b（面2待ち）・c（生産面マスター未登録）なら、確認ダイアログで理由を示す（D-9x。登録は禁止しない）。
+        # 面1だけの計画で c（生産面マスター未登録）なら、確認ダイアログで理由を示す（D-9x。登録は禁止しない）。b（面2待ち）は登録の前に断る（D-170）。
         side1_only_classification = classify_side1_only_plan(self.current_plan)
 
         # ロットが完成済みなら確認ダイアログで示す（D-130。手入力も対象、D-133）。
@@ -1347,13 +1376,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
             lines.extend(f"　{line}" for line in preview["mismatch_lines"])
 
         side1_only_classification = preview.get("side1_only_classification")
-        if side1_only_classification == SIDE1_ONLY_CLASS_WAITING_SIDE2:
-            lines.append("")
-            lines.append(
-                "・生産面マスターにより、この計画には後行面（面2）があることが"
-                "分かっています（面2はまだ計画データに取り込まれていません）。"
-            )
-        elif side1_only_classification == SIDE1_ONLY_CLASS_UNREGISTERED:
+        if side1_only_classification == SIDE1_ONLY_CLASS_UNREGISTERED:
             lines.append("")
             lines.append(
                 "・この計画のセットアップファイルNo・実装ラインの組み合わせは、"

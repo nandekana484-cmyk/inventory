@@ -5,6 +5,9 @@ from models.kitting_plan import (
     list_plan_items_by_lot,
     list_active_plan_items_by_kitting_no,
     find_opposite_side_plan,
+    list_active_side2_plans_for_file,
+    classify_side1_only_plan,
+    SIDE1_ONLY_CLASS_WAITING_SIDE2,
 )
 from models.production import (
     insert_daily_production,
@@ -68,6 +71,53 @@ class DailyResultAlreadyExists(Exception):
         super().__init__(f"この計画の実績は既に登録されています（{existing_qty}）。")
 
 
+# 「面2待ち」（生産面マスターでは面2があるのに、面2の計画がまだ無い）の面1への登録を断るときの案内（D-170、利用者の決定の文言）。
+SIDE2_WAIT_MESSAGE = "このロットには面2の計画があるはずです。面2の計画を取り込んでから、面2に登録してください"
+
+
+class Side1RegistrationRefused(ValueError):
+    """面1の計画への登録を受け付けないとき（D-170）。メッセージはそのまま画面に出せる。"""
+
+
+def side2_plans_hiding(plan) -> list:
+    """
+    plan が面1で、元のロット・ファイルNoに面2の有効な計画があれば、その面2の計画（生産予定日の順）。それ以外は空。
+    空でなければ、plan は無いものとして扱う（一覧・候補・検索・履歴に出さない、登録させない、計算に使わない。D-167・D-170）。
+    """
+    if plan is None or str(plan.get("production_side") or "").strip() != "1":
+        return []
+    return list_active_side2_plans_for_file(plan.get("lot_no"), plan.get("setup_file_no"))
+
+
+def side2_plans_hiding_plan_no(kitting_list_no: str, lot_no: str) -> list:
+    """計画No・ロットNoで引いた計画の side2_plans_hiding()（実績修正の画面で、面2がある面1の実績を読み取り専用にするため）。"""
+    return side2_plans_hiding(find_plan_item_by_kitting_no(kitting_list_no, lot_no))
+
+
+def side1_registration_block(plan):
+    """
+    plan への実績の登録を受け付けない理由（受け付けるなら None）。どの登録経路でも、この関数で判定する（D-170）。
+    - 面2の有効な計画がある面1: 面2に登録してもらう
+    - 「面2待ち」の面1（classify_side1_only_plan() の b）: SIDE2_WAIT_MESSAGE
+    片面の製品（生産面マスターで面2なし）と、生産面マスター未登録（c、確認のうえで登録できる。D-94）は受け付ける。
+    """
+    hiding = side2_plans_hiding(plan)
+    if hiding:
+        side2_nos = "、".join(p["kitting_list_no"] for p in hiding)
+        return (f"この計画（{plan['kitting_list_no']}）は面1です。同じロット・ファイルNoに面2の計画（{side2_nos}）があるため、"
+                "面1には登録できません。面2の計画に登録してください")
+    if plan is not None and classify_side1_only_plan(plan) == SIDE1_ONLY_CLASS_WAITING_SIDE2:
+        return SIDE2_WAIT_MESSAGE
+    return None
+
+
+def _refuse_side1_registration(plan):
+    """登録の入口での二重の安全策（画面でも先に断っている）。"""
+    reason = side1_registration_block(plan)
+    if reason is not None:
+        raise Side1RegistrationRefused(reason + "。")
+
+
 def _resolve_plan_item(kitting_list_no: str, lot_no: str = None):
     """
     kitting_list_no（と lot_no）から計画を1件に確定する。戻り値 (plan, candidates) は、どちらか一方だけが None でない。
@@ -128,10 +178,12 @@ def register_daily_result(kitting_list_no: str, lot_no: str, daily_qty: float, w
     check_duplicate=True: 日付を問わず、その計画に実績があれば追記せず DailyResultAlreadyExists を送出する（1計画＝1レコード）。
     check_duplicate=False（既定）: 無条件に追記する（CSV 自動取込はこちら）。
     record_history=False: 履歴（lot_status_history）を記録しない。一括登録で行ごとに記録すると遅いので、呼び出し元が最後にまとめて記録する。
+    面2がある面1・「面2待ち」の面1の計画には登録せず、Side1RegistrationRefused を送出する（D-170）。
     """
     plan = find_plan_item_by_kitting_no(kitting_list_no, lot_no)
     if not plan:
         raise ValueError(f"キッティングリストNo. {kitting_list_no}（ロットNo. {lot_no}）の計画が見つかりません。")
+    _refuse_side1_registration(plan)
 
     if report_date is None:
         report_date = datetime.now().strftime("%Y-%m-%d")
@@ -164,10 +216,12 @@ def overwrite_daily_result(kitting_list_no: str, lot_no: str, daily_qty: float, 
     その計画の既存の実績を日付を問わず全部削除してから登録し直す（1計画＝1レコード、常に上書き）。更新後のアプリ内累計を返す。
     report_date が None なら、そのまま replace_daily_result() に渡して既存行の日付を引き継がせる
     （ここで今日にすると、手で数量を直すたびに CSV 由来の正しい日付が今日に書き換わってしまう）。
+    登録と同じく、面2がある面1・「面2待ち」の面1には書かない（D-170）。
     """
     plan = find_plan_item_by_kitting_no(kitting_list_no, lot_no)
     if not plan:
         raise ValueError(f"キッティングリストNo. {kitting_list_no}（ロットNo. {lot_no}）の計画が見つかりません。")
+    _refuse_side1_registration(plan)
 
     replace_daily_result(
         plan_item_id=plan["plan_item_id"],

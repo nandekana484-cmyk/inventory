@@ -17,7 +17,7 @@ from services.production_import_service import (
     group_active_plan_items_by_lot,
 )
 from services.production_service import (
-    search_plan_by_kitting_no, get_daily_history, record_lot_status_snapshot,
+    search_plan_by_kitting_no, get_daily_history, record_lot_status_snapshot, side1_registration_block,
 )
 from services.lot_status_service import preview_completed_lot_registration, lot_completion_state
 from services.lot_merge_service import match_lot_of
@@ -60,16 +60,29 @@ REASON_MISMATCH_DEFAULT = "不一致と判断（詳細理由未入力）"
 
 
 _SIDE1_ONLY_CONFIRM_REASONS = {
-    SIDE1_ONLY_CLASS_WAITING_SIDE2: "生産面マスターにより、この計画には後行面（面2）があることが分かっています（面2はまだ計画データに取り込まれていません）。",
     SIDE1_ONLY_CLASS_UNREGISTERED: "この計画のセットアップファイルNo・実装ラインの組み合わせは、生産面マスターに登録がありません（後行面があるかどうか不明です）。",
 }
 
 
+def _refuse_side1_if_blocked(parent, candidate):
+    """
+    面2がある面1・「面2待ち」の面1の候補なら、理由を示して False（登録も転記もしない。D-170）。それ以外は True。
+    """
+    reason = side1_registration_block(candidate)
+    if reason is None:
+        return True
+    messagebox.showwarning("登録できません", reason + "。", parent=parent.winfo_toplevel())
+    return False
+
+
 def _confirm_side1_only_if_applicable(parent, candidate):
     """
-    候補が面1だけの計画で、生産面マスターの分類が「面2待ち」「未登録」なら、理由を示す確認ダイアログを出す（D-9x）。
-    登録は禁止しない。それ以外は常に True。False のとき、呼び出し元は転記も登録もせずに戻ること（保留行は残る）。
+    候補が面1だけの計画で、生産面マスターの分類が「未登録」なら、理由を示す確認ダイアログを出す（D-9x。登録は禁止しない）。
+    「面2待ち」と面2がある面1は、確認ではなく断る（_refuse_side1_if_blocked()、D-170）。
+    False のとき、呼び出し元は転記も登録もせずに戻ること（保留行は残る）。
     """
+    if not _refuse_side1_if_blocked(parent, candidate):
+        return False
     classification = classify_side1_only_plan(candidate)
     if classification not in _SIDE1_ONLY_CONFIRM_REASONS:
         return True
@@ -681,6 +694,9 @@ class ProductionImportStagingWindow(tk.Toplevel):
         row = self._current_staging_row
         staging_iid = self._current_staging_iid
         if row is None or staging_iid is None:
+            return
+        # 「面2待ち」の面1は、転記せずに案内する（D-170。転記しても登録の前に断られるため）。
+        if not _refuse_side1_if_blocked(self, candidate):
             return
 
         self._parent.load_staged_row(

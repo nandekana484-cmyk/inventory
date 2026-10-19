@@ -314,6 +314,21 @@ def find_opposite_side_plan(lot_no: str, setup_file_no: str, current_side,
     return candidates[0]
 
 
+def list_active_side2_plans_for_file(lot_no: str, setup_file_no: str) -> list:
+    """
+    同じ (lot_no, setup_file_no) の、有効な面2の計画を生産予定日の順に返す（list_plan_items_by_lot() と同じ「有効」の条件）。
+    1件でもあれば、その面1の計画は登録の対象にしない（D-170）。
+    """
+    with get_connection() as con:
+        cur = con.execute("""
+            SELECT * FROM kitting_plan_items
+            WHERE COALESCE(lot_no, '') = ? AND COALESCE(setup_file_no, '') = ? AND production_side = '2'
+              AND delete_flag = 0 AND COALESCE(is_active, 1) = 1
+            ORDER BY COALESCE(plan_start_datetime, ''), kitting_list_no
+        """, (lot_no or "", setup_file_no or ""))
+        return [dict(row) for row in cur.fetchall()]
+
+
 def list_plan_batches(include_deleted: bool = False):
     """
     バッチ一覧を取得。include_deleted=False で delete_flag=1 のバッチは除外。

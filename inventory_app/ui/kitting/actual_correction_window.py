@@ -13,6 +13,7 @@ from services.production_service import (
     apply_correction,
     build_cancellation_preview,
     apply_cancellation,
+    side2_plans_hiding_plan_no,
 )
 from services.inventory_diff_service import is_current_db_inventory_exported
 from services.lot_status_service import preview_completed_lot_correction
@@ -41,6 +42,17 @@ class ActualCorrectionWindow(tk.Toplevel):
         self.title(f"実績修正（{kitting_list_no}）")
         self.geometry("500x420")
         center_window(self, parent)
+
+        # 面2がある面1の計画（古い版で入った写しなど）は計算に使わないので、読み取り専用にして面2で開くよう案内する（D-170）。
+        hiding = side2_plans_hiding_plan_no(kitting_list_no, lot_no)
+        self.read_only = bool(hiding)
+        if self.read_only:
+            ttk.Label(
+                self, foreground="red", wraplength=470, justify=tk.LEFT, padding=(15, 10, 15, 0),
+                text=(f"この計画（{kitting_list_no}）は面1です。同じロット・ファイルNoに面2の計画"
+                      f"（{'、'.join(p['kitting_list_no'] for p in hiding)}）があるため、面1の実績は計算に使いません。"
+                      "この画面は読み取り専用です。修正・削除・取り消しは、面2の計画で実績修正を開いて行ってください。"),
+            ).pack(side=tk.TOP, fill=tk.X)
 
         hist_frame = ttk.LabelFrame(self, text="実績履歴", padding=10)
         hist_frame.pack(expand=True, fill=tk.BOTH, padx=15, pady=(15, 5))
@@ -100,6 +112,8 @@ class ActualCorrectionWindow(tk.Toplevel):
         values = self.tree.item(sel[0], "values")
         self.entry_edit_qty.delete(0, tk.END)
         self.entry_edit_qty.insert(0, values[1])
+        if self.read_only:
+            return
         self.btn_update.config(state=tk.NORMAL)
         self.btn_delete.config(state=tk.NORMAL)
         self.btn_cancel_registration.config(state=tk.NORMAL)
@@ -109,7 +123,7 @@ class ActualCorrectionWindow(tk.Toplevel):
         実績を修正する。修正するのは選んだ実績だけ（反対側の面へは連動しない。D-169）。確定前に必ず確認ダイアログを出す。
         """
         sel = self.tree.selection()
-        if not sel:
+        if not sel or self.read_only:
             return
         prod_log_id = int(sel[0])
 
@@ -143,7 +157,7 @@ class ActualCorrectionWindow(tk.Toplevel):
         実績の削除。削除するのは選んだ実績だけ（反対側の面へは連動しない。D-169）。
         """
         sel = self.tree.selection()
-        if not sel:
+        if not sel or self.read_only:
             return
         prod_log_id = int(sel[0])
 
@@ -170,7 +184,7 @@ class ActualCorrectionWindow(tk.Toplevel):
         「取り消して登録待ちに戻す」「取り消すだけ」の違いは、登録待ちの行を作るかどうかだけ。
         """
         sel = self.tree.selection()
-        if not sel:
+        if not sel or self.read_only:
             return
         preview = build_cancellation_preview(int(sel[0]))
 
