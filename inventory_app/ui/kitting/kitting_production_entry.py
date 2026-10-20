@@ -33,6 +33,8 @@ from ui.production.daily_drawdown_window import DailyDrawdownWindow
 from ui.production.production_import_staging_window import open_or_notify, format_completed_lot_warning
 from ui.loading_window import LoadingWindow
 from ui.common.window_utils import center_window
+from ui.common.highlight_colors import SIDE2_WAIT_BLUE, SIDE_MASTER_UNREGISTERED_GRAY
+from ui.common.color_legend import build_color_legend
 from ui.common.column_filter import CheckboxFilterPopup, build_filter_predicates, row_matches, filter_rows, date_range_predicate, make_sort_key
 # 段階2で ui/kitting/actual_correction_window.py へ移した。他の画面はここから import しているので re-export する。
 from ui.kitting.actual_correction_window import ActualCorrectionWindow  # noqa: F401 （re-export）
@@ -48,6 +50,13 @@ from services.production_entry_service import (  # noqa: E402,F401 （re-export�
     register_actual_and_ng,
     format_registration_message,
 )
+
+
+# 計画一覧の色の凡例（D-181）。値は行の色付け（tag_configure）と同じ定数を使う。
+PLAN_LIST_LEGEND = [
+    ("面2待ち（面1には登録できない）", SIDE2_WAIT_BLUE, None),
+    ("生産面マスター未登録（確認のうえ登録できる）", SIDE_MASTER_UNREGISTERED_GRAY, None),
+]
 
 
 class KittingProductionEntryWindow(tk.Toplevel):
@@ -321,8 +330,8 @@ class KittingProductionEntryWindow(tk.Toplevel):
 
         # 面1だけの計画の分類（D-9x）。b（面2待ち）・c（生産面マスター未登録）にだけ背景色を付ける。
         # 配色は実績CSVステージング一覧の候補と同じ。
-        self.tree_plan_list.tag_configure("needs_side2_wait", background="#cfe2ff")
-        self.tree_plan_list.tag_configure("side_master_unregistered", background="#e2e3e5")
+        self.tree_plan_list.tag_configure("needs_side2_wait", background=SIDE2_WAIT_BLUE)
+        self.tree_plan_list.tag_configure("side_master_unregistered", background=SIDE_MASTER_UNREGISTERED_GRAY)
 
         vsb_plan = ttk.Scrollbar(right_frame, orient="vertical", command=self.tree_plan_list.yview)
         self.tree_plan_list.configure(yscrollcommand=vsb_plan.set)
@@ -365,6 +374,9 @@ class KittingProductionEntryWindow(tk.Toplevel):
         )
         self.btn_csv_staging_status.pack(side=tk.LEFT, expand=True, fill=tk.X)
 
+        # 色の凡例（D-181）。ボタン行の上、水平スクロールバーの下。Treeview より先に side=BOTTOM で pack する。
+        self.plan_list_legend = build_color_legend(right_frame, PLAN_LIST_LEGEND)
+        self.plan_list_legend.pack(side=tk.BOTTOM, anchor=tk.W, pady=(3, 0))
         hsb_plan.pack(side=tk.BOTTOM, fill=tk.X)
         vsb_plan.pack(side=tk.RIGHT, fill=tk.Y)
         self.tree_plan_list.pack(expand=True, fill=tk.BOTH)

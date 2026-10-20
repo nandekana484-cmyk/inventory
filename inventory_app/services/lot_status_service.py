@@ -5,7 +5,7 @@
 ロットの統合（D-136・D-150）: 統合したロットは「統合後のロット」（統合先のロットNo）単位でまとめて評価する。
 統合の無いロットの計算は変えない（merge_ctx が None の経路は統合の前と同じ）。業務ルールは docs/domain/lot_merge.md。
 """
-from models.kitting_plan import list_plan_items_for_all_lots
+from models.kitting_plan import list_plan_items_for_all_lots, classify_side1_only_plan, SIDE1_ONLY_CLASS_WAITING_SIDE2
 from models.production import get_app_cumulative_qty_bulk, get_app_cumulative_qty
 from models.board_structure_master import get_board_structure
 from models.lot_status_history import insert_lot_status_snapshot
@@ -419,6 +419,7 @@ def list_incomplete_lots():
 def check_lot_progress():
     """
     現在アクティブな全ロットについて _evaluate_lot_status() を呼ぶ（ロット進捗チェック用）。lot_no 昇順。
+    ロット進捗チェックの備考・絞り込みのため、面2待ちのファイルNo（side2_wait_file_nos）を添える（D-180）。
     日報・月報と違い、実績ではなく計画を起点にするので、対象期間に実績が無いロットの不足・未登録も検知できる。
     """
     plan_items = list_plan_items_for_all_lots()
@@ -430,13 +431,33 @@ def check_lot_progress():
     ]
     cumulative_by_pair = get_app_cumulative_qty_bulk(kitting_list_no_lot_pairs)
 
-    results = [
-        _evaluate_lot_status(lot_no, items, cumulative_by_pair, merge_ctx=merge_ctx)
-        for lot_no, (items, merge_ctx) in items_by_lot.items()
-    ]
+    results = []
+    side2_wait_cache = {}
+    for lot_no, (items, merge_ctx) in items_by_lot.items():
+        lot_eval = _evaluate_lot_status(lot_no, items, cumulative_by_pair, merge_ctx=merge_ctx)
+        lot_eval["side2_wait_file_nos"] = _side2_wait_file_nos(lot_no, items, merge_ctx, side2_wait_cache)
+        results.append(lot_eval)
 
     results.sort(key=lambda r: r["lot_no"])
     return results
+
+
+def _side2_wait_file_nos(lot_no, items, merge_ctx, cache) -> list:
+    """
+    面2待ち（生産面マスターでは面2があるのに、面2の計画が無い）の面1の計画のファイルNo（D-180。ロット進捗チェックの備考と絞り込み）。
+    生産面マスターの判定はファイルNo単位なので、cache（ファイルNo→分類）で1回だけ引く。
+    """
+    side2_keys = _side2_keys(lot_no, items, merge_ctx)
+    file_nos = set()
+    for it in items:
+        if _side_of(it) != "1" or _hidden_side1(it, lot_no if merge_ctx is None else it["lot_no"], side2_keys):
+            continue
+        file_no = it["setup_file_no"]
+        if file_no not in cache:
+            cache[file_no] = classify_side1_only_plan(it)
+        if cache[file_no] == SIDE1_ONLY_CLASS_WAITING_SIDE2:
+            file_nos.add(file_no)
+    return sorted(file_nos)
 
 
 def evaluate_all_lot_status(cutoff_date: str = None, board_structure_cache: dict = None) -> list:

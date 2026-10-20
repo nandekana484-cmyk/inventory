@@ -49,3 +49,23 @@ def _lot_status_color_category(status: str, unregistered_board_names: list):
     if status in DRAWDOWN_ZERO_STATUSES:
         return "shortfall"
     return None
+
+
+def format_shortfall_detail(lot_eval) -> str:
+    """
+    「不足」のロットの内訳（D-179。ロット進捗チェックの備考）。計画にあるファイルNo（面2があれば面1を除いた、表示している行）と基板名。
+    例「構成基板数 2 に対し、計画のファイルNo は 1 件（0459：FD-Q10C***ﾋｮｳｼﾞ）」。1つのファイルNoに基板名が複数あれば「・」でつなぐ。
+    """
+    names_by_file = {}
+    for board in lot_eval["boards"]:
+        for f in board["files"]:
+            names_by_file.setdefault(f["setup_file_no"], [])
+            if board["board_name"] not in names_by_file[f["setup_file_no"]]:
+                names_by_file[f["setup_file_no"]].append(board["board_name"])
+    files = "、".join(f"{fn}：{'・'.join(names)}" for fn, names in sorted(names_by_file.items()))
+    return f"構成基板数 {lot_eval['board_count']:g} に対し、計画のファイルNo は {len(names_by_file)} 件（{files}）"
+
+
+def format_side2_wait_remark(file_nos) -> str:
+    """面2待ちのファイルNoがあるロットの備考（D-180）。例「面2待ち（ファイル0766）」「面2待ち（ファイル0741・0742）」。"""
+    return "面2待ち（ファイル" + "・".join(file_nos) + "）"

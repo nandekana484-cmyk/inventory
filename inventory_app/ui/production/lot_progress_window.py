@@ -20,6 +20,7 @@ from tkinter import ttk, messagebox, filedialog
 from services.production_service import check_lot_progress
 from services.lot_status_service import ORDER_QTY_REMARK_BETWEEN_FILES, ORDER_QTY_REMARK_WITHIN_FILE
 from services.lot_merge_items_service import format_side_conflict
+from services.lot_status_remarks import format_shortfall_detail, format_side2_wait_remark
 from services.production_report_service import file_label_for
 from ui.common.window_utils import center_window
 from ui.loading_window import LoadingWindow
@@ -58,7 +59,7 @@ STATUS_LABELS = {
 }
 # 「一部未登録」はstatus自体の値ではなく、unregistered_board_namesが非空という
 # 横断的な条件のため、絞り込み用の選択肢としてのみ別途用意する（_apply_filters()参照）。
-STATUS_FILTER_OPTIONS = ["すべて", "一致", "不足", "超過", "マスタ未登録", "構成基板数不一致", "一部未登録"]
+STATUS_FILTER_OPTIONS = ["すべて", "一致", "不足", "超過", "マスタ未登録", "構成基板数不一致", "一部未登録", "面2待ち"]
 
 
 def _format_number(value):
@@ -106,6 +107,13 @@ def build_display_rows(lot_results):
         board_count_display = "" if status == "board_count_inconsistent" else _format_number(lot["board_count"])
         actual_file_count = len(lot["visible_file_nos"])
         remarks = lot["status_remarks"]
+        # 不足の内訳（構成基板数と、計画にあるファイルNo・基板名。D-179）と、面2待ちのファイルNo（D-180）を備考に足す。
+        if status == "shortfall":
+            remarks = f"{remarks} / {format_shortfall_detail(lot)}" if remarks else format_shortfall_detail(lot)
+        side2_wait_file_nos = lot.get("side2_wait_file_nos") or []
+        if side2_wait_file_nos:
+            text = format_side2_wait_remark(side2_wait_file_nos)
+            remarks = f"{remarks} / {text}" if remarks else text
         if lot["order_qty_inconsistent_between_files"]:
             remarks = f"{remarks} / {ORDER_QTY_REMARK_BETWEEN_FILES}" if remarks else ORDER_QTY_REMARK_BETWEEN_FILES
         # 統合した後に面の構成が食い違った（計画が後から取り込まれたなど）ファイルNoはエラーとして示す（D-168。色は赤）。
@@ -135,6 +143,7 @@ def build_display_rows(lot_results):
                 "remarks": row_remarks,
                 "_status_raw": status,
                 "_has_unregistered": has_unregistered,
+                "_side2_wait": bool(side2_wait_file_nos),
                 "_status_color_category": status_color_category,
             }
 
@@ -293,6 +302,10 @@ class LotProgressWindow(tk.Toplevel):
                 # のロット（unregistered_board_namesが全board_name分＝非空になる）
                 # まで誤って含んでしまうバグがあったため、statusのチェックを追加した）。
                 if row["_status_raw"] == "unregistered" or not row["_has_unregistered"]:
+                    return False
+            elif status_filter == "面2待ち":
+                # 状態（一致・不足など）とは別に、面2待ちのファイルNoがあるロット（D-180）。
+                if not row["_side2_wait"]:
                     return False
             elif status_filter != "すべて":
                 if STATUS_LABELS.get(row["_status_raw"], row["_status_raw"]) != status_filter:

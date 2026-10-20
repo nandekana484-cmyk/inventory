@@ -17,6 +17,7 @@ import の向きだけを見ているので、実際の呼び出し回数や呼�
 |---|---|---|---|
 | common/async_task.py | — | — | loading_window |
 | common/checkable_treeview.py | — | — | — |
+| common/color_legend.py | — | — | — |
 | common/column_filter.py | — | — | common/window_utils |
 | common/db_delete_helper.py | db_delete_service, db_lifecycle_service | — | — |
 | common/highlight_colors.py | — | — | — |
@@ -28,7 +29,7 @@ import の向きだけを見ているので、実際の呼び出し回数や呼�
 | kitting/actual_correction_window.py | inventory_diff_service, production_service | operation_log | common/window_utils, kitting/cancel_registration_dialog |
 | kitting/cancel_registration_dialog.py | — | — | common/window_utils |
 | kitting/kitting_plan_import.py | csv_format_detection, kitting_import_service | kitting_plan, operation_log | common/window_utils, loading_window |
-| kitting/kitting_production_entry.py | csv_format_detection, lot_merge_service, lot_status_service, production_entry_service, production_import_service, production_service | board_structure_master, kitting_plan, ng_declarations, production, production_import_staging | common/column_filter, common/window_utils, kitting/actual_correction_window, loading_window, production/daily_drawdown_window, production/lot_progress_window, production/production_import_staging_window, reports/unified_report_window |
+| kitting/kitting_production_entry.py | csv_format_detection, lot_merge_service, lot_status_service, production_entry_service, production_import_service, production_service | board_structure_master, kitting_plan, ng_declarations, production, production_import_staging | common/color_legend, common/column_filter, common/highlight_colors, common/window_utils, kitting/actual_correction_window, loading_window, production/daily_drawdown_window, production/lot_progress_window, production/production_import_staging_window, reports/unified_report_window |
 | kitting/plan_candidate_dialog.py | date_parsing | — | common/highlight_colors, common/window_utils |
 | loading_window.py | — | — | common/window_utils |
 | login_window.py | — | workers | common/window_utils, main_window, master/worker_registration_window |
@@ -45,8 +46,8 @@ import の向きだけを見ているので、実際の呼び出し回数や呼�
 | production/daily_drawdown_window.py | lot_status_history | — | common/lot_row_style, common/window_utils |
 | production/duplicate_plan_dialog.py | — | — | common/window_utils |
 | production/lot_merge_window.py | inventory_diff_service, lot_merge_items_service, lot_merge_service | — | common/window_utils, production/lot_progress_window |
-| production/lot_progress_window.py | lot_merge_items_service, lot_status_service, production_report_service, production_service | — | common/lot_row_style, common/window_utils, loading_window, production/lot_merge_window※ |
-| production/production_import_staging_window.py | lot_merge_service, lot_status_service, production_entry_service, production_import_service, production_service, staging_eligibility | kitting_plan, production, production_import_staging | common/highlight_colors, common/window_utils, kitting/kitting_production_entry※, kitting/plan_candidate_dialog, production/duplicate_plan_dialog |
+| production/lot_progress_window.py | lot_merge_items_service, lot_status_remarks, lot_status_service, production_report_service, production_service | — | common/lot_row_style, common/window_utils, loading_window, production/lot_merge_window※ |
+| production/production_import_staging_window.py | lot_merge_service, lot_status_service, production_entry_service, production_import_service, production_service, staging_eligibility | kitting_plan, production, production_import_staging | common/color_legend, common/highlight_colors, common/window_utils, kitting/kitting_production_entry※, kitting/plan_candidate_dialog, production/duplicate_plan_dialog |
 | production/unmatched_production_window.py | — | — | common/window_utils |
 | reports/daily_report_window.py | — | board_structure_master | common/lot_row_style, common/window_utils |
 | reports/parts_ng_report_window.py | — | scrap_records | common/window_utils, reports/daily_report_window |
@@ -110,7 +111,7 @@ ui → services → models の一方向以外の import、models/ の外の SQL 
 ## 命名規則と実態が食い違っている箇所
 
 - 層をまたいで同じファイル名: 無し（`services/lot_status_history.py` は段階4で `services/lot_status_history_service.py` に改名した。旧ファイルは re-export だけを残している）
-- `ui/*_window.py` に当てはまらないもの: `kitting_plan_import.py`, `kitting_production_entry.py`, `plan_candidate_dialog.py`, `checkable_treeview.py`, `db_delete_helper.py`, `window_utils.py`, `highlight_colors.py`, `lot_row_style.py`
+- `ui/*_window.py` に当てはまらないもの: `kitting_plan_import.py`, `kitting_production_entry.py`, `plan_candidate_dialog.py`, `checkable_treeview.py`, `db_delete_helper.py`, `window_utils.py`, `highlight_colors.py`, `lot_row_style.py`, `color_legend.py`
 - `services/*_service.py` に当てはまらないもの: `csv_format_detection.py`, `csv_parsing_common.py`, `date_parsing.py`, `db_migration_carryover.py`, `lot_status_history.py`（re-export だけ）, `staging_eligibility.py`
 - `models/<テーブル名>.py` に当てはまらないもの（各ファイルの CREATE TABLE から確認）: `db_common.py`（接続ヘルパー）、`master.py`（parts・final_products）、`inventory.py`（inventory_stock）、`kitting_plan.py`（kitting_plan_batches・kitting_plan_items・pending_kitting_plan_items）、`production_import_staging.py`（csv_import_batches・pending_csv_import_rows）、`production.py`（CREATE TABLE なし。production_daily は `db/schema.sql` で作る）
 

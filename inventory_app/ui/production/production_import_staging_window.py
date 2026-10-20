@@ -51,14 +51,27 @@ from ui.kitting.plan_candidate_dialog import (
     CANDIDATE_RIGHT_ALIGNED,
 )
 from ui.common.window_utils import center_window
-from ui.common.highlight_colors import MISMATCH_RED
+from ui.common.highlight_colors import (
+    MISMATCH_RED, AUTO_CONFIRMABLE_GREEN, QTY_DIFF_YELLOW, DATE_DIFF_ORANGE, SIDE2_WAIT_BLUE,
+    SIDE_MASTER_UNREGISTERED_GRAY, SIMILAR_LOT_PURPLE, REGISTERED_TEXT_GRAY,
+)
+from ui.common.color_legend import build_color_legend
 from ui.production.duplicate_plan_dialog import ask_duplicate_resolution, DUPLICATE_SUM, DUPLICATE_MANUAL
 
 # 「候補なし」行を CSV 出力するときの理由。import_production_csv() の unmatched の理由と同じ文言。
 REASON_NO_CANDIDATES = "計画が見つからない（該当lot_noの計画なし）"
 
-# 似たロットNoの計画を候補にしたときの候補の背景色（D-177）。
-SIMILAR_LOT_BACKGROUND = "#e9d8fd"
+# 候補一覧の色の凡例（D-181）。値は行の色付け（_create_candidate_pane() の tag_configure）と同じ定数を使う。
+CANDIDATE_LEGEND = [
+    ("Shift+Sで登録可", AUTO_CONFIRMABLE_GREEN, None),
+    ("数量差20%超", QTY_DIFF_YELLOW, None),
+    ("日付差3日以上", DATE_DIFF_ORANGE, None),
+    ("両方の差大／製品名違い", MISMATCH_RED, None),
+    ("面2待ち", SIDE2_WAIT_BLUE, None),
+    ("生産面マスター未登録", SIDE_MASTER_UNREGISTERED_GRAY, None),
+    ("似たロットNo", SIMILAR_LOT_PURPLE, None),
+    ("登録済み", None, REGISTERED_TEXT_GRAY),
+]
 
 # 「不一致として除外」で理由が空欄・キャンセルのときの既定の文言（理由は人が判断するので自由記述）。
 REASON_MISMATCH_DEFAULT = "不一致と判断（詳細理由未入力）"
@@ -312,6 +325,10 @@ class ProductionImportStagingWindow(tk.Toplevel):
             ),
             foreground="gray",
         ).pack(side=tk.BOTTOM, anchor=tk.W, pady=(5, 0))
+        # 色の凡例（D-181）。ヒントと同じく Treeview より先に side=BOTTOM で pack する。
+        # 左ペインの幅（候補の一覧の幅）を広げないよう、見出しを短くして1行に収める。
+        self.candidate_legend = build_color_legend(left_frame, CANDIDATE_LEGEND, title="色：")
+        self.candidate_legend.pack(side=tk.BOTTOM, anchor=tk.W, pady=(5, 0))
 
         # --- Treeview＋スクロールバーは、下部の領域確保後に最後にpackする ---
         tree_frame = ttk.Frame(left_frame)
@@ -329,19 +346,19 @@ class ProductionImportStagingWindow(tk.Toplevel):
             )
         # 数量差・日付差が大きい候補の背景色（閾値と配色は ui.kitting.plan_candidate_dialog と同じ）。両方に該当すれば large_diff_both だけを付ける。
         # auto_confirmable（緑）は large_diff 系と閾値が重ならず同時には該当しないが、念のため最優先で判定する。
-        self.tree_candidates.tag_configure("large_diff", background="#fff3cd")
-        self.tree_candidates.tag_configure("large_date_diff", background="#ffd9a0")
+        self.tree_candidates.tag_configure("large_diff", background=QTY_DIFF_YELLOW)
+        self.tree_candidates.tag_configure("large_date_diff", background=DATE_DIFF_ORANGE)
         self.tree_candidates.tag_configure("large_diff_both", background=MISMATCH_RED)
-        self.tree_candidates.tag_configure("auto_confirmable", background="#c8f7c5")
+        self.tree_candidates.tag_configure("auto_confirmable", background=AUTO_CONFIRMABLE_GREEN)
         # 生産面マスターの分類（D-9x）。既存のタグと別の色にし、_populate_candidates() で最優先に判定する。
-        self.tree_candidates.tag_configure("needs_side2_wait", background="#cfe2ff")
-        self.tree_candidates.tag_configure("side_master_unregistered", background="#e2e3e5")
+        self.tree_candidates.tag_configure("needs_side2_wait", background=SIDE2_WAIT_BLUE)
+        self.tree_candidates.tag_configure("side_master_unregistered", background=SIDE_MASTER_UNREGISTERED_GRAY)
         # 製品名不一致（ロットNoは一致するが、製品名が一致する候補が無い）。既存の赤（MISMATCH_RED）を使い、ほかのタグより優先する。
         self.tree_candidates.tag_configure("product_name_mismatch", background=MISMATCH_RED)
         # 似たロットNo（末尾「-」だけ違うロット）の計画を候補にしたとき（D-177）。
-        self.tree_candidates.tag_configure("similar_lot", background=SIMILAR_LOT_BACKGROUND)
+        self.tree_candidates.tag_configure("similar_lot", background=SIMILAR_LOT_PURPLE)
         # 登録済みの候補は文字色をグレーにする。文字色だけなので、背景色のタグと重ねて付けられる。
-        self.tree_candidates.tag_configure("already_registered", foreground="gray")
+        self.tree_candidates.tag_configure("already_registered", foreground=REGISTERED_TEXT_GRAY)
 
         # スクロールバーをTreeviewより先にpackする（右ペインと同じ順序）。
         vsb = ttk.Scrollbar(tree_frame, orient="vertical")
