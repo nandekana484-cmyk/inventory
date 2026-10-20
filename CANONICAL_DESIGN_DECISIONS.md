@@ -1447,6 +1447,7 @@ D-81の修正（候補が複数ある場合も、いずれか1件の実績合計
 | D-182 | 構成基板数マスターの画面に「CSVに書き出す」ボタンを付ける（2026-10-20、利用者の指示、§61）。今のマスター（DB の内容。画面の検索・絞り込みは関係しない）を、取り込みの元にしている構成基板数CSV と同じ形式で書き出す：見出し「基板名,構成数」、cp932（BOM なし）、改行 CRLF、カンマ区切り（カンマを含む基板名は引用符で囲む）。構成数は取り込み直して同じ値になる文字列（2.0 は「2」、1.5 は「1.5」、未設定は空欄）。cp932 で表せない文字を含む基板名があると、取り込み直したときに名前が変わるので、ファイルを作らずにエラーにする。書き出したファイルをそのまま取り込むと「新規追加 0 / 値が変わる 0 / 削除 0」。操作履歴に「構成基板数マスタCSV出力」を残す。処理は `services/board_structure_csv_service.export_board_structure_csv()`（画面のファイルが 625 行あったので、先に CSV の解析と確認文をこのファイルへ移した。動きは変えていない） | 本ファイル §61 |
 | D-183 | 構成基板数マスターの今後の課題（2026-10-20、利用者の決定。今回は記録だけ）：(1) 1件ずつの編集（生産面マスターと同じやり方。画面で行を足す・値を変える・消すを選んで保存する）、(2) 取り込む前に、ほかのロットへの影響を示す（例「202196 が一致→不一致」。構成基板数を変えると、ロット進捗チェック・日報・月報の判定が変わるロットがあるため） | 本ファイル §61 |
 | D-184 | 利用者の決定（2026-10-20、§61 の報告への回答、§61.4）：(1) ロット進捗チェックの「不足」の備考で、計画のファイルNoと基板名の内訳が3件を超えるときは、先頭（ファイルNo順）の3件だけを出し、残りを「ほかN件」とまとめる（例「構成基板数 21 に対し、計画のファイルNo は 12 件（0735：…、0736：…、0737：…、ほか9件）」。件数は全件の数のまま。3件以下は今のまま。`SHORTFALL_DETAIL_MAX_FILES`）、(2) 構成基板数マスターの書き出しの既定のファイル名 board_structure_master.csv と見出し「構成数」は今のままでよい（D-182）、(3) 既存の実績がある計画への右クリックの登録が、「断る」から重複の確認（合計して登録／手入力で対応／キャンセル）に変わったこと（D-176）は、このままでよい（上書きの選択肢は無いので） | 本ファイル §61 |
+| D-185 | .exe v3.1.0 のビルド（2026-10-20、§62）。機能の追加なので2桁目を上げた（`APP_VERSION = "3.1.0"`、`BUILD_DATE = "2026-10-20"`）。含まれる変更は D-176〜D-184（§61）。DB の形は版 14 のままで、3.0.0 と同じデータを使える。.exe の SHA-256 は `741549BA46D9224CFD254B1BD6CC10663B1F1341E94925DC40E0B9C4C480A0D1`（130,891,096バイト）。.spec は変えていない。dist の退避は `C:\work\inventory_dist_backup_20261020_094116_before_v3_1`（v3.0.0 の .exe と実データの DB・app_settings.json） | 本ファイル §62 |
 
 ### 30.1 Shift+Sの検証結果（D-84）
 
@@ -3402,3 +3403,54 @@ D-155 の一覧と、前回の設計案のお勧め（統合したロットで�
 - 決定の内容は D-184。備考の文言は `services/lot_status_remarks.format_shortfall_detail()` だけで組み立てている
 - 実データの複製で確かめたこと（実際に試した。dist を新たに複製し、`LotProgressWindow` を生成して表を読み、CSV 出力のボタンの処理を保存先を差し替えて呼んだ）：419081 は「構成基板数 21 に対し、計画のファイルNo は 12 件（0735：V221_1000 ｼｮｳﾒｲTOP、0736：V221_1000 ｼｮｳﾒｲSPH1、0737：V221_1000 ｼｮｳﾒｲSPH2、ほか9件） / 面2待ち（ファイル0741・0742）」。101545（1件）は今までどおり。139127（5件）は「（0476：…ﾓﾉｸﾛCMOS、0563：…I赤外、0578：…Iﾒｲﾝ、ほか2件）」
 - CSV 出力は表の値をそのまま書くので、3ロットとも表と同じ文言だった（実際に試した）。ロット進捗チェックには印刷の機能が無い（コードを読んだ）。日報・月報など、印刷・出力のある実績レポートの「確認事項」には、もともと不足の内訳を出していない（D-179）
+
+## 62. .exe v3.1.0（登録待ち一覧と画面表示の改善、構成基板数マスターの書き出し）のビルド（2026-10-20、D-185）
+
+### 62.0 着手前の確認（実際に試した）
+
+- `git status` は clean、main と origin/main は `6a00166`（§61 の手順3）で一致
+- `InventoryApp.exe` は起動していなかった（`Get-Process`）
+- dist の中は `InventoryApp.exe`（130,878,423バイト、SHA-256 `17DD506B…0A49`＝v3.0.0、D-172）・`app_settings.json`（`B5035C42…440D`）・`db\master.db`（`D6A2F7BC…BAA3`）・`db\2026-08\inventory.db`（`601583C4…6BA1`）
+- 退避：`C:\work\inventory_dist_backup_20261020_094116_before_v3_1` へフォルダごと写し、4ファイルとも SHA-256 が一致することを確かめた
+
+### 62.1 ビルドの前の変更
+
+- `1137322`（不足の備考の内訳を3件までにする、D-184。§61.4）
+
+### 62.2 ビルド前の確認（実際に試した）
+
+| 項目 | 結果 |
+|---|---|
+| pytest（3回。全出力をファイルに書き出し、`$LASTEXITCODE` と最後の集計行で確認） | 3回とも終了コード 0、610件すべて成功。失敗・エラー・強制終了は0件 |
+| 出力のファイル | `%TEMP%\claude\c--work-inventory\9cc5a145-9c05-44a3-9dd0-6d37b9be2f8c\scratchpad\out\v5\pytest_v31_prebuild_1〜3.txt` |
+
+### 62.3 ビルド
+
+- `inventory_app/version.py`：`APP_VERSION = "3.1.0"`、`BUILD_DATE = "2026-10-20"`
+- CHANGELOG.md の「未リリース」を「3.1.0（2026-10-20）」にし、利用者向けに書き直した（3.0.0 に戻す手順を含む）
+- `pyinstaller inventory_app.spec --noconfirm`（§59 と同じ。`--clean` は使わない）。2026-10-20 09:51〜09:55、終了コード 0。ビルドログで「WARNING」を含む行は8件（v3.0.0 と同じ件数）で、自作モジュールに関するものは0件
+- `.spec` の変更は不要（コードを読んだ）：`.spec` はアプリのモジュールを名前で挙げていない。追加した `ui/common/color_legend.py`（`kitting_production_entry.py`・`production_import_staging_window.py` から）・`ui/production/duplicate_plan_dialog.py`（`production_import_staging_window.py` から）・`services/board_structure_csv_service.py`（`board_structure_import_window.py` から）は、どれも通常の import で読み込まれる。v3.0.0 から、データファイル・マイグレーションの増減は無い
+
+### 62.4 ビルド後の確認（実際に試した）
+
+| 項目 | 結果 |
+|---|---|
+| `dist/InventoryApp.exe` | 130,891,096バイト（v3.0.0 より +12,673）、更新日時 2026-10-20 09:55:23、SHA-256 `741549BA46D9224CFD254B1BD6CC10663B1F1341E94925DC40E0B9C4C480A0D1`、FileVersion/ProductVersion `3.1.0 (2026-10-20)` |
+| dist の .exe 以外のファイル | `app_settings.json`・`db\master.db`・`db\2026-08\inventory.db` の3つで、退避と SHA-256 がすべて一致（隠しファイルを含めて一覧にした。ほかのファイルは無い） |
+| 同梱（`PyInstaller.archive.readers` で .exe の中の PYZ を開いた） | `ui.common.color_legend`・`ui.common.highlight_colors`・`ui.production.duplicate_plan_dialog`・`services.board_structure_csv_service`・`services.lot_status_remarks`・`services.staging_eligibility`・`services.production_entry_service`・`services.production_import_service`・`ui.master.board_structure_import_window`・`ui.production.lot_progress_window`・`ui.production.production_import_staging_window`・`version` がある。`db\schema.sql` も CArchive にある。同梱の `version` の定数は `3.1.0`・`2026-10-20`。同梱の `services.lot_status_remarks` に `SHORTFALL_DETAIL_MAX_FILES`、`services.board_structure_csv_service` に `export_board_structure_csv`、`services.staging_eligibility` に `resolve_row_candidates` がある |
+| 起動（一時フォルダに .exe だけ。クリックはしない） | 14秒後に表示されたウィンドウは「部品在庫管理アプリ - ログイン v3.1.0（2026-10-20）」だけ（`GetWindowTextW` で取得）で、エラーのダイアログは無い。作られたのは `db\master.db`（12,288バイト）だけ。プロセスを止めた後、`InventoryApp.exe` のプロセスは残っていない |
+| 起動の確認の1回目 | 確認のスクリプト（BOM なしの .ps1）の中の日本語のパスを、Windows PowerShell 5.1 が読み違えてフォルダを作れず、.exe を起動する前に止まった（何も作られていない）。パスを `$env:TEMP` から組み立てる形に直してやり直した（上の行がやり直しの結果） |
+
+### 62.5 含まれる変更
+
+- §61（D-176〜D-184）。v3.0.0（D-172）より後の機能のコミット：`331c639`（登録待ち一覧）・`1ebd016`（ロット進捗チェックの備考と色の凡例）・`a3f2696`（構成基板数CSVの解析の移動。動きは変えない）・`6a00166`（構成基板数マスターの書き出し）・`1137322`（不足の備考の内訳を3件まで）
+
+### 62.6 退避
+
+- `C:\work\inventory_dist_backup_20261020_094116_before_v3_1`：v3.0.0 の `InventoryApp.exe`（`17DD506B…0A49`）、`app_settings.json`、`db\master.db`、`db\2026-08\inventory.db`（ビルドの前の dist そのもの）
+
+### 62.7 v3.0.0 に戻す手順
+
+1. アプリを閉じる（ほかのPCで開いていないことも確かめる）
+2. `dist\InventoryApp.exe` を、退避した v3.0.0（`C:\work\inventory_dist_backup_20261020_094116_before_v3_1\InventoryApp.exe`）に置き換える
+3. DB の形は同じ（版 14）なので、3.1.0 で入力したデータをそのまま開ける。「合計して登録」した実績は1件の実績として残る。ロット進捗チェックの備考・凡例・書き出しのボタンは無くなる
