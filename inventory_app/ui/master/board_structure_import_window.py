@@ -17,6 +17,7 @@ from services.board_structure_csv_service import (  # noqa: F401 （re-export）
     _format_value,
     build_confirmation_message as _build_confirmation_message,
     build_completion_message as _build_completion_message,
+    export_board_structure_csv,
 )
 from models.operation_log import log_operation
 from ui.loading_window import LoadingWindow
@@ -129,6 +130,7 @@ class BoardStructureImportWindow(tk.Toplevel):
 
         btn_frame = ttk.Frame(self, padding=10)
         btn_frame.pack(fill=tk.X)
+        ttk.Button(btn_frame, text="CSVに書き出す", command=self.on_export_csv).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="閉じる", command=self.destroy).pack(side=tk.RIGHT, padx=5)
 
         self._update_column_headers()
@@ -230,6 +232,30 @@ class BoardStructureImportWindow(tk.Toplevel):
             return
         self.selected_csv_path = file_path
         self.lbl_csv_path.config(text=file_path)
+
+    def on_export_csv(self):
+        """今のマスターを、そのまま取り込み直せる形式で書き出す（D-182）。書き出すのは DB の内容で、検索・絞り込みは関係しない。"""
+        save_path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            initialfile="board_structure_master.csv",
+            parent=self.winfo_toplevel(),
+        )
+        if not save_path:
+            return
+        try:
+            count = export_board_structure_csv(save_path, list_board_structure())
+        except (ValueError, OSError) as e:
+            messagebox.showerror("エラー", f"CSVの書き出し中にエラーが発生しました：\n{e}", parent=self.winfo_toplevel())
+            return
+        log_operation(
+            self.current_worker.get("name", "unknown"),
+            "構成基板数マスタCSV出力",
+            detail=f"{count}行 / {save_path}",
+        )
+        messagebox.showinfo(
+            "完了", f"構成基板数マスタをCSVへ書き出しました（{count}件）：\n{save_path}", parent=self.winfo_toplevel(),
+        )
 
     def on_import_execute(self):
         """

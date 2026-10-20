@@ -1,8 +1,9 @@
 """
-構成基板数CSVの解析（取込前の差分計算まで。DBへは書かない）と、取込の確認・完了の文言。
+構成基板数CSVの解析（取込前の差分計算まで。DBへは書かない）と、取込の確認・完了の文言、今のマスターの書き出し。
 ui/master/board_structure_import_window.py から移した（中身は変えていない）。画面のモジュールからも同じ名前で参照できる。
 """
 import csv
+import io
 
 from models.board_structure_master import compute_board_structure_sync_plan
 
@@ -275,3 +276,48 @@ def build_completion_message(result, count_summary):
         msg += f"\n\n警告：{len(warnings)}件（詳細は別ウィンドウで確認できます）"
 
     return msg
+
+
+# 書き出しの形式は、取り込みの元にしている構成基板数CSV（cp932・CRLF・見出し「基板名,構成数」）に合わせる（D-182）。
+EXPORT_ENCODING = "cp932"
+EXPORT_HEADER = [COL_BOARD_NAME, "構成数"]
+
+
+def _format_export_count(value) -> str:
+    """取り込み直したときに同じ値になる文字列（2.0 は「2」、未設定は空欄）。"""
+    if value is None:
+        return ""
+    value = float(value)
+    return str(int(value)) if value.is_integer() else repr(value)
+
+
+def build_board_structure_csv_bytes(rows) -> bytes:
+    """
+    構成基板数マスターの行（list_board_structure() の戻り値）を、取り込める CSV のバイト列にする。
+    cp932 で表せない基板名があれば、書き出すと取り込み直したときに名前が変わるので ValueError にする。
+    """
+    buf = io.StringIO(newline="")
+    writer = csv.writer(buf, lineterminator="\r\n")
+    writer.writerow(EXPORT_HEADER)
+    for row in rows:
+        writer.writerow([row["board_name"], _format_export_count(row.get("board_count"))])
+    text = buf.getvalue()
+    unencodable = []
+    for row in rows:
+        try:
+            row["board_name"].encode(EXPORT_ENCODING)
+        except UnicodeEncodeError:
+            unencodable.append(row["board_name"])
+    if unencodable:
+        head = "、".join(unencodable[:_PREVIEW_HEAD_COUNT])
+        rest = f" ほか{len(unencodable) - _PREVIEW_HEAD_COUNT}件" if len(unencodable) > _PREVIEW_HEAD_COUNT else ""
+        raise ValueError(f"Shift_JIS（cp932）で表せない文字を含む基板名があるため、書き出せません：{head}{rest}")
+    return text.encode(EXPORT_ENCODING)
+
+
+def export_board_structure_csv(file_path, rows) -> int:
+    """CSV を書き出し、書き出した行数（見出しを除く）を返す。書き出せないときは、ファイルを作らずに ValueError。"""
+    data = build_board_structure_csv_bytes(rows)
+    with open(file_path, "wb") as f:
+        f.write(data)
+    return len(rows)
