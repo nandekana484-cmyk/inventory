@@ -51,10 +51,15 @@ def _lot_status_color_category(status: str, unregistered_board_names: list):
     return None
 
 
+# 「不足」の備考に出すファイルNoの内訳の最大件数（利用者の決定、D-184）。
+SHORTFALL_DETAIL_MAX_FILES = 3
+
+
 def format_shortfall_detail(lot_eval) -> str:
     """
     「不足」のロットの内訳（D-179。ロット進捗チェックの備考）。計画にあるファイルNo（面2があれば面1を除いた、表示している行）と基板名。
     例「構成基板数 2 に対し、計画のファイルNo は 1 件（0459：FD-Q10C***ﾋｮｳｼﾞ）」。1つのファイルNoに基板名が複数あれば「・」でつなぐ。
+    内訳が SHORTFALL_DETAIL_MAX_FILES 件を超えるときは、先頭（ファイルNo順）だけを出し、残りを「ほかN件」とまとめる（D-184）。
     """
     names_by_file = {}
     for board in lot_eval["boards"]:
@@ -62,7 +67,10 @@ def format_shortfall_detail(lot_eval) -> str:
             names_by_file.setdefault(f["setup_file_no"], [])
             if board["board_name"] not in names_by_file[f["setup_file_no"]]:
                 names_by_file[f["setup_file_no"]].append(board["board_name"])
-    files = "、".join(f"{fn}：{'・'.join(names)}" for fn, names in sorted(names_by_file.items()))
+    items = [f"{fn}：{'・'.join(names)}" for fn, names in sorted(names_by_file.items())]
+    if len(items) > SHORTFALL_DETAIL_MAX_FILES:
+        items = items[:SHORTFALL_DETAIL_MAX_FILES] + [f"ほか{len(items) - SHORTFALL_DETAIL_MAX_FILES}件"]
+    files = "、".join(items)
     return f"構成基板数 {lot_eval['board_count']:g} に対し、計画のファイルNo は {len(names_by_file)} 件（{files}）"
 
 

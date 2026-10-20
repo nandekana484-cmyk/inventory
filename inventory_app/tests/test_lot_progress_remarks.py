@@ -54,6 +54,19 @@ def test_shortfall_detail(db):
     assert format_shortfall_detail(lots["L2"]) == "構成基板数 3 に対し、計画のファイルNo は 2 件（0400：BRD-B1、0401：BRD-B2）"
 
 
+def _fake_lot(n):
+    return {"board_count": 13, "boards": [
+        {"board_name": f"BRD-{i}", "files": [{"setup_file_no": f"07{i:02d}"}]} for i in range(n)
+    ]}
+
+
+def test_shortfall_detail_shows_first_three_files_only():
+    assert format_shortfall_detail(_fake_lot(3)) == (
+        "構成基板数 13 に対し、計画のファイルNo は 3 件（0700：BRD-0、0701：BRD-1、0702：BRD-2）")
+    assert format_shortfall_detail(_fake_lot(12)) == (
+        "構成基板数 13 に対し、計画のファイルNo は 12 件（0700：BRD-0、0701：BRD-1、0702：BRD-2、ほか9件）")
+
+
 def test_side2_wait_file_nos(db):
     lots = _lots()
     assert lots["L3"]["side2_wait_file_nos"] == ["0766"]
