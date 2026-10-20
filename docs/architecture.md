@@ -34,7 +34,7 @@ import の向きだけを見ているので、実際の呼び出し回数や呼�
 | loading_window.py | — | — | common/window_utils |
 | login_window.py | — | workers | common/window_utils, main_window, master/worker_registration_window |
 | main_window.py | backup_service, db_lifecycle_service, db_lock_service, db_migration_carryover, master_merge_service, unprocessed_check_service | db_lifecycle_log, operation_log | common/async_task, common/db_delete_helper, common/window_utils, inventory/inventory_diff_window, inventory/inventory_input_window, inventory/theoretical_inventory_import_window, kitting/kitting_plan_import, kitting/kitting_production_entry, login_window※, master/board_structure_import_window, master/parts_attributes_import_window, master/production_side_master_window, master/worker_management_window, master/worker_registration_window, ng_wip/ng_input_window, ng_wip/wip_expansion_window, system/operation_log_window, system/pdf_ocr_import_window※ |
-| master/board_structure_import_window.py | — | board_structure_master, operation_log | common/window_utils, loading_window, system/warnings_list_window |
+| master/board_structure_import_window.py | board_structure_csv_service | board_structure_master, operation_log | common/window_utils, loading_window, system/warnings_list_window |
 | master/parts_attributes_import_window.py | — | operation_log, parts_attributes | common/window_utils, loading_window, system/warnings_list_window |
 | master/production_side_master_window.py | csv_parsing_common | kitting_plan, operation_log, production_side_master | common/checkable_treeview, common/highlight_colors, common/window_utils, loading_window, system/warnings_list_window |
 | master/worker_management_window.py | — | operation_log, workers | common/window_utils, master/worker_registration_window |
@@ -65,6 +65,7 @@ import の向きだけを見ているので、実際の呼び出し回数や呼�
 |---|---|---|---|
 | app_settings_service.py | — | — | — |
 | backup_service.py | db_common | — | — |
+| board_structure_csv_service.py | board_structure_master | — | — |
 | bom_file_service.py | — | — | — |
 | bom_service.py | bom_master, parts_attributes | bom_file_service | — |
 | csv_format_detection.py | — | — | — |
