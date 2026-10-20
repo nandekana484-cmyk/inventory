@@ -13,21 +13,22 @@ from tkinter import ttk, messagebox, filedialog, simpledialog
 from services.production_import_service import (
     STAGING_STATUS_LABELS,
     EXCLUSION_REASON_LABELS,
-    normalize_product_name,
     group_active_plan_items_by_lot,
 )
 from services.production_service import (
     search_plan_by_kitting_no, get_daily_history, record_lot_status_snapshot, side1_registration_block,
 )
 from services.lot_status_service import preview_completed_lot_registration, lot_completion_state
-from services.lot_merge_service import match_lot_of
+from services.lot_merge_service import match_lot_of, active_plan_lot_nos
 from services.production_entry_service import (
     resolve_csv_report_date,
     register_actual_and_ng,
     format_registration_message,
+    duplicate_registration_info,
+    register_combined_with_existing,
 )
 from models.kitting_plan import (
-    find_matching_plan_items, classify_side1_only_plan,
+    classify_side1_only_plan,
     SIDE1_ONLY_CLASS_WAITING_SIDE2, SIDE1_ONLY_CLASS_UNREGISTERED,
 )
 from models.production import list_daily_production_by_kitting_no
@@ -51,9 +52,13 @@ from ui.kitting.plan_candidate_dialog import (
 )
 from ui.common.window_utils import center_window
 from ui.common.highlight_colors import MISMATCH_RED
+from ui.production.duplicate_plan_dialog import ask_duplicate_resolution, DUPLICATE_SUM, DUPLICATE_MANUAL
 
 # 「候補なし」行を CSV 出力するときの理由。import_production_csv() の unmatched の理由と同じ文言。
 REASON_NO_CANDIDATES = "計画が見つからない（該当lot_noの計画なし）"
+
+# 似たロットNoの計画を候補にしたときの候補の背景色（D-177）。
+SIMILAR_LOT_BACKGROUND = "#e9d8fd"
 
 # 「不一致として除外」で理由が空欄・キャンセルのときの既定の文言（理由は人が判断するので自由記述）。
 REASON_MISMATCH_DEFAULT = "不一致と判断（詳細理由未入力）"
@@ -115,6 +120,8 @@ from services.staging_eligibility import (  # noqa: E402,F401 （re-export）
     REASON_QTY_MISMATCH,
     REASON_DATE_UNPARSEABLE,
     REASON_DATE_DIFF_TOO_LARGE,
+    REASON_SIMILAR_LOT,
+    SIMILAR_LOT_MARK,
     AUTO_REGISTER_SKIP_REASON_LABELS,
     _date_only_diff_days,
     _is_qty_mismatch,
@@ -122,6 +129,8 @@ from services.staging_eligibility import (  # noqa: E402,F401 （re-export）
     evaluate_auto_register_eligibility,
     _load_staged_rows_from_db,
     reevaluate_staged_row,
+    reevaluate_staged_rows,
+    resolve_row_candidates,
     load_staged_row,
 )
 
@@ -142,12 +151,26 @@ def _is_candidate_already_registered(candidate, lot_no) -> bool:
     return bool(list_daily_production_by_kitting_no(candidate["kitting_list_no"], match_lot_of(candidate, lot_no)))
 
 
+def _short_date(value):
+    """"2026/8/6"・"2026-08-06" → "8/6"。解釈できなければそのまま。"""
+    from services.date_parsing import parse_flexible_date
+    parsed = parse_flexible_date(value)
+    return f"{parsed.month}/{parsed.day}" if parsed else str(value or "日付なし")
+
+
 def staging_status_label(row) -> str:
-    """「状態」列の文言。「候補なし」で似たロットNoがあれば「候補なし（似たロットNoあり：326611-）」（D-162。状態の判定は変えない）。"""
+    """
+    「状態」列の文言。「候補なし」で似たロットNoがあれば「候補なし（似たロットNoあり：326611-）」（D-162。状態の判定は変えない）。
+    同じ計画への重複には相手の行を「（相手：8/6 の 34）」、既に実績ありには登録済みの実績を「（登録済み：7/15 の 66）」と添える（D-176）。
+    """
     status = row.get("status")
     label = STAGING_STATUS_LABELS.get(status, status or "")
-    if row.get("similar_lot_no"):
+    if row.get("similar_lot_no") and status == REASON_NO_CANDIDATES_CODE:
         label = f"{label}（似たロットNoあり：{row['similar_lot_no']}）"
+    if row.get("duplicate_partners"):
+        label += "（相手：" + "、".join(f"{_short_date(d)} の {float(q):g}" for d, q in row["duplicate_partners"]) + "）"
+    if row.get("existing_records"):
+        label += "（登録済み：" + "、".join(f"{_short_date(d)} の {float(q):g}" for d, q in row["existing_records"]) + "）"
     return label
 
 
@@ -315,6 +338,8 @@ class ProductionImportStagingWindow(tk.Toplevel):
         self.tree_candidates.tag_configure("side_master_unregistered", background="#e2e3e5")
         # 製品名不一致（ロットNoは一致するが、製品名が一致する候補が無い）。既存の赤（MISMATCH_RED）を使い、ほかのタグより優先する。
         self.tree_candidates.tag_configure("product_name_mismatch", background=MISMATCH_RED)
+        # 似たロットNo（末尾「-」だけ違うロット）の計画を候補にしたとき（D-177）。
+        self.tree_candidates.tag_configure("similar_lot", background=SIMILAR_LOT_BACKGROUND)
         # 登録済みの候補は文字色をグレーにする。文字色だけなので、背景色のタグと重ねて付けられる。
         self.tree_candidates.tag_configure("already_registered", foreground="gray")
 
@@ -532,6 +557,9 @@ class ProductionImportStagingWindow(tk.Toplevel):
             if len(candidate_lots) > 1:
                 # 統合したロット（D-160）。どの元のロットの計画かは、候補一覧のロットNo.の列で分かる。
                 hint += f"\n※ 統合したロットのため、{'・'.join(candidate_lots)} の計画を候補にしています（ロットNo.の列を確認してください）。"
+            if effective_candidates[0].get(SIMILAR_LOT_MARK):
+                hint += (f"\n※ ロットNo. {row.get('lot_no')} の計画が無いため、似たロットNo（{'・'.join(candidate_lots)}）の計画を"
+                         "候補にしています（紫）。登録するときに確認します。")
         self.lbl_candidate_hint.config(text=hint)
 
         lot_state_cache = {}
@@ -551,6 +579,8 @@ class ProductionImportStagingWindow(tk.Toplevel):
             if using_fallback:
                 # この分岐の候補はすべて製品名不一致（matched が空のフォールバック）。ほかのどの条件よりも優先する。
                 tags = ("product_name_mismatch",)
+            elif candidate.get(SIMILAR_LOT_MARK):
+                tags = ("similar_lot",)
             elif side1_only_classification == SIDE1_ONLY_CLASS_WAITING_SIDE2:
                 tags = ("needs_side2_wait",)
             elif side1_only_classification == SIDE1_ONLY_CLASS_UNREGISTERED:
@@ -597,10 +627,65 @@ class ProductionImportStagingWindow(tk.Toplevel):
         if candidate is None:
             return
         row = self._current_staging_row
+        if row is not None and not self._confirm_similar_lot(row, candidate):
+            return
         if row is not None and _is_candidate_already_registered(candidate, row.get("lot_no")):
+            info = duplicate_registration_info(candidate, row.get("lot_no"), row["daily_qty"], row.get("report_date"))
+            if info is not None:
+                self._resolve_duplicate(row, self._current_staging_iid, candidate, info)
+                return
             self._open_correction_window_for_candidate(candidate, match_lot_of(candidate, row.get("lot_no")))
             return
         self._confirm_candidate(candidate)
+
+    def _confirm_similar_lot(self, row, candidate) -> bool:
+        """似たロットNoの計画への登録は必ず確認する（D-177）。似たロットNoでなければ確認せず True。"""
+        if not candidate.get(SIMILAR_LOT_MARK):
+            return True
+        return messagebox.askyesno(
+            "ロットNoが違う計画への登録",
+            f"ロットNoが違います（CSV：{row.get('lot_no')}、計画：{candidate['lot_no']}）。この計画に登録しますか？",
+            parent=self.winfo_toplevel(),
+        )
+
+    def _resolve_duplicate(self, row, staging_iid, candidate, info):
+        """
+        すでに実績がある計画へ別の行を登録しようとしたとき（D-176）。「合計して登録」「手入力で対応」「キャンセル」から選んでもらう。
+        - 合計して登録：既存の実績とこの行を合計した数量・遅い方の日付で、その計画の1件の実績にする。この行を登録待ちから消す
+        - 手入力で対応：登録せずに、その計画を生産実績入力で開く（登録待ちの行は残す）
+        """
+        choice = ask_duplicate_resolution(self, info)
+        if choice is None:
+            return
+        parent = self._parent
+        if choice == DUPLICATE_MANUAL:
+            parent.search_plan(info["kitting_list_no"], lot_no=info["lot_no"])
+            parent.entry_daily_qty.focus_set()
+            return
+        if choice != DUPLICATE_SUM or not _refuse_side1_if_blocked(self, candidate):
+            return
+        completed = preview_completed_lot_registration(candidate, info["total"])
+        if completed is not None and not messagebox.askyesno(
+            "完成済みのロットへの登録", f"{format_completed_lot_warning(completed)}。\n\n登録しますか？",
+            parent=self.winfo_toplevel(),
+        ):
+            return
+        worker = parent.current_worker
+        try:
+            new_cumulative = register_combined_with_existing(
+                info, worker.get("worker_id", "SYSTEM"), worker.get("name", "unknown"),
+            )
+        except Exception as e:
+            messagebox.showerror("登録エラー", f"実績の登録に失敗しました：{e}", parent=self.winfo_toplevel())
+            return
+        self._make_remove_callback(staging_iid, (info["kitting_list_no"], info["lot_no"]))()
+        parent.refresh_after_external_registration([info["lot_no"]], new_cumulative=new_cumulative)
+        messagebox.showinfo(
+            "登録完了",
+            f"合計して登録しました（計画 {info['kitting_list_no']}：{info['total']:g}、日付 {_short_date(info['combined_date'])}）。",
+            parent=self.winfo_toplevel(),
+        )
+        self._refocus_staging_window()
 
     def _open_correction_window_for_candidate(self, candidate, lot_no):
         """
@@ -642,20 +727,44 @@ class ProductionImportStagingWindow(tk.Toplevel):
     def _refresh_staging_row_status(self, iid):
         """
         1行の状態を、いまの実績・計画で判定し直して「状態」列に反映する（D-103 の方針。D-122）。
-        ほかの行の状態と選択位置は変えない（ほかの行は開き直すか登録したときに更新される）。新しい行の辞書を返す。
+        ほかの行の状態と選択位置は変えない。新しい行の辞書を返す。
         """
-        old_row = self._row_by_iid[iid]
-        new_row = reevaluate_staged_row(old_row, list(self._row_by_iid.values()))
+        new_row = reevaluate_staged_row(self._row_by_iid[iid], list(self._row_by_iid.values()))
+        self._apply_row_status(iid, new_row)
+        return new_row
+
+    def _apply_row_status(self, iid, new_row):
         self._row_by_iid[iid] = new_row
         if self._current_staging_iid == iid:
             self._current_staging_row = new_row
         status = new_row.get("status")
         self.tree.set(iid, "status", staging_status_label(new_row))
         self.tree.item(iid, tags=("product_name_mismatch",) if status == REASON_PRODUCT_NAME_MISMATCH else ())
-        return new_row
 
-    def _make_remove_callback(self, staging_iid):
+    def _refresh_rows_for_plans(self, plan_keys):
         """
+        登録した計画（plan_keys：(計画No, 元のロットNo) の集合）を候補に持つ行の状態を、その場で判定し直す（D-178。D-122 と同じ関数）。
+        選択位置は変えない。表示中の候補一覧も、その行が選ばれていれば表示し直す。
+        """
+        if not plan_keys:
+            return
+        targets = [
+            iid for iid, row in self._row_by_iid.items()
+            if any((c["kitting_list_no"], match_lot_of(c, row.get("lot_no"))) in plan_keys for c in row.get("candidates") or [])
+        ]
+        if not targets:
+            return
+        new_rows = reevaluate_staged_rows([self._row_by_iid[i] for i in targets], list(self._row_by_iid.values()))
+        for iid, new_row in zip(targets, new_rows):
+            self._apply_row_status(iid, new_row)
+            if self._current_staging_iid == iid:
+                self._populate_candidates(new_row)
+
+    def _make_remove_callback(self, staging_iid, plan_key=None, refresh_related=True):
+        """
+        plan_key（登録した計画の (計画No, 元のロットNo)）を渡すと、消した後に、その計画を候補に持つほかの行の状態を判定し直す（D-178）。
+        一括登録は refresh_related=False にして、最後にまとめて判定し直す。
+
         実績の登録が成功したときに呼ばれ、一覧と DB から該当行を消すコールバックを作る。
         呼ぶのは、転記した行なら親の _perform_registration()、即時登録・一括登録ならこの画面の _register_staged_row()。
         staging_iid はクロージャで捕まえるので、後で別の行が選ばれても正しい行を指す。
@@ -683,6 +792,9 @@ class ProductionImportStagingWindow(tk.Toplevel):
                 else:
                     self.tree.selection_set(())
 
+                if refresh_related and plan_key is not None:
+                    self._refresh_rows_for_plans({plan_key})
+
         return remove_callback
 
     def _confirm_candidate(self, candidate):
@@ -701,7 +813,9 @@ class ProductionImportStagingWindow(tk.Toplevel):
 
         self._parent.load_staged_row(
             candidate["kitting_list_no"], candidate["lot_no"], daily_qty=row["daily_qty"],
-            report_date=row.get("report_date"), on_registered=self._make_remove_callback(staging_iid),
+            report_date=row.get("report_date"),
+            on_registered=self._make_remove_callback(
+                staging_iid, (candidate["kitting_list_no"], match_lot_of(candidate, row.get("lot_no")))),
             focus_entry=True,
         )
 
@@ -723,7 +837,13 @@ class ProductionImportStagingWindow(tk.Toplevel):
         if row is None or staging_iid is None:
             return
 
+        if not self._confirm_similar_lot(row, candidate):
+            return
         if _is_candidate_already_registered(candidate, row.get("lot_no")):
+            info = duplicate_registration_info(candidate, row.get("lot_no"), row["daily_qty"], row.get("report_date"))
+            if info is not None:
+                self._resolve_duplicate(row, staging_iid, candidate, info)
+                return
             messagebox.showinfo(
                 "即時登録できません",
                 "この計画には既に実績が登録されているため、右クリックでの即時登録は行えません。\n"
@@ -743,7 +863,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
         self._register_candidate_immediately(row, staging_iid, candidate)
 
     def _register_staged_row(self, row, staging_iid, candidate, record_history=True, show_in_parent=True,
-                             lot_completion_checked=False):
+                             lot_completion_checked=False, refresh_related=True):
         """
         保留行1件を、確認ダイアログ（親の _start_registration()）を通さずに登録する。右クリックの即時登録と一括登録の共通部分。
         既に実績があるとき・面1だけの計画のときは確認し、「いいえ」なら何もせず None を返す（保留行は残る）。
@@ -779,7 +899,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
         report_date = resolve_csv_report_date(row.get("report_date"))
         plan, _candidates = search_plan_by_kitting_no(kitting_list_no, lot_no)
 
-        remove_callback = self._make_remove_callback(staging_iid)
+        remove_callback = self._make_remove_callback(staging_iid, (kitting_list_no, lot_no), refresh_related)
         if show_in_parent:
             # コールバックも親に渡しておく。実績の登録に失敗しても、親の画面から登録し直せば保留行が消える（以前と同じ）。
             parent.load_staged_row(kitting_list_no, lot_no, daily_qty=daily_qty, on_registered=remove_callback)
@@ -918,13 +1038,13 @@ class ProductionImportStagingWindow(tk.Toplevel):
                         break
 
         plan_items_by_lot = group_active_plan_items_by_lot()
+        plan_lot_nos = active_plan_lot_nos()
 
         # 重複判定のため、一覧に残っている全行（選択の有無を問わない）を最新の状態で再照合して数える。
         plan_key_counts = {}
         for other_iid, other_row in self._row_by_iid.items():
-            other_normalized = normalize_product_name(other_row["product_name"])
-            _, other_matched = find_matching_plan_items(
-                other_row["lot_no"], other_normalized, plan_items_by_lot,
+            _, other_matched, _similar = resolve_row_candidates(
+                other_row["lot_no"], other_row["product_name"], plan_items_by_lot, plan_lot_nos,
             )
             if len(other_matched) == 1:
                 plan_key = (other_matched[0]["kitting_list_no"], match_lot_of(other_matched[0], other_row["lot_no"]))
@@ -937,9 +1057,8 @@ class ProductionImportStagingWindow(tk.Toplevel):
             row = self._row_by_iid.get(iid)
             if row is None:
                 continue
-            product_name_normalized = normalize_product_name(row["product_name"])
-            candidates, matched = find_matching_plan_items(
-                row["lot_no"], product_name_normalized, plan_items_by_lot,
+            candidates, matched, _similar = resolve_row_candidates(
+                row["lot_no"], row["product_name"], plan_items_by_lot, plan_lot_nos,
             )
             eligibility, reason, candidate, date_diff = evaluate_auto_register_eligibility(
                 row, candidates, matched, plan_key_counts, max_date_diff_days, lot_state_cache=lot_state_cache,
@@ -970,6 +1089,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
         affected_lot_nos = []
         # 確認ダイアログを通って登録まで進んだ最後の行。最後に親の画面に表示する。
         last_attempted = None
+        registered_plan_keys = set()
 
         for iid, row, eligibility, reason, candidate, _date_diff in evaluated:
             if eligibility != AUTO_REGISTER_ELIGIBLE:
@@ -984,11 +1104,12 @@ class ProductionImportStagingWindow(tk.Toplevel):
             # 行ごとに履歴を記録すると100件規模で数秒かかるため、最後にロット単位でまとめて記録する。
             # 親の画面も行ごとには更新しない（登録の内容は親の画面の状態に依存しないため）。最後に1回だけ更新する。
             result = self._register_staged_row(row, iid, candidate, record_history=False, show_in_parent=False,
-                                               lot_completion_checked=True)
+                                               lot_completion_checked=True, refresh_related=False)
             if result is not None:
                 last_attempted = (iid, row, candidate)
             if iid not in self._row_by_iid:
                 registered_count += 1
+                registered_plan_keys.add((candidate["kitting_list_no"], match_lot_of(candidate, row["lot_no"])))
                 if candidate["lot_no"] not in affected_lot_nos:
                     affected_lot_nos.append(candidate["lot_no"])
             else:
@@ -1004,7 +1125,9 @@ class ProductionImportStagingWindow(tk.Toplevel):
             self._parent.load_staged_row(
                 last_candidate["kitting_list_no"], last_candidate["lot_no"],
                 daily_qty=last_row["daily_qty"] if last_failed else None,
-                on_registered=self._make_remove_callback(last_iid) if last_failed else None,
+                on_registered=self._make_remove_callback(
+                    last_iid, (last_candidate["kitting_list_no"], match_lot_of(last_candidate, last_row["lot_no"])),
+                ) if last_failed else None,
             )
 
         # 影響したロットごとに1回だけ履歴を記録する。1件の失敗がほかを止めないよう、ロットごとに try/except する。
@@ -1017,6 +1140,9 @@ class ProductionImportStagingWindow(tk.Toplevel):
                     "trigger_source=%s）。一括登録処理自体はそのまま続行します。",
                     lot_no, trigger_source,
                 )
+
+        # 登録した計画を候補に持つ残りの行の状態を、まとめて判定し直す（D-178）。
+        self._refresh_rows_for_plans(registered_plan_keys)
 
         skipped_count = sum(skip_reason_counts.values())
         message = f"{registered_count}件を登録しました。\n{skipped_count}件は要件を満たさないためスキップしました。"

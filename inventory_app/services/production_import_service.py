@@ -25,7 +25,7 @@ from models.kitting_plan import (  # normalize_product_name は段階4で models
     list_active_plan_items,
 )
 from models.production import list_daily_production_by_kitting_no
-from services.lot_merge_service import match_lot_of, merge_plan_items_by_lot
+from services.lot_merge_service import match_lot_of, merge_plan_items_by_lot, find_similar_lot_no
 from models.production_import_staging import (
     create_csv_import_batch,
     upsert_pending_csv_import_row,
@@ -116,7 +116,19 @@ def group_active_plan_items_by_lot(include_completed=False):
     return merge_plan_items_by_lot(grouped)
 
 
-def is_already_registered(lot_no, product_name, daily_qty, plan_items_by_lot=None, report_date=None):
+def _combined_rows_match(existing_rows, same_key_rows) -> bool:
+    """実績の合計が same_key_rows の数量の合計と一致し、実績の日付のどれかが same_key_rows の遅い方の日付と一致するか（D-176）。"""
+    if sum(row["daily_qty"] for row in existing_rows) != sum(qty for qty, _d in same_key_rows):
+        return False
+    dates = [d for d in (_normalize_report_date_for_match(d) for _q, d in same_key_rows) if d]
+    if not dates:
+        return False
+    latest = max(dates)
+    return any(_normalize_report_date_for_match(row["report_date"]) == latest for row in existing_rows)
+
+
+def is_already_registered(lot_no, product_name, daily_qty, plan_items_by_lot=None, report_date=None,
+                          same_key_rows=None):
     """
     このCSV行（lot_no・product_name・daily_qty・report_date）が指す計画に
     ついて、production_dailyへ既に同じ数量かつ同じ日付で登録済みかどうかを
@@ -205,12 +217,22 @@ def is_already_registered(lot_no, product_name, daily_qty, plan_items_by_lot=Non
     1件に定まったが対応するproduction_daily行が1件も無い場合もNoneになる**
     （2026-10-06改訂。「実績が無い」ことと「実績はあるが合計0」を呼び出し元が
     区別できるようにするため。後者は実績が存在するためNoneではなく0.0が入る）。
+
+    2026-10-20 追記（D-176・D-177）：
+    - 自分のロットに計画が1件も無ければ、末尾「-」だけ違うロット（似たロットNo）の計画で見る（似たロットNoの計画へ登録した行の再取込）
+    - same_key_rows（この CSV の、同じロットNo・製品名の行の [(daily_qty, report_date), ...]。この行を含む）が2行以上あり、計画が1件に
+      定まるとき、その実績の合計が same_key_rows の数量の合計と一致し、実績の日付のどれかが same_key_rows の遅い方の日付と一致すれば
+      「登録済み」とする（重複の確認の「合計して登録」で1件にまとめた実績の再取込。合計していなければ、この規則には当たらない）
     """
     if plan_items_by_lot is None:
         plan_items_by_lot = group_active_plan_items_by_lot(include_completed=True)
 
     product_name_normalized = normalize_product_name(product_name)
-    _, matched = find_matching_plan_items(lot_no, product_name_normalized, plan_items_by_lot)
+    candidates, matched = find_matching_plan_items(lot_no, product_name_normalized, plan_items_by_lot)
+    if not candidates:
+        similar = find_similar_lot_no(lot_no, set(plan_items_by_lot))
+        if similar is not None:
+            _, matched = find_matching_plan_items(similar, product_name_normalized, plan_items_by_lot)
 
     normalized_csv_date = _normalize_report_date_for_match(report_date)
 
@@ -279,6 +301,8 @@ def is_already_registered(lot_no, product_name, daily_qty, plan_items_by_lot=Non
         }
 
     matched_ok, existing_qty = _qty_and_date_match(existing_rows)
+    if not matched_ok and same_key_rows and len(same_key_rows) > 1:
+        matched_ok = _combined_rows_match(existing_rows, same_key_rows)
     return {
         "already_registered": matched_ok,
         "matched_kitting_list_no": plan["kitting_list_no"],
@@ -496,6 +520,8 @@ STAGING_STATUS_LABELS = {
     "qty_mismatch": "要確認（数量不一致）",
     "date_unparseable": "要確認（日付を解釈できない）",
     "date_diff_too_large": "要確認（日付差5日以上）",
+    # 末尾「-」だけ違うロットの計画を候補にした行（D-177）。
+    "similar_lot": "要確認（似たロットNo）",
 }
 
 # 対象外の理由（2026-10-06新設）。ui.production.production_import_staging_window.
@@ -620,6 +646,18 @@ def parse_production_csv_for_staging(file_path, default_worker_id=None):
     # （行はまとめない・捨てない。件数の報告のみに使う）。
     seen_keys = {}
 
+    # 同じロットNo・製品名の行の (数量, 日付)。登録済みの判定で、合計して1件にした実績と照らすのに使う（D-176）。
+    same_key_rows_by_key = {}
+    for row in rows:
+        if not row.get("lot_no") or not row.get("product_name") or row.get("daily_qty") in (None, ""):
+            continue
+        try:
+            qty = float(row.get("daily_qty"))
+        except (TypeError, ValueError):
+            continue
+        key = (str(row.get("lot_no")).strip(), normalize_product_name(row.get("product_name")))
+        same_key_rows_by_key.setdefault(key, []).append((qty, row.get("report_date") or None))
+
     for i, row in enumerate(rows, start=2):  # 1行目はヘッダーのためCSV上の行番号に合わせる
         lot_no = row.get("lot_no")
         product_name = row.get("product_name")
@@ -648,7 +686,10 @@ def parse_production_csv_for_staging(file_path, default_worker_id=None):
         key = (lot_no, normalize_product_name(product_name))
         seen_keys.setdefault(key, []).append(i)
 
-        registration_check = is_already_registered(lot_no, product_name, daily_qty, plan_items_by_lot, report_date=report_date)
+        registration_check = is_already_registered(
+            lot_no, product_name, daily_qty, plan_items_by_lot, report_date=report_date,
+            same_key_rows=same_key_rows_by_key.get(key),
+        )
         if registration_check["already_registered"]:
             already_registered_count += 1
             already_registered_rows.append({

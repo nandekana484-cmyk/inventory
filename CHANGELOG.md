@@ -277,6 +277,12 @@ D-81の追加検証で見つかった1件の不具合を修正（D-83）。
 - 削除：`register_opposite_side_daily_result()`、`preview_opposite_side_overwrite(s)()`、`ui/production/opposite_side_overwrite_dialog.py`、`REASON_OPPOSITE_OVERWRITE`、`build_linked_correction_preview()`・`apply_linked_correction()`（`build_correction_preview()`・`apply_correction()` に置き換え）、`models/production.apply_daily_production_changes()`、`models/kitting_plan.list_active_side_plans_for_file()`、実績レポートの inconsistency_warnings（`_build_report_rows()` の戻り値は5要素）（D-169）。
 - 追加：`services/production_service.side2_plans_hiding()`・`side1_registration_block()`・`Side1RegistrationRefused`・`SIDE2_WAIT_MESSAGE`、`models/kitting_plan.list_active_side2_plans_for_file()`（D-170）。`services/lot_status_remarks.py`（`lot_status_service.py` から移動、D-166 の解決）。
 
+## 未リリース
+
+- 登録待ち一覧：すでに実績がある計画へ別の行を登録しようとしたとき（右クリック・ダブルクリック）、計画・今の実績・登録しようとしている行を並べて確認し、「合計して登録」「手入力で対応」「キャンセル」から選べるようにした。同じ計画への重複の行には相手の行（例「（相手：8/6 の 34）」）、既に実績ありの行には登録済みの実績を添える。合計して登録した後に同じ実績CSVを取り込み直しても、その行は登録待ちに戻らない（D-176）。
+- 登録待ち一覧：自分のロットに計画が無く、末尾「-」だけ違うロット（例 326611 に対する 326611-）に計画がある行は、その計画を候補（紫）にし、状態を「要確認（似たロットNo）」にした。登録するときは必ず「ロットNoが違います」と確認し、実績の日付は CSV の日付になる。Shift+S・Shift+Q では登録しない（D-177）。
+- 登録待ち一覧：1行を登録した直後に、同じ計画を候補に持つほかの行の状態をその場で更新する（D-178）。
+
 ## 既知の制約・未対応事項
 
 - 基板丁数マスター・構成基板数マスターは、登録済みデータを削除する画面上の手段が無い（基板丁数マスターはD-108で「追加と上書き」が既定になったため、チェックを入れての全件置き換えが唯一の削除手段になった）。生産面マスターの編集モードと同じ方式で、一覧から行を選んで個別に削除する機能の追加を検討する。状態：未着手、利用者が必要と判断した時点で着手する。

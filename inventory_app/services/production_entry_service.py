@@ -12,7 +12,9 @@ from services.date_parsing import parse_flexible_date
 from services.production_service import (
     register_daily_result,
     overwrite_daily_result,
+    get_daily_history,
 )
+from services.lot_merge_service import match_lot_of
 
 
 def resolve_csv_report_date(raw_value):
@@ -155,6 +157,48 @@ def format_registration_message(result, save_qty_by_side):
         lines.append("以下の項目でエラーが発生しました（登録できた分はそのまま残っています）：")
         lines.extend(result["errors"])
     return "\n".join(lines)
+
+
+def duplicate_registration_info(candidate, csv_lot_no, daily_qty, report_date):
+    """
+    登録待ちの行（CSV のロットNo csv_lot_no・数量・日付）を candidate の計画へ登録しようとしたとき、その計画にすでに実績があり、
+    その実績がこの行と数量・日付とも同じではなければ、重複の確認（D-176）の内容を返す。そうでなければ None（同じ内容の登録は従来どおり）。
+    先に登録された実績が実績CSVの別の行から来たのか、手で入れたのかは区別できないので、どちらでも同じ確認にする。
+    戻り値: {"kitting_list_no", "lot_no", "existing": [(日付, 数量), ...], "row_date", "row_qty", "total", "combined_date"}。
+    合計の日付（combined_date）は、既存の実績とこの行の日付の遅い方。
+    """
+    lot_no = match_lot_of(candidate, csv_lot_no)
+    existing = get_daily_history(candidate["kitting_list_no"], lot_no)
+    if not existing:
+        return None
+    row_date = resolve_csv_report_date(report_date)
+    if any(r["daily_qty"] == daily_qty and r["report_date"] == row_date for r in existing):
+        return None
+    dates = [r["report_date"] for r in existing if r["report_date"]] + ([row_date] if row_date else [])
+    return {
+        "kitting_list_no": candidate["kitting_list_no"], "lot_no": lot_no,
+        "existing": [(r["report_date"], r["daily_qty"]) for r in existing],
+        "row_date": row_date, "row_qty": daily_qty,
+        "total": sum(r["daily_qty"] for r in existing) + daily_qty,
+        "combined_date": max(dates) if dates else None,
+    }
+
+
+def register_combined_with_existing(info, worker_id, worker_name, record_history=True):
+    """
+    重複の確認の「合計して登録」（D-176）。既存の実績とこの行の数量を合計した数量・遅い方の日付で、その計画の1件の実績にする
+    （1計画＝1レコード、D-6）。操作履歴には合計の内訳を残す。更新後のアプリ内累計を返す。
+    """
+    new_cumulative = overwrite_daily_result(
+        info["kitting_list_no"], info["lot_no"], info["total"], worker_id,
+        report_date=info["combined_date"], record_history=record_history,
+    )
+    parts = "＋".join(f"{qty:g}" for _d, qty in info["existing"]) + f"＋{info['row_qty']:g}"
+    log_operation(
+        worker_name, "生産実績登録",
+        detail=f"{info['kitting_list_no']} / ロットNo. {info['lot_no']} / {info['total']:g}（合計：{parts}）",
+    )
+    return new_cumulative
 
 
 # 段階6で公開名を付けた。旧名は同じものを指す別名として残す（呼び出し側は新しい名前を使う）。

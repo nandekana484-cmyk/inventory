@@ -406,13 +406,30 @@ def test_right_click_registers_immediately(screens, events):
     assert set(_lot_history("register")) == {"L1"}
 
 
-def test_right_click_refuses_already_registered_candidate(screens, events):
+def test_right_click_on_already_registered_candidate_asks_duplicate(screens, events, monkeypatch):
+    """既存の実績（7/20 の 50）と違う行（7/23 の 100）は、断らずに重複の確認を出す（D-176）。キャンセルなら何も変えない。"""
+    from ui.production import production_import_staging_window as psw
+    asked = []
+    monkeypatch.setattr(psw, "ask_duplicate_resolution", lambda parent, info: (asked.append(info), None)[1])
+    _, staging = screens
+    _right_click(staging, "L5")
+    assert [(i["kitting_list_no"], i["existing"], i["row_qty"], i["total"]) for i in asked] == [
+        ("K5", [("2026-07-20", 50.0)], 100, 150.0)]
+    assert _messages(events, "showinfo") == []
+    assert _history("K5", "L5") == [("2026-07-20", 50.0, "W0")]
+    assert _pending_lots() == ["L1", "L2", "L3", "L5", "L9"]
+
+
+def test_right_click_refuses_same_registration(screens, events):
+    """既存の実績と数量・日付とも同じ行は、同じ登録なので、従来どおり断る（D-176 の確認は出さない）。"""
+    p5 = find_plan_item_by_kitting_no("K5", "L5")
+    with sqlite3.connect(config.DB_PATH) as con:
+        con.execute("DELETE FROM production_daily")
+    insert_daily_production(p5["plan_item_id"], "K5", "L5", "ProdE", CSV_DATE_NORMALIZED, 100, "W0")
     _, staging = screens
     _right_click(staging, "L5")
     assert _messages(events, "showinfo")[0][0] == "即時登録できません"
     assert "既に実績が登録されている" in _messages(events, "showinfo")[0][1]
-    assert _history("K5", "L5") == [("2026-07-20", 50.0, "W0")]
-    assert _pending_lots() == ["L1", "L2", "L3", "L5", "L9"]
 
 
 def test_right_click_refuses_qty_mismatch(screens, events):
