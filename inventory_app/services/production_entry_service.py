@@ -47,6 +47,27 @@ def compute_ng_save_qty(own_qty_by_side, ng_side_plans):
     return save_qty_by_side
 
 
+def build_planned_qty_mismatch_lines(ng_side_plans, daily_qty, save_qty_by_side):
+    """
+    「実績＋NG」が予定生産数（planned_qty。発注数ではない）と一致しない面の説明文の一覧（一致していれば空）。
+    NG は save_qty_by_side（compute_ng_save_qty() の戻り値）の値で、保存しない面は0として足す。旧 _build_registration_preview() の中の計算。
+    """
+    mismatch_lines = []
+    for side in ("1", "2"):
+        plan = ng_side_plans.get(side)
+        if plan is None:
+            continue
+        ng_qty = save_qty_by_side.get(side, 0.0)
+        planned_qty = plan.get("planned_qty") or 0
+        total = daily_qty + ng_qty
+        if total != planned_qty:
+            mismatch_lines.append(
+                f"面{side}（{plan['kitting_list_no']}）：実績{daily_qty:.0f} + "
+                f"NG{ng_qty:.0f} = {total:.0f}（予定生産数{planned_qty:.0f}と不一致）"
+            )
+    return mismatch_lines
+
+
 def is_plan_row_completed(row, lot_info, file_no_index, order_qty_index):
     """
     計画一覧の行が「入力済み」か。行の (file_no, 面) の実績合計が、その行の発注数以上なら True。

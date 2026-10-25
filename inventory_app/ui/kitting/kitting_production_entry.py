@@ -45,6 +45,7 @@ from services.production_entry_service import (  # noqa: E402,F401 （re-export�
     _resolve_csv_report_date,
     resolve_csv_report_date,
     compute_ng_save_qty,
+    build_planned_qty_mismatch_lines,
     is_plan_row_completed,
     plan_row_tag,
     register_actual_and_ng,
@@ -1320,19 +1321,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         # これから登録する実績の日付（表示用）。手入力では None（実行日を使う）。
         new_report_date = resolve_csv_report_date(self._pending_csv_report_date)
 
-        mismatch_lines = []
-        for side in ("1", "2"):
-            plan = self._ng_side_plans.get(side)
-            if plan is None:
-                continue
-            ng_qty = save_qty_by_side.get(side, 0.0)
-            planned_qty = plan.get("planned_qty") or 0
-            total = daily_qty + ng_qty
-            if total != planned_qty:
-                mismatch_lines.append(
-                    f"面{side}（{plan['kitting_list_no']}）：実績{daily_qty:.0f} + "
-                    f"NG{ng_qty:.0f} = {total:.0f}（予定生産数{planned_qty:.0f}と不一致）"
-                )
+        mismatch_lines = build_planned_qty_mismatch_lines(self._ng_side_plans, daily_qty, save_qty_by_side)
 
         # 面1だけの計画で c（生産面マスター未登録）なら、確認ダイアログで理由を示す（D-9x。登録は禁止しない）。b（面2待ち）は登録の前に断る（D-170）。
         side1_only_classification = classify_side1_only_plan(self.current_plan)
