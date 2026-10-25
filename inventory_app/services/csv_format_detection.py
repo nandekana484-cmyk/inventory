@@ -29,6 +29,10 @@ PRODUCTION_CSV_SIGNATURE_COLUMNS = ["払い出し日", "基板構成数"]
 # キッティング計画CSVにのみ存在し、実績CSVには存在しない列（実データで確認済み）。
 PLAN_CSV_SIGNATURE_COLUMNS = ["キッティングリストNo", "実装開始日時", "セットアップファイルNo."]
 
+# 現場実績入力アプリが書き出す実績CSV（書式版1）にのみ存在する列。実績CSV・キッティング計画CSVには無い。
+EXTERNAL_ACTUAL_CSV_FORMAT_LABEL = "現場実績CSV"
+EXTERNAL_ACTUAL_CSV_SIGNATURE_COLUMNS = ["書式版", "書き出し日時"]
+
 
 def read_csv_header(file_path):
     """
