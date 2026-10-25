@@ -346,6 +346,7 @@ D-81の追加検証で見つかった1件の不具合を修正（D-83）。
 - 「実績＋NG と予定生産数の不一致」の計算を、生産実績入力画面から `services/production_entry_service.build_planned_qty_mismatch_lines()` へ移した（動きは変えていない）。
 - `preview_completed_lot_registration()` に、省略できる引数（`state_cache`・`own_existing`）を足した。`models/production.summarize_daily_by_plan()` を足した。
 - 前月からの引き継ぎの戻り値に `external_pending_rows_not_copied` を足した。
+- 内部整理（画面の動きは変わらない。D-190）：登録待ち一覧の登録済みリスト・印付けと、生産実績入力の計画一覧の絞り込み・取得を、mixin として別ファイル（`staging_already_registered.py`・`staging_marking.py`・`plan_list_filters.py`）へ移した。
 
 ### 使っていない機能とスクリプトの削除（D-186）
 - 使われていなかった旧方式の実績CSV即時登録（`import_production_csv()`）と、その結果を出す画面（`unmatched_production_window.py`）を削除した。登録待ち方式が標準のまま。
