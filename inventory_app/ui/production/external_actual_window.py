@@ -215,6 +215,10 @@ class ExternalActualWindow(tk.Toplevel):
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")], parent=self, title="現場実績CSVを選ぶ")
         if not file_path:
             return
+        reason = svc.file_reject_reason(file_path)
+        if reason:
+            messagebox.showwarning("現場CSV取込", reason, parent=self)
+            return
         warnings = svc.detect_wrong_format_warnings(file_path)
         if warnings and not messagebox.askyesno(
                 "CSVフォーマットの確認", "\n".join(warnings) + "\n\nこのまま取り込みを続けますか？", parent=self):

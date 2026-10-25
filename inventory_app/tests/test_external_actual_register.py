@@ -201,12 +201,33 @@ def test_face1_is_decided_by_the_csv_column_not_guessed(db):
     assert get_ng_declaration("K1", 1, lot_no="L1")["ng_qty"] == 2 and get_ng_declaration("K1x", 1, lot_no="L1") is None
 
 
+SIDE1_ROW_K4 = {"kitting_list_no": "K4", "lot_no": "L3", "file_no": "0003", "side": "1", "ng_side1": 2, "ng_side2": 0, "daily_qty": 98}
+
+
 def test_single_sided_product_side1_row_is_registerable(db):
-    add_rows({"kitting_list_no": "K4", "lot_no": "L3", "file_no": "0003", "side": "1", "ng_side1": 2, "ng_side2": 0, "daily_qty": 98})
+    upsert_production_side("0003", "A", "1")                      # 生産面マスターに「面1だけ」で登録（片面の製品）
+    add_rows(SIDE1_ROW_K4)
     (item,) = svc.build_preview()
-    assert item["state"] == "green"
+    assert item["state"] == "green" and svc.SIDE_MASTER_UNREGISTERED_REMARK not in item["remarks"]
     register()
     assert get_ng_declaration("K4", 1, lot_no="L3")["ng_qty"] == 2
+
+
+def test_side1_row_of_side_master_unregistered_file_is_yellow_and_registerable_when_chosen(db):
+    """生産面マスター未登録の面1は、緑ではなく黄（要確認）。備考に出る。選べば登録できる（D-189）。"""
+    add_rows(SIDE1_ROW_K4)                                        # 0003 は生産面マスターに無い
+    (item,) = svc.build_preview()
+    assert (item["state"], item["label"]) == ("yellow", "要確認")
+    assert svc.SIDE_MASTER_UNREGISTERED_REMARK in item["remarks"] and "生産面マスター未登録" in item["remarks"][0]
+    outcome = register([item["row_id"]], {item["row_id"]: item["snapshot"]})
+    assert outcome["results"][0]["status"] == svc.RESULT_REGISTERED
+    assert history("K4", "L3") and get_ng_declaration("K4", 1, lot_no="L3")["ng_qty"] == 2
+
+
+def test_side2_row_is_not_affected_by_side_master_unregistered_remark(db):
+    add_rows({"daily_qty": 100, "ng_side1": 0, "ng_side2": 0, "face1_kitting_list_no": "K1"})        # 面2の行（K2）。0001 も生産面マスターに無いが対象外
+    (item,) = svc.build_preview()
+    assert item["state"] == "green" and svc.SIDE_MASTER_UNREGISTERED_REMARK not in item["remarks"]
 
 
 def test_zero_ng_does_not_touch_existing_declaration(db):

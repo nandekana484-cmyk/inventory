@@ -168,6 +168,33 @@ def test_import_refused_for_fatal_header_and_for_wrong_format(db, root, messages
     assert len(messages.calls) == before + 1                                                                # 取り込みは始まらない
 
 
+def test_import_of_tmp_file_is_refused_with_message_before_anything_else(db, root, messages, monkeypatch, tmp_path):
+    tmp = write_csv(tmp_path, line(), name="actuals_20261020_180000_0001.tmp")
+    monkeypatch.setattr(module.filedialog, "askopenfilename", lambda **kwargs: tmp)
+    window, _ = open_window(root)
+    window.on_import()
+    window.update()
+    kind, title, message = messages.calls[-1]
+    assert (kind, title) == ("showwarning", "現場CSV取込") and "拡張子が .csv ではない" in message and ".tmp" in message
+    assert not window._busy and ear.list_pending_rows() == []                  # 取り込みは始まらず、形式の確認も出ない
+    assert all(call[0] != "askyesno" for call in messages.calls)
+
+
+def test_select_green_does_not_select_side_master_unregistered_yellow_row(db, root, messages):
+    """「緑をすべて選ぶ」は、生産面マスター未登録の面1（黄）を選ばない。1行ずつ自分で選べば登録できる（D-189）。"""
+    add_rows({"kitting_list_no": "K4", "lot_no": "L3", "file_no": "0003", "side": "1", "ng_side1": 0, "ng_side2": 0, "daily_qty": 100},
+             {"kitting_list_no": "K3", "lot_no": "L2", "file_no": "0002", "side": "2", "ng_side1": 0, "ng_side2": 0, "daily_qty": 100})
+    window, _ = open_window(root)
+    pump(window, lambda: window._items)
+    window._select_green()
+    states = {window._item_by_iid[i]["kitting_list_no"]: window._item_by_iid[i]["state"] for i in window._item_by_iid}
+    checked = {window._item_by_iid[i]["kitting_list_no"] for i in window.table.get_checked_iids()}
+    assert states == {"K4": "yellow", "K3": "green"} and checked == {"K3"}
+    iid = next(i for i, item in window._item_by_iid.items() if item["kitting_list_no"] == "K4")
+    window.table.set_checked(iid, True)
+    assert iid in window.table.get_checked_iids()
+
+
 # ---------------------------------------------------------------- 登録
 
 def test_register_flow_updates_parent_and_list(db, root, messages, monkeypatch):

@@ -30,6 +30,19 @@ def test_default_db_is_refused(tmp_path):
     assert config.is_default_db()
 
 
+@pytest.mark.parametrize("name", ["actuals_20261020_180000_0001.tmp", "x.txt", "x", "x.csv.tmp"])
+def test_file_that_is_not_csv_is_refused_with_reason_and_stores_nothing(tmp_path, month_db, name):
+    """現場アプリが書き出し中の .tmp など、拡張子が .csv でないファイルは取り込まない（D-189）。"""
+    path = write_csv(tmp_path, line(), name=name)
+    with pytest.raises(svc.ExternalActualRefused, match=r"拡張子が \.csv ではない"):
+        svc.import_external_actual_file(path, "admin")
+    assert ear.list_pending_rows() == []
+
+
+def test_csv_extension_is_case_insensitive(tmp_path, month_db):
+    assert _import(tmp_path, line(), name="ACTUALS.CSV")["imported"] == 1
+
+
 def test_db_version_mismatch_is_refused(tmp_path, month_db):
     with sqlite3.connect(month_db) as con:
         con.execute("PRAGMA user_version = 14")

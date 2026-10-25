@@ -10,7 +10,7 @@ import os
 import config
 from db.migrations import LATEST_VERSION
 from models import external_actual_rows as rows_model
-from models.kitting_plan import get_latest_plan_by_kitting_no
+from models.kitting_plan import get_latest_plan_by_kitting_no, classify_side1_only_plan, SIDE1_ONLY_CLASS_UNREGISTERED
 from models.ng_declarations import list_ng_declarations_latest
 from models.operation_log import log_operation
 from models.production import get_app_cumulative_qty_bulk, summarize_daily_by_plan
@@ -35,6 +35,7 @@ HISTORY_TRIGGER = "external_csv"
 STATE_RED, STATE_YELLOW, STATE_GREEN, STATE_GRAY = "red", "yellow", "green", "gray"
 NG_ZERO_REMARK = "NG 0 は既存の申告を変えません"
 NG_UNLINKED_REMARK = "NG面2は面1に連動しません"
+SIDE_MASTER_UNREGISTERED_REMARK = "生産面マスター未登録（片面の製品か面2待ちか、確かめてから登録してください）"
 
 # register_rows() の結果の status
 RESULT_REGISTERED, RESULT_PARTIAL, RESULT_FAILED = "registered", "partial", "failed"
@@ -82,16 +83,24 @@ def detect_wrong_format_warnings(file_path: str) -> list:
     return warnings
 
 
+def file_reject_reason(file_path: str):
+    """取り込まないファイルの理由（取り込めるなら None）。現場アプリは書き出し中を .tmp で置き、終わると .csv にするため、.csv だけを読む。"""
+    if os.path.splitext(file_path)[1].lower() != ".csv":
+        return (f"拡張子が .csv ではないため取り込みません（{os.path.basename(file_path)}）。"
+                "現場アプリが書き出し中のファイル（.tmp）かもしれません。書き出しが終わって .csv になってから選んでください")
+    return None
+
+
 def import_external_actual_file(file_path: str, imported_by: str) -> dict:
     """
     CSV を読んで検査し、通った行を登録待ちにためる（実績・NG にはまだ書かない）。
     同じ計画の登録待ちがあれば新しい行で置き換える。取り込み済みの書き出しより古い行は、警告して取り込まない。
-    今のDB が未選択・版が違うときは ExternalActualRefused。ヘッダーの不備・書式版の不一致は、戻り値の fatal に説明を入れて何も取り込まない。
+    拡張子が .csv でないとき、今のDB が未選択・版が違うときは ExternalActualRefused。ヘッダーの不備・書式版の不一致は、戻り値の fatal に説明を入れて何も取り込まない。
     戻り値: fatal・file_sha256・total_rows・errors・warnings（external_actual_csv.parse_external_actual_csv() と同じ）に加えて
       imported: 登録待ちにためた行数  replaced: 置き換えた計画 [(キッティングNo., ロットNo.), ...]
       stale: 古い書き出しのため取り込まなかった行  already_imported: 同じ内容のファイルを取り込み済みなら、そのバッチ（なければ None）
     """
-    reason = check_db_ready()
+    reason = file_reject_reason(file_path) or check_db_ready()
     if reason:
         raise ExternalActualRefused(reason)
 
@@ -146,7 +155,7 @@ def _load_context() -> dict:
             plan_index[(normalize_text(item["kitting_list_no"]), normalize_text(item["lot_no"]))] = item
     return {
         "plan_index": plan_index, "worker_ids": {w["worker_id"] for w in get_all_workers()},
-        "folder": current_db_folder_name(), "state_cache": {}, "side_block_cache": {},
+        "folder": current_db_folder_name(), "state_cache": {}, "side_block_cache": {}, "side_class_cache": {},
     }
 
 
@@ -251,9 +260,21 @@ def _completed_info(row: dict, plan: dict, now: dict, has_difference: bool, stat
         plan, row["daily_qty"], state_cache, own_existing=now["daily_total"] if now["daily_count"] else 0)
 
 
-def _yellow_remarks(row: dict, res: dict, now: dict, completed) -> list:
+def _is_side_master_unregistered(ctx: dict, row: dict, plan: dict) -> bool:
+    """面1の行のロットが、生産面マスターに未登録か（既存の登録待ち一覧と同じ分類。ファイルNoごとに1回だけ引く）。"""
+    if row["side"] != "1":
+        return False
+    key = plan.get("setup_file_no")
+    if key not in ctx["side_class_cache"]:
+        ctx["side_class_cache"][key] = classify_side1_only_plan(plan) == SIDE1_ONLY_CLASS_UNREGISTERED
+    return ctx["side_class_cache"][key]
+
+
+def _yellow_remarks(row: dict, res: dict, now: dict, completed, ctx: dict) -> list:
     """差がある行に、確認が要る点（黄）があればその説明。"""
     remarks = []
+    if _is_side_master_unregistered(ctx, row, res["plan"]):
+        remarks.append(SIDE_MASTER_UNREGISTERED_REMARK)
     if completed is not None:
         remarks.append(f"完成済みロットです（完成数 {completed['lot_completed']:g}／発注数 {completed['order_quantity']:g}、"
                        f"登録後の合計 {completed['new_total']:g}）")
@@ -266,7 +287,7 @@ def _yellow_remarks(row: dict, res: dict, now: dict, completed) -> list:
 def evaluate_rows(rows: list) -> list:
     """
     登録待ちの行（rows_model.list_pending_rows() の形）それぞれの、今→新の差・状態・備考。rows と同じ順。
-    状態: red=登録できない  yellow=差があり、確認が要る（完成済みロット・予定数との不一致・既存より古い日付）  green=新規か差あり  gray=変更なし。
+    状態: red=登録できない  yellow=差があり、確認が要る（完成済みロット・予定数との不一致・既存より古い日付・面1の生産面マスター未登録）  green=新規か差あり  gray=変更なし。
     snapshot は登録の直前に読み直した値と比べる材料（register_rows()）。キーが _ で始まるものはこのモジュールの中で使う。
     """
     ctx = _load_context()
@@ -294,7 +315,7 @@ def evaluate_rows(rows: list) -> list:
                 state, item["label"] = STATE_GRAY, "変更なし"
             else:
                 state, item["label"] = STATE_GREEN, ("上書き" if item["is_overwrite"] else "新規")
-                yellow = _yellow_remarks(row, res, now, completed)
+                yellow = _yellow_remarks(row, res, now, completed, ctx)
                 if yellow:
                     state, item["label"] = STATE_YELLOW, "要確認"
                     remarks.extend(yellow)

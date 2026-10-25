@@ -1451,6 +1451,7 @@ D-81の修正（候補が複数ある場合も、いずれか1件の実績合計
 | D-186 | 使っていない機能とスクリプトを削った（2026-10-25、§63、利用者の決定にもとづく。`docs/feature_inventory.md` の K1・K2・K3・K6（残した）・K7・D9）。(1) K1 `import_production_csv()`（約177行。D-7 の「2系統の併存」は終わり、標準の登録待ち方式 `parse_production_csv_for_staging()` だけが残る）と、そのためだけの import 4つ。(2) K2 `ui/production/unmatched_production_window.py`。(3) K3 古い単発スクリプト10本（D-144 を解決）。(4) K7 ルートの `check_db.py`（7月の DB を決め打ちで見る）を削除し、`check_env.py` を「今の .exe が使う部品（tkcalendar・babel・reportlab）と、テスト・ビルドの部品（pytest・PyInstaller）」だけ確かめる形に直した（足りないと終了コード 1）。(5) D9 `find_registered_file_nos_missing_line_combinations()` と、生産面マスターの「実装ライン単位の未登録組み合わせ（参考情報）」ボタン・`on_show_missing_lines()`。(6) K6 `scripts/make_lot_merge_sample_db.py` は**削らない**：`tests/test_lot_merge.py` が importlib で読み込み、その fixture `sample_db` をロット統合・訂正のテストが使っている（コードのコメントでこのスクリプトに触れるテストは5本）。削った行数は約850行（追加48・削除896）。挙動の変更は、画面の1ボタンが無くなったことだけ。残したもの（利用者の決定）：E3・C8・K8。**削除で使い手が無くなったが、この決定の範囲外のため残した関数**：`models/kitting_plan.py::resolve_plan_by_lot_and_name()`、`models/production_side_master.py::get_second_side_status()`（呼び出しゼロ。次の整理の候補） | 本ファイル §63 |
 | D-187 | 使っていない部品と PDF読み取りを .exe から外した（2026-10-25、§64、利用者の決定にもとづく。`docs/feature_inventory.md` の K9・J1）。(1) K9：fastapi・uvicorn・python-dotenv・openpyxl・pandas は、アプリのどこからも（間接的にも）使われていないことを確かめて（コードの import ゼロ、`importlib` を使うのは `db/migrations` だけ）、`inventory_app.spec` の hiddenimports・collect_all と `requirements.txt`・`requirements.lock.txt` から外した。(2) J1：メニューの項目と `open_pdf_ocr_import()` を削除し、起動からその画面までの import の道筋を無くした（`ui/system/pdf_ocr_import_window.py`・`services/pdf_ocr_service.py` のソースは残す）。.spec は `EXCLUDED_MODULES`（cv2・numpy・pdfplumber・pdfminer・pytesseract・pdf2image と K9 の5つ）で外した。(3) **Pillow（PIL）は外さない**：reportlab 5.0.1 が `reportlab/lib/utils.py` で `from PIL import Image` を無条件に行う（最初の試しのビルドで PIL を除外し、開発環境で import を塞いで確かめたところ、帳票の PDF 出力が import の時点で壊れることが分かった）。(4) 試しのビルド（dist とは別の一時フォルダ）：.exe は 127,431,629 → 35,837,369 バイト（-91,594,260、約72%減）、ログイン画面が出るまで約7.0秒（6.8〜8.9）→ 約4.3秒。dist の全ファイルの SHA-256 は前後で同じ。`version.py`・dist は変えていない。再開の手順は `PDF_OCR_FEATURE_NOTES.md` の冒頭 | 本ファイル §64 |
 | D-188 | 現場実績入力アプリ（別アプリ）の実績CSVを取り込む機能（2026-10-25、§65）。(1) 取り込んだ行は、実績・NG に書かず、別の表（`external_actual_batches`・`external_actual_rows`、マイグレーション015、版 15）に登録待ちとしてためる。既存の登録待ち（`pending_csv_import_rows`）には列を足さない、(2) 人が一覧（今→新の差・色）で確認し、選んだ行だけを `register_actual_and_ng()` で登録する。自動では登録しない、(3) 登録の直前に今の値を読み直し、一覧と違う行は登録しない、(4) 取り込み先のDB（フォルダ名）が今のDB と違うときは取り込みも登録も止める。登録待ちは月次DB ごとで、前月からの引き継ぎでは引き継がない（警告だけ）、(5) 登録待ちの表に行ごとの `exported_at` を足した（設計の表になかった。CSV の書き出し日時は行ごとに違いうるため） | 本ファイル §65、docs/domain/external_actual.md |
+| D-189 | 現場CSV取込の小さな修正2つ（2026-10-25、§65.4、利用者の決定）。(1) 面=1 の行のロットが「生産面マスター未登録」（`classify_side1_only_plan()` が c）のときは、緑ではなく黄（要確認）にして、備考に「生産面マスター未登録（片面の製品か面2待ちか、確かめてから登録してください）」を出す。「緑をすべて選ぶ」では選ばれず、1行ずつ自分で選べば登録できる（既存の登録待ち一覧が D-94 で未登録の面1に確認を求めるのに合わせた。差がある行だけが対象で、変更なし（グレー）の行と面2の行は変わらない）。(2) 拡張子が `.csv` でないファイル（現場アプリが書き出し中に置く `.tmp` など）は取り込まず、理由をメッセージで出す（`file_reject_reason()`。画面は形式の確認より前に断り、サービスも断る。大文字小文字は問わない）。`version.py` は 4.0.0 のまま。テスト9件を足し（合計 723件）、既存の1件は、片面の製品として生産面マスターに登録してから緑を確かめる形に直した | 本ファイル §65.4 |
 
 ### 30.1 Shift+Sの検証結果（D-84）
 
@@ -3559,3 +3560,12 @@ D-155 の一覧と、前回の設計案のお勧め（統合したロットで�
 - 現場アプリが書き出すキッティングNo.・ロットNo.の表記が、このアプリの計画と NFKC・空白除去だけで一致するか（実データでは未確認。一致しない行は「計画がありません」の赤になる）
 - 実DB（`dist` のもの）で `workers` に無い `worker_id` がすでに入っているか
 - 複数のPCで使うときの、同じ登録待ちの同時の登録（月次DB はPCごとのローカルで共有していないので、今は起きない。docs/db.md「月別DB を共有する場合」）
+
+### 65.4 統合後の小さな修正（D-189、2026-10-25）
+
+`feat/external-actual-import` を main に統合（D-186・D-187 と衝突するため、この機能の番号を D-188・§65 に振り直した）したあと、利用者の承認で次の2つを直した。
+
+- **生産面マスター未登録の面1は黄**：`services/external_actual_service.py` の `_is_side_master_unregistered()`。ファイルNo.ごとに1回だけ分類する。差がある行（緑になる行）だけが黄になる。登録の経路は変えていない（選べば `register_rows()` で登録できる）
+- **`.csv` 以外は取り込まない**：`file_reject_reason()`。サービスの取り込みの最初と、画面の「ファイルを選ぶ」の直後の両方で断る。ファイル名の形（`actuals_<年月日>_<時分秒>_<番号4桁>.csv`）までは検査しない
+
+テスト：`test_external_actual_register.py` に2件（未登録の面1は黄で、選べば登録できる／面2の行は対象外）と、直した1件（片面の製品は、生産面マスターに登録すれば緑）、`test_external_actual_import.py` に5件（`.tmp`・`.txt`・拡張子なし・`.csv.tmp` を断る、`.CSV` は取り込む）、`test_external_actual_window.py` に2件（`.tmp` を断るメッセージ、「緑をすべて選ぶ」が黄を選ばない）。
