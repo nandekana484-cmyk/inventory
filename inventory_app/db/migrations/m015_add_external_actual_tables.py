@@ -31,6 +31,7 @@ CREATE_ROWS = """CREATE TABLE IF NOT EXISTS external_actual_rows (
     ng_side1 INTEGER NOT NULL DEFAULT 0 CHECK (ng_side1 >= 0),
     ng_side2 INTEGER NOT NULL DEFAULT 0 CHECK (ng_side2 >= 0),
     worker_id TEXT NOT NULL,
+    face1_kitting_list_no TEXT NOT NULL DEFAULT '',
     exported_at TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'registered')),
     registered_at TEXT,

@@ -26,6 +26,7 @@ ADMIN = {"worker_id": "A1", "name": "管理者"}
 # (キッティングNo., ロットNo., ファイルNo., 面, 基板名)
 PLANS = [
     ("K1", "L1", "0001", "1", "BoardA"), ("K2", "L1", "0001", "2", "BoardA"),     # 両面
+    ("K1x", "L1", "0009", "1", "BoardA"),                                         # 別のファイルNo.の面1（面1のキッティングNo.の取り違えの確認用）
     ("K3", "L2", "0002", "2", "BoardB"),                                          # 面2だけ（面1の計画なし）
     ("K4", "L3", "0003", "1", "BoardC"),                                          # 片面の製品（面1だけ。生産面マスター未登録）
     ("K5", "L4", "0004", "1", "BoardD"),                                          # 面2待ち
@@ -58,7 +59,7 @@ def add_rows(*overrides, target=FOLDER, exported="2026-10-20 18:00:00"):
     for number, extra in enumerate(overrides, start=2):
         row = {"csv_row_no": number, "kitting_list_no": "K2", "lot_no": "L1", "file_no": "0001", "side": "2",
                "report_date": "2026-10-20", "daily_qty": 99, "ng_side1": 0, "ng_side2": 1, "worker_id": "W1",
-               "exported_at": exported}
+               "face1_kitting_list_no": "", "exported_at": exported}
         row.update(extra)
         rows.append(row)
     batch = {"source_file": "x.csv", "file_sha256": os.urandom(8).hex(), "exported_at": exported,
@@ -84,7 +85,7 @@ def history(kitting_no, lot_no):
 # ---------------------------------------------------------------- 状態
 
 def test_new_row_is_green_and_ng_side1_follows_side2(db):
-    add_rows({"ng_side1": 0, "ng_side2": 1})
+    add_rows({"ng_side1": 0, "ng_side2": 1, "face1_kitting_list_no": "K1"})
     item = preview()[("K2", "L1")]
     assert (item["state"], item["label"], item["qty_now"], item["qty_new"]) == ("green", "新規", None, 99)
     assert item["remarks"] == [] and item["planned_qty"] == 100
@@ -93,7 +94,7 @@ def test_new_row_is_green_and_ng_side1_follows_side2(db):
 
 
 def test_register_new_row_writes_actual_and_ng_and_marks_registered(db):
-    add_rows({"ng_side1": 2, "ng_side2": 1, "daily_qty": 97})
+    add_rows({"ng_side1": 2, "ng_side2": 1, "daily_qty": 97, "face1_kitting_list_no": "K1"})
     outcome = register()
     (result,) = outcome["results"]
     assert result["status"] == svc.RESULT_REGISTERED and result["new_cumulative"] == 97 and result["declared_sides"] == ["1", "2"]
@@ -154,7 +155,11 @@ def test_same_values_are_gray(db):
     ({"worker_id": "W9"}, "担当者ID「W9」が作業者マスターにありません"),
     ({"kitting_list_no": "K1", "side": "1", "ng_side2": 0}, "面1です"),                       # 面2がある面1
     ({"kitting_list_no": "K5", "lot_no": "L4", "file_no": "0004", "side": "1", "ng_side2": 0}, SIDE2_WAIT_MESSAGE),
-    ({"kitting_list_no": "K3", "lot_no": "L2", "file_no": "0002", "ng_side1": 1}, "NG面1 を保存する面1の計画が見つかりません"),
+    ({"kitting_list_no": "K3", "lot_no": "L2", "file_no": "0002", "ng_side1": 1}, "面1のキッティングNo.が空のため、NG面1（1）を保存する面1の計画が分かりません"),
+    ({"face1_kitting_list_no": "ZZ"}, "面1のキッティングNo.「ZZ」（ロットNo. L1）の計画がありません"),
+    ({"face1_kitting_list_no": "K4"}, "面1のキッティングNo.「K4」（ロットNo. L1）の計画がありません"),              # ロットNo.が違う（K4 は L3）
+    ({"face1_kitting_list_no": "K2"}, "面1のキッティングNo.「K2」の計画は面2です"),
+    ({"face1_kitting_list_no": "K1x"}, "面1のキッティングNo.「K1x」の計画のファイルNo.（0009）がCSVの0001と違います"),
 ])
 def test_red_rows_cannot_be_registered(db, override, expected):
     add_rows(override)
@@ -163,6 +168,21 @@ def test_red_rows_cannot_be_registered(db, override, expected):
     (result,) = svc.register_rows([item["row_id"]], {}, ADMIN)["results"]
     assert result["status"] == svc.RESULT_REFUSED
     assert len(ear.list_pending_rows()) == 1 and get_daily_history(item["kitting_list_no"], item["lot_no"]) == []
+
+
+def test_empty_face1_kitting_no_with_zero_ng_side1_is_registerable_and_face1_ng_is_not_saved(db):
+    add_rows({"ng_side1": 0, "ng_side2": 1, "face1_kitting_list_no": ""})
+    (item,) = svc.build_preview()
+    assert item["state"] == "green"
+    register()
+    assert get_ng_declaration("K2", 2, lot_no="L1")["ng_qty"] == 1 and get_ng_declaration("K1", 1, lot_no="L1") is None
+
+
+def test_face1_is_decided_by_the_csv_column_not_guessed(db):
+    """面1の計画が2つあるロット（K1・K1x）でも、CSV の面1のキッティングNo.の計画にNGを保存する。"""
+    add_rows({"ng_side1": 2, "ng_side2": 0, "face1_kitting_list_no": "K1", "daily_qty": 98})
+    register()
+    assert get_ng_declaration("K1", 1, lot_no="L1")["ng_qty"] == 2 and get_ng_declaration("K1x", 1, lot_no="L1") is None
 
 
 def test_single_sided_product_side1_row_is_registerable(db):
@@ -185,7 +205,7 @@ def test_zero_ng_does_not_touch_existing_declaration(db):
 def test_ng_side1_shows_only_the_own_part(db):
     save_ng_declaration("K1", "0001", 1, 5, "2026-10-01", lot_no="L1")                    # 面1の保存値 5 = 面1の固有分 3 + 面2の 2
     save_ng_declaration("K2", "0001", 2, 2, "2026-10-01", lot_no="L1")
-    add_rows({"daily_qty": 95, "ng_side1": 3, "ng_side2": 2})
+    add_rows({"daily_qty": 95, "ng_side1": 3, "ng_side2": 2, "face1_kitting_list_no": "K1"})
     item = preview()[("K2", "L1")]
     assert (item["ng1_now"], item["ng1_new"], item["ng2_now"], item["ng2_new"]) == (3.0, 3, 2.0, 2)
 
@@ -223,7 +243,7 @@ def test_ng_failure_after_actual_is_partial_and_row_stays_pending(db):
     with sqlite3.connect(config.DB_PATH) as con:
         con.execute("CREATE TRIGGER fail_ng BEFORE INSERT ON ng_declarations WHEN NEW.production_side = 1 "
                     "BEGIN SELECT RAISE(ABORT, 'test failure'); END")
-    add_rows({"daily_qty": 97, "ng_side1": 1, "ng_side2": 1})
+    add_rows({"daily_qty": 97, "ng_side1": 1, "ng_side2": 1, "face1_kitting_list_no": "K1"})
     outcome = register()
     (result,) = outcome["results"]
     assert result["status"] == svc.RESULT_PARTIAL and "面1のNG登録に失敗しました" in result["message"]

@@ -1,7 +1,7 @@
 # services/external_actual_csv.py
 """
-現場実績入力アプリが書き出す実績CSV（書式版 1）の解析と、DB を見ずにできる検査。GUI にも DB にも依存しない。
-列は固定の12列（変えるときは先に相談）。止めるのは、ヘッダーの不備と書式版の不一致（ファイル全体）、元のDBの違い・形式エラー（その行だけ）。
+現場実績入力アプリが書き出す実績CSV（書式版 2）の解析と、DB を見ずにできる検査。GUI にも DB にも依存しない。
+列は固定の13列（変えるときは先に相談）。止めるのは、ヘッダーの不備と書式版の不一致（ファイル全体）、元のDBの違い・形式エラー（その行だけ）。
 計画・担当者・NG の面などの検査は DB が要るので services/external_actual_service.py。業務ルールは docs/domain/external_actual.md。
 """
 import csv
@@ -12,11 +12,11 @@ from datetime import datetime
 
 from services.csv_parsing_common import open_csv_with_fallback
 
-FORMAT_VERSION = "1"
+FORMAT_VERSION = "2"
 
 COLUMNS = (
     "書式版", "書き出し日時", "元のDB(フォルダ名)", "キッティングNo.", "ロットNo.", "ファイルNo.",
-    "面", "日付", "生産数(累計)", "NG面1", "NG面2", "担当者ID",
+    "面", "日付", "生産数(累計)", "NG面1", "NG面2", "担当者ID", "面1のキッティングNo.",
 )
 
 _DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -25,7 +25,7 @@ _SCIENTIFIC_PATTERN = re.compile(r"^[+-]?\d+(\.\d+)?[eE][+-]?\d+$")
 _SETUP_FILE_NO_LENGTH = 4          # 実データのファイルNo.は全件4文字（先頭0落ちの検出に使う。models/production_side_master.py）
 
 # CSV 内の重複で、内容が違うかどうかの比較に使う
-_CONTENT_KEYS = ("file_no", "side", "report_date", "daily_qty", "ng_side1", "ng_side2", "worker_id")
+_CONTENT_KEYS = ("file_no", "side", "report_date", "daily_qty", "ng_side1", "ng_side2", "worker_id", "face1_kitting_list_no")
 
 
 def normalize_text(value) -> str:
@@ -40,7 +40,7 @@ def excel_damage_reason(label: str, text: str):
     """
     if _SCIENTIFIC_PATTERN.match(text):
         return f"{label}「{text}」は指数表記です（Excelで化けた可能性があります）"
-    if label in ("ファイルNo.", "キッティングNo."):
+    if label in ("ファイルNo.", "キッティングNo.", "面1のキッティングNo."):
         head = text.split("-")[0]
         if head.isdigit() and len(head) < _SETUP_FILE_NO_LENGTH:
             return f"{label}「{text}」は先頭の0が落ちています（Excelで化けた可能性があります）"
@@ -128,6 +128,13 @@ def _parse_row(cells: list, current_folder_name: str):
     ng_side1 = _parse_count("NG面1", cells[9], True, messages)
     ng_side2 = _parse_count("NG面2", cells[10], True, messages)
     worker_id = cells[11]                      # 正規化せず、そのまま比べる（workers の worker_id と同じ表記が前提）
+    face1_kitting_no = normalize_text(cells[12])    # 面2の行で、つながる面1がある場合だけ入る。それ以外は空
+    if face1_kitting_no:
+        reason = excel_damage_reason("面1のキッティングNo.", face1_kitting_no)
+        if reason:
+            messages.append(reason)
+        if side == "1":
+            messages.append("面1の行に面1のキッティングNo.が入っています（面2の行にだけ入ります）")
     if not worker_id.strip():
         messages.append("担当者IDが空です")
     if side == "1" and ng_side2:
@@ -138,7 +145,7 @@ def _parse_row(cells: list, current_folder_name: str):
     return {
         "kitting_list_no": kitting_no, "lot_no": lot_no, "file_no": file_no, "side": side, "report_date": report_date,
         "daily_qty": daily_qty, "ng_side1": ng_side1, "ng_side2": ng_side2, "worker_id": worker_id,
-        "exported_at": exported_at, "source_db_name": source_db,
+        "exported_at": exported_at, "source_db_name": source_db, "face1_kitting_list_no": face1_kitting_no,
     }, []
 
 

@@ -73,7 +73,7 @@ def _batch(sha="a" * 64, exported="2026-10-20 18:00:00"):
 def _row(kitting="0001-1-A-261001-01", lot="100001", qty=10, exported="2026-10-20 18:00:00", **extra):
     row = {"csv_row_no": 2, "kitting_list_no": kitting, "lot_no": lot, "file_no": "0001", "side": "1",
            "report_date": "2026-10-20", "daily_qty": qty, "ng_side1": 0, "ng_side2": 0, "worker_id": "W1",
-           "exported_at": exported}
+           "face1_kitting_list_no": "", "exported_at": exported}
     row.update(extra)
     return row
 

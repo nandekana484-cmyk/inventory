@@ -10,7 +10,7 @@ TABLE_NAMES = ("external_actual_batches", "external_actual_rows")
 
 _ROW_COLUMNS = (
     "csv_row_no", "kitting_list_no", "lot_no", "file_no", "side", "report_date", "daily_qty",
-    "ng_side1", "ng_side2", "worker_id", "exported_at",
+    "ng_side1", "ng_side2", "worker_id", "face1_kitting_list_no", "exported_at",
 )
 
 

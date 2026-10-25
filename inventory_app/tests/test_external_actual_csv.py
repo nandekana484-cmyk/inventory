@@ -23,16 +23,18 @@ def test_valid_rows_are_parsed(tmp_path):
 
 
 def test_header_problems_reject_the_whole_file(tmp_path):
-    bad = ",".join(COLUMNS[:-1])                                                              # 担当者ID が無い
-    result = parse(tmp_path, line(), header=bad)
-    assert result["fatal"].startswith("ヘッダーが現場実績CSVの形ではありません。足りない列：担当者ID") and result["rows"] == []
+    assert len(COLUMNS) == 13 and COLUMNS[-1] == "面1のキッティングNo."
+    bad = ",".join(COLUMNS[:-1])                                                              # 面1のキッティングNo. が無い（書式版1の12列。読む処理は無い）
+    result = parse(tmp_path, line(version="1")[:-1], header=bad)
+    assert result["fatal"].startswith("ヘッダーが現場実績CSVの形ではありません。足りない列：面1のキッティングNo.") and result["rows"] == []
     reordered = ",".join(COLUMNS[1:] + COLUMNS[:1])
     assert "列の順番が違います" in parse(tmp_path, line(), header=reordered)["fatal"]
 
 
-def test_format_version_other_than_1_rejects_the_whole_file(tmp_path):
-    result = parse(tmp_path, line(), line(version="2", lot="100002"))
-    assert "書式版が 1 ではありません（行 3）" in result["fatal"] and result["rows"] == []
+@pytest.mark.parametrize("version", ["1", "3", "10", "", "2.0"])
+def test_format_version_other_than_2_rejects_the_whole_file(tmp_path, version):
+    result = parse(tmp_path, line(), line(version=version, lot="100002"))
+    assert "書式版が 2 ではありません（行 3）" in result["fatal"] and result["rows"] == []
 
 
 def test_source_db_mismatch_stops_only_that_row(tmp_path):
@@ -78,7 +80,27 @@ def test_side1_row_with_ng_side2_is_refused(tmp_path):
 
 def test_wrong_column_count_stops_the_row(tmp_path):
     result = parse(tmp_path, line() + ",extra", line(lot="100002", kitting="0002-2-A-261001-01", file_no="0002"))
-    assert [r["lot_no"] for r in result["rows"]] == ["100002"] and "列の数が 12 ではありません（13 列）" in only_messages(result)[0]
+    assert [r["lot_no"] for r in result["rows"]] == ["100002"] and "列の数が 13 ではありません（14 列）" in only_messages(result)[0]
+
+
+def test_face1_kitting_no_is_read_normalized_and_may_be_empty(tmp_path):
+    result = parse(tmp_path, line(face1=" ０００１-１-Ａ-261001-01 "), line(lot="100002", kitting="0002-2-A-261001-01", file_no="0002"))
+    assert [r["face1_kitting_list_no"] for r in result["rows"]] == ["0001-1-A-261001-01", ""]
+
+
+def test_face1_kitting_no_on_a_side1_row_or_damaged_by_excel_stops_the_row(tmp_path):
+    result = parse(tmp_path, line(side="1", face1="0001-1-A-261001-01"), line(lot="100002", face1="1.2E+5"),
+                   line(lot="100003", face1="569-1-A-261001-01"))
+    assert result["rows"] == []
+    messages = only_messages(result)
+    assert "面1の行に面1のキッティングNo.が入っています" in messages[0]
+    assert "面1のキッティングNo.「1.2E+5」は指数表記です" in messages[1]
+    assert "面1のキッティングNo.「569-1-A-261001-01」は先頭の0が落ちています" in messages[2]
+
+
+def test_duplicate_rows_with_different_face1_kitting_no_warn(tmp_path):
+    result = parse(tmp_path, line(exported="2026-10-20 10:00:00", face1="K1"), line(exported="2026-10-20 18:00:00", face1="K9"))
+    assert result["rows"][0]["face1_kitting_list_no"] == "K9" and len(result["warnings"]) == 1
 
 
 def test_duplicates_use_newest_export_and_warn_only_when_content_differs(tmp_path):

@@ -149,12 +149,12 @@ def test_import_flow_stores_rows_and_shows_errors_as_red_rows(db, root, messages
 
 
 def test_import_refused_for_fatal_header_and_for_wrong_format(db, root, messages, monkeypatch, tmp_path):
-    bad = write_csv(tmp_path, line(version="2"))
+    bad = write_csv(tmp_path, line(version="1"))
     monkeypatch.setattr(module.filedialog, "askopenfilename", lambda **kwargs: bad)
     window, _ = open_window(root)
     window.on_import()
     pump(window, lambda: messages.calls)
-    assert messages.calls[-1][:2] == ("showerror", "取り込めません") and "書式版が 1 ではありません" in messages.calls[-1][2]
+    assert messages.calls[-1][:2] == ("showerror", "取り込めません") and "書式版が 2 ではありません" in messages.calls[-1][2]
     assert ear.list_pending_rows() == []
 
     production = tmp_path / "prod.csv"

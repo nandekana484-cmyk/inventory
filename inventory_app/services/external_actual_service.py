@@ -10,7 +10,7 @@ import os
 import config
 from db.migrations import LATEST_VERSION
 from models import external_actual_rows as rows_model
-from models.kitting_plan import find_opposite_side_plan, get_latest_plan_by_kitting_no
+from models.kitting_plan import get_latest_plan_by_kitting_no
 from models.ng_declarations import list_ng_declarations_latest
 from models.operation_log import log_operation
 from models.production import get_app_cumulative_qty_bulk, summarize_daily_by_plan
@@ -149,6 +149,25 @@ def _load_context() -> dict:
     }
 
 
+def _resolve_face1_plan(row: dict) -> tuple:
+    """
+    面2の行の、つながる面1の計画と、赤の理由。面1のキッティングNo.があれば、それとロットNo.の計画が面1・同じファイルNo.で存在すること。
+    空なら面1は無いものとして扱う（NG面1 が 0 より大きければ、面1の計画が分からないので赤）。
+    """
+    face1_no = row["face1_kitting_list_no"]
+    if not face1_no:
+        return None, ([f"面1のキッティングNo.が空のため、NG面1（{row['ng_side1']}）を保存する面1の計画が分かりません"] if row["ng_side1"] else [])
+    plan = get_latest_plan_by_kitting_no(face1_no, row["lot_no"])
+    if plan is None:
+        return None, [f"面1のキッティングNo.「{face1_no}」（ロットNo. {row['lot_no']}）の計画がありません"]
+    reds = []
+    if _plan_side(plan) != "1":
+        reds.append(f"面1のキッティングNo.「{face1_no}」の計画は面{_plan_side(plan) or '不明'}です")
+    if row["file_no"] != normalize_text(plan.get("setup_file_no")):
+        reds.append(f"面1のキッティングNo.「{face1_no}」の計画のファイルNo.（{plan.get('setup_file_no')}）がCSVの{row['file_no']}と違います")
+    return (None if reds else plan), reds
+
+
 def _resolve_row(ctx: dict, row: dict) -> dict:
     """行の計画と NG を保存する面の計画を決め、登録できない理由（赤）を集める。DB を引くのは、計画が一覧に無い行と NG を面1に連動させる行だけ。"""
     reds = []
@@ -171,12 +190,10 @@ def _resolve_row(ctx: dict, row: dict) -> dict:
             reds.append(ctx["side_block_cache"][block_key])
         if side in ("1", "2"):
             ng_side_plans[side] = plan
-        if side == "2" and (row["ng_side1"] or row["ng_side2"]):
-            # 面2の NG は面1にも連動して保存される。CSV に面1の計画は無いので、生産実績入力画面と同じ探し方で面1の計画を決める。
-            ng_side_plans["1"] = find_opposite_side_plan(
-                plan.get("lot_no"), plan.get("setup_file_no"), "2", current_plan_start_datetime=plan.get("plan_start_datetime"))
-            if row["ng_side1"] and ng_side_plans["1"] is None:
-                reds.append("NG面1 を保存する面1の計画が見つかりません")
+        if side == "2":
+            # 面2の NG は面1にも連動して保存される。面1の計画は推測せず、CSV の「面1のキッティングNo.」（現場アプリの管理者が確定）で決める。
+            ng_side_plans["1"], face1_reds = _resolve_face1_plan(row)
+            reds.extend(face1_reds)
         if side == "1" and row["ng_side2"]:
             reds.append("面1の行に NG面2 が入っています")
     if row["worker_id"] not in ctx["worker_ids"]:

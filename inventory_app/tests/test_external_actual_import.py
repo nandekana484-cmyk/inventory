@@ -78,7 +78,7 @@ def test_same_file_twice_warns_but_is_harmless(tmp_path, month_db):
 
 
 def test_fatal_or_row_errors_store_nothing_for_those_rows(tmp_path, month_db):
-    fatal = _import(tmp_path, line(version="2"))
+    fatal = _import(tmp_path, line(version="1"))
     assert fatal["fatal"] and fatal["imported"] == 0 and ear.list_pending_rows() == []
     mixed = _import(tmp_path, line(), line(db="2026-09", lot="100002"), name="m.csv")
     assert mixed["imported"] == 1 and len(mixed["errors"]) == 1
