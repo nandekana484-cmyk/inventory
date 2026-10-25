@@ -345,6 +345,7 @@ def register_rows(row_ids, expected_snapshots: dict, registered_by: dict) -> dic
             out.update(status=RESULT_REFUSED, message="登録できません：" + "／".join(item["remarks"]))
             continue
         plan = item["_plan"]
+        out["plan_key"] = (plan["kitting_list_no"], plan["lot_no"])
         fresh = _read_existing([{"plan": plan, "ng_side_plans": item["_ng_side_plans"]}])[0]
         fresh["completed"] = _completed_info(row, plan, fresh, _has_difference(row, item["_save_qty"], fresh)) is not None
         expected = expected_snapshots.get(row_id)

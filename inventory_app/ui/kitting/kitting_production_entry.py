@@ -15,7 +15,7 @@ from services.lot_status_service import preview_completed_lot_registration
 from services.lot_merge_service import merged_lot_nos
 from services.production_import_service import parse_production_csv_for_staging
 from services.csv_format_detection import (
-    read_csv_header, detect_format_mismatch_warnings,
+    read_csv_header, detect_format_mismatch_warnings, detect_external_actual_csv_warnings,
     PRODUCTION_CSV_SIGNATURE_COLUMNS, PRODUCTION_CSV_FORMAT_LABEL,
     PLAN_CSV_SIGNATURE_COLUMNS, PLAN_CSV_FORMAT_LABEL,
 )
@@ -31,6 +31,7 @@ from ui.reports.unified_report_window import UnifiedReportWindow
 from ui.production.lot_progress_window import LotProgressWindow
 from ui.production.daily_drawdown_window import DailyDrawdownWindow
 from ui.production.production_import_staging_window import open_or_notify, format_completed_lot_warning
+from ui.production.external_actual_window import ExternalActualWindow
 from ui.loading_window import LoadingWindow
 from ui.common.window_utils import center_window
 from ui.common.highlight_colors import SIDE2_WAIT_BLUE, SIDE_MASTER_UNREGISTERED_GRAY
@@ -84,6 +85,10 @@ class KittingProductionEntryWindow(tk.Toplevel):
         self._pending_csv_report_date = None
         # 開いている実績CSVステージング一覧。登録成功時に lift() で手前に戻すために使う。
         self._csv_staging_window = None
+
+        # 現場CSV取込画面。開いている間は、この画面の登録・実績修正のボタンを押せなくする（取り込んだ行の確認中に、同じ計画を書き換えないため）。
+        self._external_actual_window = None
+        self._external_actual_locked = False
 
         # 実績CSV取込の非同期パース用（LoadingWindow＋スレッド＋queue をポーリングする）。
         self._csv_import_queue = queue.Queue()
@@ -368,6 +373,11 @@ class KittingProductionEntryWindow(tk.Toplevel):
             bottom_btn_frame, text="実績CSV取込", command=self.on_production_csv_import
         )
         self.btn_production_csv_import.pack(side=tk.LEFT, expand=True, fill=tk.X)
+
+        self.btn_external_actual = ttk.Button(
+            bottom_btn_frame, text="現場CSV取込", command=self.open_external_actual_window
+        )
+        self.btn_external_actual.pack(side=tk.LEFT, expand=True, fill=tk.X)
 
         # ステージング一覧は本画面のメソッドを直接呼ぶので、本画面が開いているときだけ使えるようここに置く。
         self.btn_csv_staging_status = ttk.Button(
@@ -909,17 +919,36 @@ class KittingProductionEntryWindow(tk.Toplevel):
         else:
             self.lbl_board_structure_count.config(text="未登録", foreground="red")
 
-        self.btn_register.config(state=tk.NORMAL)
-        self.btn_correction.config(state=tk.NORMAL)
+        self._set_plan_buttons(True)
         self.load_today_log()
         self._setup_ng_side_ui(plan)
         self._load_current_daily_qty(plan["kitting_list_no"], plan["lot_no"])
 
+    def _set_plan_buttons(self, enabled):
+        """登録・実績修正のボタンの状態。現場CSV取込画面を開いている間は、計画を選んでいても押せない。"""
+        # getattr の既定値は、この属性を持たない偽の画面（tests/test_staging_registration.py）が呼ぶときのため。
+        state = tk.NORMAL if enabled and not getattr(self, "_external_actual_locked", False) else tk.DISABLED
+        self.btn_register.config(state=state)
+        self.btn_correction.config(state=state)
+
+    def open_external_actual_window(self):
+        """現場CSV取込画面を開く。開いていれば手前に出すだけ。"""
+        if self._external_actual_window is not None and self._external_actual_window.winfo_exists():
+            self._external_actual_window.lift()
+            return
+        self._external_actual_locked = True
+        self._set_plan_buttons(False)
+        self._external_actual_window = ExternalActualWindow(
+            self, current_worker=self.current_worker, on_closed=self._on_external_actual_closed)
+
+    def _on_external_actual_closed(self):
+        self._external_actual_locked = False
+        self._set_plan_buttons(self.current_plan is not None)
+
     def _clear_current_plan(self):
         """計画を未選択の状態に戻す（登録・実績修正を押せなくし、NG の欄を空にする）。"""
         self.current_plan = None
-        self.btn_register.config(state=tk.DISABLED)
-        self.btn_correction.config(state=tk.DISABLED)
+        self._set_plan_buttons(False)
         self._reset_ng_side_ui()
 
     def _load_current_daily_qty(self, kitting_no, lot_no):
@@ -1076,7 +1105,7 @@ class KittingProductionEntryWindow(tk.Toplevel):
         warnings = detect_format_mismatch_warnings(
             header, PRODUCTION_CSV_SIGNATURE_COLUMNS, PRODUCTION_CSV_FORMAT_LABEL,
             PLAN_CSV_SIGNATURE_COLUMNS, PLAN_CSV_FORMAT_LABEL,
-        )
+        ) + detect_external_actual_csv_warnings(header, PRODUCTION_CSV_FORMAT_LABEL)
         if not warnings:
             return True
 

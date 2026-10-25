@@ -34,6 +34,21 @@ EXTERNAL_ACTUAL_CSV_FORMAT_LABEL = "現場実績CSV"
 EXTERNAL_ACTUAL_CSV_SIGNATURE_COLUMNS = ["書式版", "書き出し日時"]
 
 
+def detect_external_actual_csv_warnings(header, own_format_label):
+    """
+    現場実績CSV（現場実績入力アプリの書き出し）を、own_format_label の取込に選んでいないか調べる。
+    見つかれば、現場CSV取込を案内する警告のリスト（疑いがなければ空）。
+    """
+    found = [col for col in EXTERNAL_ACTUAL_CSV_SIGNATURE_COLUMNS if col in (header or [])]
+    if not found:
+        return []
+    return [
+        f"{EXTERNAL_ACTUAL_CSV_FORMAT_LABEL}に特有の列（「{'」「'.join(found)}」）が見つかりました。"
+        f"このファイルは{EXTERNAL_ACTUAL_CSV_FORMAT_LABEL}のようです。"
+        f"{own_format_label}取込ではなく、生産実績入力画面の「現場CSV取込」をご利用ください。"
+    ]
+
+
 def read_csv_header(file_path):
     """
     CSVファイルの1行目（ヘッダー）だけを読み込んで返す（list[str]）。
