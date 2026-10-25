@@ -114,6 +114,32 @@ def get_app_cumulative_qty_bulk(kitting_list_no_lot_pairs, con=None, cutoff_date
     return result
 
 
+def summarize_daily_by_plan(kitting_list_no_lot_pairs) -> dict:
+    """
+    複数の(kitting_list_no, lot_no)の組について、production_daily の行数と最も新しい report_date をまとめて返す
+    （現場実績CSVの登録前の一覧で、今の実績の日付を行ごとに引かないため）。累計は get_app_cumulative_qty_bulk()。
+    戻り値：{(kitting_list_no, lot_no): {"count": 行数, "last_date": 最も新しい report_date}}。実績の無い組は含めない。
+    """
+    unique_pairs = list(dict.fromkeys(kitting_list_no_lot_pairs))
+    wanted = {(kn, lot or ""): (kn, lot) for kn, lot in unique_pairs}
+    kitting_list_nos = list(dict.fromkeys(kn for kn, _lot in unique_pairs))
+    result = {}
+    with get_connection() as con:
+        for i in range(0, len(kitting_list_nos), 500):
+            chunk = kitting_list_nos[i:i + 500]
+            cur = con.execute(f"""
+                SELECT kitting_list_no, lot_id, COUNT(*) AS cnt, MAX(report_date) AS last_date
+                FROM production_daily
+                WHERE kitting_list_no IN ({",".join("?" * len(chunk))})
+                GROUP BY kitting_list_no, lot_id
+            """, chunk)
+            for row in cur.fetchall():
+                original = wanted.get((row["kitting_list_no"], row["lot_id"] or ""))
+                if original is not None:
+                    result[original] = {"count": row["cnt"], "last_date": row["last_date"]}
+    return result
+
+
 def insert_daily_production(plan_item_id, kitting_list_no, lot_id, group_id,
                               report_date, daily_qty, worker_id):
     """日次実績を1レコードとして追加保存する（洗い替えではなく追記）"""
