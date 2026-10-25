@@ -90,6 +90,7 @@
 | 8 | 2026-10-13 | `83c7848`〜`5b7572c` | フォルダの整理（ui/ のサブフォルダ化、scripts/・tests/ への移動、古い requirements.txt の削除）、.exe のビルド確認 | 461件 |
 | （v1.2.2・v1.3.0） | 2026-10-15 | `8e3a16f` | もう一方のPCで、リファクタリング後のコードの上に機能の修正（D-120〜D-136）。リファクタリングの段階ではない | 501件 |
 | 引き継ぎ | 2026-10-15 | （このブランチ） | 開発記録（CHANGELOG「1.2.2」・CANONICAL §50）、他のPCへ移る手順（docs/migrate_to_refactored.md）、check_db_versions.py | 504件 |
+| 分割A（動きを変えない） | 2026-10-25 | （このコミット） | 登録待ち一覧 `production_import_staging_window.py`（1714→1312行）から、登録済みリスト（6メソッド・203行）を `staging_already_registered.py` へ、不一致・候補なしの印付けと不一致リストの CSV 出力（8メソッド・196行＋定数 `REASON_MISMATCH_DEFAULT`）を `staging_marking.py` へ。どちらも mixin クラスで、元のクラスが継承する。関数の中身は変えていない（54関数すべてで、コメント以外の構文が同じ）。`REASON_MISMATCH_DEFAULT` は旧位置から import し直して名前を残した。D-190 | 723件 |
 
 ## 未解決の宿題
 

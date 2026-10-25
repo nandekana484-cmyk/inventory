@@ -8,11 +8,10 @@ import csv
 import logging
 
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog, simpledialog
+from tkinter import ttk, messagebox, filedialog
 
 from services.production_import_service import (
     STAGING_STATUS_LABELS,
-    EXCLUSION_REASON_LABELS,
     group_active_plan_items_by_lot,
 )
 from services.production_service import (
@@ -34,7 +33,6 @@ from models.kitting_plan import (
 from models.production import list_daily_production_by_kitting_no
 from models.production_import_staging import (
     delete_pending_csv_import_row,
-    upsert_pending_csv_import_row,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,6 +55,9 @@ from ui.common.highlight_colors import (
 )
 from ui.common.color_legend import build_color_legend
 from ui.production.duplicate_plan_dialog import ask_duplicate_resolution, DUPLICATE_SUM, DUPLICATE_MANUAL
+# 登録済みリストと、不一致・候補なしの印付けは、別ファイルの mixin に移した（D-190）。REASON_MISMATCH_DEFAULT は旧位置の名前として残す。
+from ui.production.staging_already_registered import StagingAlreadyRegisteredMixin
+from ui.production.staging_marking import StagingMarkingMixin, REASON_MISMATCH_DEFAULT  # noqa: F401
 
 # 「候補なし」行を CSV 出力するときの理由。
 REASON_NO_CANDIDATES = "計画が見つからない（該当lot_noの計画なし）"
@@ -73,8 +74,6 @@ CANDIDATE_LEGEND = [
     ("登録済み", None, REGISTERED_TEXT_GRAY),
 ]
 
-# 「不一致として除外」で理由が空欄・キャンセルのときの既定の文言（理由は人が判断するので自由記述）。
-REASON_MISMATCH_DEFAULT = "不一致と判断（詳細理由未入力）"
 
 
 _SIDE1_ONLY_CONFIRM_REASONS = {
@@ -199,7 +198,7 @@ def open_or_notify(parent, already_registered_rows=None):
     return ProductionImportStagingWindow(parent, staged_rows, already_registered_rows=already_registered_rows)
 
 
-class ProductionImportStagingWindow(tk.Toplevel):
+class ProductionImportStagingWindow(StagingMarkingMixin, StagingAlreadyRegisteredMixin, tk.Toplevel):
     # 選択のたびに DB を伴う候補の再照合をしないよう、デバウンスする（生産実績入力画面と同じ値）。
     CANDIDATE_SELECT_DEBOUNCE_MS = 200
 
@@ -1308,407 +1307,7 @@ class ProductionImportStagingWindow(tk.Toplevel):
     # 不一致として除外（人間の個別判断）
     # ------------------------------------------------------------------
 
-    def _on_right_click(self, event):
-        """
-        右クリックした行に「不一致として除外」などのメニューを出す。
-        右クリックした行が複数選択の一部なら選択中の全行が対象。そうでなければ、その行だけを選び直して対象にする。
-        """
-        clicked_iid = self.tree.identify_row(event.y)
-        if not clicked_iid:
-            return
-
-        current_selection = self.tree.selection()
-        if len(current_selection) > 1 and clicked_iid in current_selection:
-            target_iids = list(current_selection)
-        else:
-            self.tree.selection_set(clicked_iid)
-            target_iids = [clicked_iid]
-
-        menu = tk.Menu(self, tearoff=0)
-        if len(target_iids) > 1:
-            menu.add_command(
-                label=f"不一致として除外（選択中の{len(target_iids)}件）",
-                command=lambda: self._mark_multiple_as_mismatched(target_iids),
-            )
-            menu.add_command(
-                label=f"候補なしとする（選択中の{len(target_iids)}件）",
-                command=lambda: self._mark_multiple_as_no_candidates(target_iids),
-            )
-        else:
-            menu.add_command(
-                label="不一致として除外",
-                command=lambda: self._mark_as_mismatched(target_iids[0]),
-            )
-            menu.add_command(
-                label="候補なしとする",
-                command=lambda: self._mark_as_no_candidates(target_iids[0]),
-            )
-        try:
-            menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            menu.grab_release()
-
-    def _apply_mismatch(self, iid, reason):
-        """
-        1行を「不一致として除外」する共通処理。一覧と DB から即座に削除し、_mismatched_rows（閉じるまで保持）へ移す。
-        登録不可リスト（_unregistrable_rows）とは別に管理する。
-        """
-        row = self._row_by_iid.get(iid)
-        if row is None:
-            return
-
-        pending_row_id = row.get("pending_row_id")
-        self.tree.delete(iid)
-        del self._row_by_iid[iid]
-        if pending_row_id is not None:
-            delete_pending_csv_import_row(pending_row_id)
-        # 削除された行が左ペインの候補表示元だった場合、候補表示をクリアする。
-        if self._current_staging_iid == iid:
-            self._clear_candidate_pane()
-
-        self._mismatched_rows.append({**row, "mismatch_reason": reason})
-
-    def _mark_as_mismatched(self, iid):
-        """
-        人が「この行に一致する計画は無い」と判断した1行を除外する。理由は自由記述で尋ね、空欄・キャンセルなら既定の文言を使う。
-        """
-        row = self._row_by_iid.get(iid)
-        if row is None:
-            return
-
-        reason = simpledialog.askstring(
-            "不一致として除外",
-            f"ロットNo. {row.get('lot_no')} を不一致として除外します。\n"
-            "除外理由（任意）：",
-            parent=self,
-        )
-        reason = (reason or "").strip() or REASON_MISMATCH_DEFAULT
-
-        self._apply_mismatch(iid, reason)
-        self._update_status_label()
-
-    def _mark_multiple_as_mismatched(self, iids):
-        """複数選択した行を一括で「不一致として除外」する。理由は1回だけ尋ね、全行に同じ理由を使う。"""
-        valid_iids = [iid for iid in iids if iid in self._row_by_iid]
-        if not valid_iids:
-            return
-
-        lot_no_preview = "、".join(self._row_by_iid[iid].get("lot_no", "") for iid in valid_iids[:5])
-        if len(valid_iids) > 5:
-            lot_no_preview += " 他"
-        reason = simpledialog.askstring(
-            "不一致として除外",
-            f"選択中の{len(valid_iids)}件（ロットNo: {lot_no_preview}）を"
-            "まとめて不一致として除外します。\n除外理由（任意、全件共通）：",
-            parent=self,
-        )
-        reason = (reason or "").strip() or REASON_MISMATCH_DEFAULT
-
-        for iid in valid_iids:
-            self._apply_mismatch(iid, reason)
-        self._update_status_label()
-
-    def _apply_no_candidates(self, iid):
-        """
-        1行を人の判断で「候補なしとする」（登録不可リストへ移す）。CSV の理由欄は、機械判定と同じ固定の文言になる。
-        DB の行はここで即座に削除する。削除しないと、再度開いたときに再照合で候補が見つかり、登録待ち一覧に復活する
-        （機械判定の行は候補が無いので復活せず、CSV 出力時の削除でよい）。
-        """
-        row = self._row_by_iid.get(iid)
-        if row is None:
-            return
-
-        pending_row_id = row.get("pending_row_id")
-        self.tree.delete(iid)
-        del self._row_by_iid[iid]
-        if pending_row_id is not None:
-            delete_pending_csv_import_row(pending_row_id)
-        # 削除された行が左ペインの候補表示元だった場合、候補表示をクリアする。
-        if self._current_staging_iid == iid:
-            self._clear_candidate_pane()
-
-        self._unregistrable_rows.append(row)
-
-    def _mark_as_no_candidates(self, iid):
-        """
-        人が「対応する計画は無い」と判断した1行を登録不可リストへ移す。理由は固定の文言なので、誤クリック防止のため確認だけ挟む。
-        """
-        row = self._row_by_iid.get(iid)
-        if row is None:
-            return
-
-        if not messagebox.askyesno(
-            "候補なしとする",
-            f"ロットNo. {row.get('lot_no')} を候補なしとして登録不可リストに移動します。よろしいですか？",
-            parent=self,
-        ):
-            return
-
-        self._apply_no_candidates(iid)
-        self._update_status_label()
-
-    def _mark_multiple_as_no_candidates(self, iids):
-        """複数選択した行を一括で「候補なしとする」。確認ダイアログは1回だけ。"""
-        valid_iids = [iid for iid in iids if iid in self._row_by_iid]
-        if not valid_iids:
-            return
-
-        lot_no_preview = "、".join(self._row_by_iid[iid].get("lot_no", "") for iid in valid_iids[:5])
-        if len(valid_iids) > 5:
-            lot_no_preview += " 他"
-        if not messagebox.askyesno(
-            "候補なしとする",
-            f"選択中の{len(valid_iids)}件（ロットNo: {lot_no_preview}）を"
-            "まとめて候補なしとして登録不可リストに移動します。よろしいですか？",
-            parent=self,
-        ):
-            return
-
-        for iid in valid_iids:
-            self._apply_no_candidates(iid)
-        self._update_status_label()
-
-    def on_export_mismatched_csv(self):
-        """
-        「不一致として除外」した行を CSV 出力する（理由は行ごとの入力値）。DB からは除外時に削除済みなので、ここでは書き出すだけ。
-        実際に書き出せたら True。_on_close() が「出力できたか」の判定に使う。
-        """
-        if not self._mismatched_rows:
-            messagebox.showinfo("不一致リスト", "不一致として除外した行はありません。", parent=self)
-            return True
-
-        save_path = filedialog.asksaveasfilename(
-            defaultextension=".csv",
-            initialfile="production_import_mismatched.csv",
-            filetypes=[("CSV files", "*.csv")],
-            parent=self,
-        )
-        if not save_path:
-            return False
-
-        try:
-            with open(save_path, "w", newline="", encoding="utf-8-sig") as f:
-                writer = csv.writer(f)
-                writer.writerow(["lot_no", "product_name", "daily_qty", "report_date", "reason"])
-                for row in self._mismatched_rows:
-                    writer.writerow([
-                        row.get("lot_no", ""),
-                        row.get("product_name", ""),
-                        row.get("daily_qty", ""),
-                        row.get("report_date") or "",
-                        row.get("mismatch_reason", REASON_MISMATCH_DEFAULT),
-                    ])
-        except Exception as e:
-            messagebox.showerror("エラー", f"CSV出力に失敗しました：{e}", parent=self)
-            return False
-
-        messagebox.showinfo("完了", f"CSVを保存しました：\n{save_path}", parent=self)
-        return True
 
     # ------------------------------------------------------------------
     # 登録済みリスト（is_already_registered()がTrueと判定した行）
     # ------------------------------------------------------------------
-
-    def add_already_registered_rows(self, rows):
-        """
-        新しい取込で見つかった「登録済み」行を追記する。既に開いている一覧に、もう一度取り込んだときに呼ぶ
-        （lift() だけでは今回の判定結果が失われる）。件数表示と詳細ウインドウも更新する。
-        """
-        if not rows:
-            return
-        self._already_registered_rows.extend(rows)
-        self._update_status_label()
-        if self._already_registered_window is not None and self._already_registered_window.winfo_exists():
-            self._populate_already_registered_tree()
-
-    def on_show_already_registered_list(self):
-        """「登録済みリストを表示」ボタン。開いていれば前面に出すだけで、多重に開かない。"""
-        if self._already_registered_window is not None and self._already_registered_window.winfo_exists():
-            self._already_registered_window.lift()
-            return
-
-        window = tk.Toplevel(self)
-        window.title("実績CSV取込：対象外一覧（登録済み／数量0）")
-        window.geometry("980x400")
-        center_window(window, self)
-        window.transient(self)
-        # 親が最小化中だと transient のウインドウが表示されないので、先に元に戻す（UI_WORKFLOW_FIXES_NOTES.md グループO）。
-        if self.state() == "iconic":
-            self.deiconify()
-
-        ttk.Label(
-            window,
-            text=(
-                "通常のステージング一覧には表示されなかった行です（理由は「理由」列を参照）。\n"
-                "右クリックで通常の一覧に戻して訂正できます（複数選択中は選択中の全行が対象）。"
-            ),
-            foreground="gray", padding=(10, 10, 10, 0),
-        ).pack(anchor=tk.W)
-
-        action_frame = ttk.Frame(window, padding=(10, 5, 10, 10))
-        action_frame.pack(side=tk.BOTTOM, fill=tk.X)
-        ttk.Button(
-            action_frame, text="対象外一覧をCSV出力", command=self.on_export_already_registered_csv,
-        ).pack(side=tk.LEFT)
-
-        tree_frame = ttk.Frame(window, padding=(10, 5, 10, 0))
-        tree_frame.pack(expand=True, fill=tk.BOTH)
-
-        cols = (
-            "lot_no", "product_name", "daily_qty", "report_date",
-            "matched_kitting_list_no", "existing_qty", "reason",
-        )
-        tree = ttk.Treeview(tree_frame, columns=cols, show="headings", selectmode="extended")
-        tree.heading("lot_no", text="ロットNo")
-        tree.heading("product_name", text="製品名")
-        tree.heading("daily_qty", text="CSVの実績数")
-        tree.heading("report_date", text="払い出し日（参考）")
-        tree.heading("matched_kitting_list_no", text="一致した計画（キッティングリストNo）")
-        tree.heading("existing_qty", text="登録済みの数量")
-        tree.heading("reason", text="対象外の理由")
-        tree.column("lot_no", width=100, anchor=tk.W)
-        tree.column("product_name", width=180, anchor=tk.W)
-        tree.column("daily_qty", width=90, anchor=tk.E)
-        tree.column("report_date", width=120, anchor=tk.CENTER)
-        tree.column("matched_kitting_list_no", width=170, anchor=tk.W)
-        tree.column("existing_qty", width=100, anchor=tk.E)
-        tree.column("reason", width=140, anchor=tk.W)
-
-        vsb = ttk.Scrollbar(tree_frame, orient="vertical")
-        vsb.pack(side=tk.RIGHT, fill=tk.Y)
-        tree.pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
-        tree.configure(yscrollcommand=vsb.set)
-        vsb.configure(command=tree.yview)
-
-        tree.bind("<Button-3>", self._on_already_registered_right_click)
-
-        self._already_registered_window = window
-        self._already_registered_tree = tree
-        self._populate_already_registered_tree()
-
-    def _populate_already_registered_tree(self):
-        """登録済みリストの詳細ウインドウの Treeview を作り直す（追記・戻す操作の後に呼ぶ）。"""
-        tree = self._already_registered_tree
-        for item in tree.get_children():
-            tree.delete(item)
-        self._already_registered_by_iid = {}
-
-        for entry in self._already_registered_rows:
-            iid = tree.insert("", tk.END, values=(
-                entry.get("lot_no", ""),
-                entry.get("product_name", ""),
-                entry.get("daily_qty", ""),
-                entry.get("report_date") or "",
-                entry.get("matched_kitting_list_no") or "",
-                entry.get("existing_qty") if entry.get("existing_qty") is not None else "",
-                EXCLUSION_REASON_LABELS.get(entry.get("reason"), entry.get("reason") or ""),
-            ))
-            self._already_registered_by_iid[iid] = entry
-
-    def _on_already_registered_right_click(self, event):
-        """
-        登録済みリスト詳細ウインドウの右クリックメニュー。「通常の一覧に戻す」の1操作だけを出す
-        （戻した後は、通常の一覧の「不一致として除外」「候補なしとする」で対応できるため）。複数選択時の扱いは _on_right_click() と同じ。
-        """
-        tree = self._already_registered_tree
-        clicked_iid = tree.identify_row(event.y)
-        if not clicked_iid:
-            return
-
-        current_selection = tree.selection()
-        if len(current_selection) > 1 and clicked_iid in current_selection:
-            target_iids = list(current_selection)
-        else:
-            tree.selection_set(clicked_iid)
-            target_iids = [clicked_iid]
-
-        menu = tk.Menu(self._already_registered_window, tearoff=0)
-        label = "通常の一覧に戻す（訂正する）"
-        if len(target_iids) > 1:
-            label += f"（選択中の{len(target_iids)}件）"
-        menu.add_command(label=label, command=lambda: self._revert_already_registered_rows(target_iids))
-        try:
-            menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            menu.grab_release()
-
-    def _revert_already_registered_rows(self, iids):
-        """
-        登録済みリストの行を保留行として DB に書き戻し、登録待ち一覧を全件読み直す（まれな訂正操作なので、個別に差し込まない）。
-        """
-        entries = [self._already_registered_by_iid[iid] for iid in iids if iid in self._already_registered_by_iid]
-        if not entries:
-            return
-
-        count = len(entries)
-        lot_no_preview = "、".join(e.get("lot_no", "") for e in entries[:5])
-        if count > 5:
-            lot_no_preview += " 他"
-        if not messagebox.askyesno(
-            "通常の一覧に戻す",
-            f"選択中の{count}件（ロットNo: {lot_no_preview}）を通常の登録待ち一覧に戻します。"
-            "よろしいですか？",
-            parent=self._already_registered_window,
-        ):
-            return
-
-        for entry in entries:
-            upsert_pending_csv_import_row({
-                "csv_row_no": entry.get("csv_row_no"),
-                "lot_no": entry["lot_no"],
-                "product_name": entry["product_name"],
-                "daily_qty": entry["daily_qty"],
-                "report_date": entry.get("report_date"),
-                "worker_id": entry.get("worker_id"),
-            }, import_batch_id=entry.get("import_batch_id"))
-            self._already_registered_rows.remove(entry)
-
-        # 戻した行を候補付きで表示するには再照合が必要なので、_load_staged_rows_from_db() で全件読み直す。
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-        self._row_by_iid = {}
-        for row in _load_staged_rows_from_db():
-            self._insert_staging_row(row)
-
-        self._populate_already_registered_tree()
-        self._update_status_label()
-
-    def on_export_already_registered_csv(self):
-        """
-        登録済みリストを CSV 出力する。DB に対応する行が無いので、出力後に一覧や DB から消すものは無い（出力後も「戻す」ができる）。
-        """
-        if not self._already_registered_rows:
-            messagebox.showinfo("対象外一覧", "対象外と判定された行はありません。", parent=self._already_registered_window)
-            return
-
-        save_path = filedialog.asksaveasfilename(
-            defaultextension=".csv",
-            initialfile="production_import_excluded_rows.csv",
-            filetypes=[("CSV files", "*.csv")],
-            parent=self._already_registered_window,
-        )
-        if not save_path:
-            return
-
-        try:
-            with open(save_path, "w", newline="", encoding="utf-8-sig") as f:
-                writer = csv.writer(f)
-                writer.writerow([
-                    "lot_no", "product_name", "daily_qty", "report_date",
-                    "matched_kitting_list_no", "existing_qty", "reason",
-                ])
-                for entry in self._already_registered_rows:
-                    writer.writerow([
-                        entry.get("lot_no", ""),
-                        entry.get("product_name", ""),
-                        entry.get("daily_qty", ""),
-                        entry.get("report_date") or "",
-                        entry.get("matched_kitting_list_no") or "",
-                        entry.get("existing_qty") if entry.get("existing_qty") is not None else "",
-                        EXCLUSION_REASON_LABELS.get(entry.get("reason"), entry.get("reason") or ""),
-                    ])
-        except Exception as e:
-            messagebox.showerror("エラー", f"CSV出力に失敗しました：{e}", parent=self._already_registered_window)
-            return
-
-        messagebox.showinfo("完了", f"CSVを保存しました：\n{save_path}", parent=self._already_registered_window)
