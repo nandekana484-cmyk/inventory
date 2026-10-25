@@ -1,6 +1,7 @@
 # アーキテクチャ：画面 → service → model の対応表
 
 import を実測して作った表（`ast` で `inventory_app/` 配下の import 文を抽出）。2026-10-09（HEAD c08a88a）に作り、2026-10-13（リファクタリング段階4の後）に同じ方法で作り直した。
+2026-10-25 に、現場CSV取込（`external_actual_*`）の行を、同じ方法で調べて足した。
 パスは `inventory_app/` からの相対パス。`※` は関数内での import（循環 import を避けるための遅延 import）。
 import の向きだけを見ているので、実際の呼び出し回数や呼び出し経路は表していない。
 
@@ -29,7 +30,7 @@ import の向きだけを見ているので、実際の呼び出し回数や呼�
 | kitting/actual_correction_window.py | inventory_diff_service, production_service | operation_log | common/window_utils, kitting/cancel_registration_dialog |
 | kitting/cancel_registration_dialog.py | — | — | common/window_utils |
 | kitting/kitting_plan_import.py | csv_format_detection, kitting_import_service | kitting_plan, operation_log | common/window_utils, loading_window |
-| kitting/kitting_production_entry.py | csv_format_detection, lot_merge_service, lot_status_service, production_entry_service, production_import_service, production_service | board_structure_master, kitting_plan, ng_declarations, production, production_import_staging | common/color_legend, common/column_filter, common/highlight_colors, common/window_utils, kitting/actual_correction_window, loading_window, production/daily_drawdown_window, production/lot_progress_window, production/production_import_staging_window, reports/unified_report_window |
+| kitting/kitting_production_entry.py | csv_format_detection, lot_merge_service, lot_status_service, production_entry_service, production_import_service, production_service | board_structure_master, kitting_plan, ng_declarations, production, production_import_staging | common/color_legend, common/column_filter, common/highlight_colors, common/window_utils, kitting/actual_correction_window, loading_window, production/daily_drawdown_window, production/external_actual_window, production/lot_progress_window, production/production_import_staging_window, reports/unified_report_window |
 | kitting/plan_candidate_dialog.py | date_parsing | — | common/highlight_colors, common/window_utils |
 | loading_window.py | — | — | common/window_utils |
 | login_window.py | — | workers | common/window_utils, main_window, master/worker_registration_window |
@@ -45,6 +46,7 @@ import の向きだけを見ているので、実際の呼び出し回数や呼�
 | ng_wip/wip_scrap_correction_window.py | — | operation_log, wip_scrap_records | common/window_utils |
 | production/daily_drawdown_window.py | lot_status_history | — | common/lot_row_style, common/window_utils |
 | production/duplicate_plan_dialog.py | — | — | common/window_utils |
+| production/external_actual_window.py | external_actual_service | — | common/async_task, common/checkable_treeview, common/color_legend, common/column_filter, common/highlight_colors, common/window_utils |
 | production/lot_merge_window.py | inventory_diff_service, lot_merge_items_service, lot_merge_service | — | common/window_utils, production/lot_progress_window |
 | production/lot_progress_window.py | lot_merge_items_service, lot_status_remarks, lot_status_service, production_report_service, production_service | — | common/lot_row_style, common/window_utils, loading_window, production/lot_merge_window※ |
 | production/production_import_staging_window.py | lot_merge_service, lot_status_service, production_entry_service, production_import_service, production_service, staging_eligibility | kitting_plan, production, production_import_staging | common/color_legend, common/highlight_colors, common/window_utils, kitting/kitting_production_entry※, kitting/plan_candidate_dialog, production/duplicate_plan_dialog |
@@ -74,7 +76,9 @@ import の向きだけを見ているので、実際の呼び出し回数や呼�
 | db_delete_service.py | — | db_lock_service | — |
 | db_lifecycle_service.py | db_lifecycle_log, kitting_plan, operation_log | app_settings_service, backup_service, db_delete_service | — |
 | db_lock_service.py | — | — | — |
-| db_migration_carryover.py | kitting_plan, lot_merges, production | date_parsing, production_service | — |
+| db_migration_carryover.py | external_actual_rows, kitting_plan, lot_merges, production | date_parsing, production_service | — |
+| external_actual_csv.py | — | csv_parsing_common | — |
+| external_actual_service.py | external_actual_rows, kitting_plan, ng_declarations, operation_log, production, workers | csv_format_detection, external_actual_csv, lot_status_service, production_entry_service, production_import_service, production_service | — |
 | inventory_diff_service.py | inventory, operation_log, scrap_records, theoretical_inventory, wip_board_snapshot, wip_scrap_records | — | — |
 | kitting_import_service.py | board_structure_master, kitting_plan | — | — |
 | lot_merge_items_service.py | kitting_plan | — | — |
@@ -113,7 +117,7 @@ ui → services → models の一方向以外の import、models/ の外の SQL 
 
 - 層をまたいで同じファイル名: 無し（`services/lot_status_history.py` は段階4で `services/lot_status_history_service.py` に改名した。旧ファイルは re-export だけを残している）
 - `ui/*_window.py` に当てはまらないもの: `kitting_plan_import.py`, `kitting_production_entry.py`, `plan_candidate_dialog.py`, `checkable_treeview.py`, `db_delete_helper.py`, `window_utils.py`, `highlight_colors.py`, `lot_row_style.py`, `color_legend.py`
-- `services/*_service.py` に当てはまらないもの: `csv_format_detection.py`, `csv_parsing_common.py`, `date_parsing.py`, `db_migration_carryover.py`, `lot_status_history.py`（re-export だけ）, `staging_eligibility.py`
+- `services/*_service.py` に当てはまらないもの: `csv_format_detection.py`, `csv_parsing_common.py`, `date_parsing.py`, `external_actual_csv.py`, `db_migration_carryover.py`, `lot_status_history.py`（re-export だけ）, `staging_eligibility.py`
 - `models/<テーブル名>.py` に当てはまらないもの（各ファイルの CREATE TABLE から確認）: `db_common.py`（接続ヘルパー）、`master.py`（parts・final_products）、`inventory.py`（inventory_stock）、`kitting_plan.py`（kitting_plan_batches・kitting_plan_items・pending_kitting_plan_items）、`production_import_staging.py`（csv_import_batches・pending_csv_import_rows）、`production.py`（CREATE TABLE なし。production_daily は `db/schema.sql` で作る）
 
 ## 行数上位10ファイル（2026-10-09）

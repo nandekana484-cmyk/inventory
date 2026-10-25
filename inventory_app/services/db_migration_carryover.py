@@ -40,6 +40,7 @@ from models.kitting_plan import (
     init_kitting_plan_tables,
     fetch_plan_items_for_lot, fetch_plan_start_datetimes_for_lot, all_active_plan_items_exist,
 )
+from models.external_actual_rows import count_pending_rows
 from models.lot_merges import copy_lot_merge_rows, list_lot_merges
 from models.production import (
     replace_daily_result,
@@ -430,6 +431,7 @@ def carry_over_incomplete_lots(old_db_path: str, new_db_path: str, imported_by: 
             {"member_lot": str, "target_lot": str, "carried_lot": str},
             ...
         ],
+        "external_pending_rows_not_copied": int,  # 引き継ぎ元の現場CSVの登録待ち（external_actual_rows の pending）の行数。引き継がない（警告だけ）
         "lots_with_no_items_to_copy": [lot_no, ...],  # 2026-10-01追加。
                                                # 全ての計画が50日超過で除外され、
                                                # 結果的に今回コピー対象の計画が
@@ -453,6 +455,7 @@ def carry_over_incomplete_lots(old_db_path: str, new_db_path: str, imported_by: 
                 production_rows = _fetch_production_daily_for_lot(source_lot["lot_no"], source_lot["kitting_list_nos"])
                 lots_data.append((source_lot, plan_items, production_rows))
         merge_rows = list_lot_merges()
+        external_pending_rows = count_pending_rows()        # 現場CSVの登録待ちは引き継がない。数だけ知らせる
     finally:
         # 読み取りフェーズの成否に関わらず、以後は新DBを「現在のDB」とする
         # （new_db_pathは呼び出し元が既に作成済みで、引き継ぎの成否によらず
@@ -472,6 +475,7 @@ def carry_over_incomplete_lots(old_db_path: str, new_db_path: str, imported_by: 
         "lots_with_no_items_to_copy": [],
         "lot_merges_copied": 0,
         "lot_merges_not_copied": [],
+        "external_pending_rows_not_copied": external_pending_rows,
     }
 
     source_label = f"carry_over:{os.path.basename(os.path.dirname(old_db_path)) or old_db_path}"
