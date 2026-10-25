@@ -88,6 +88,7 @@
 | 版 | ファイル | 内容 | 追加 |
 |---|---|---|---|
 | 14 | `db/migrations/m014_add_lot_merges.py` | ロット統合の表 `lot_merges` とインデックスを足す（既存のデータは変えない。D-145） | 2026-10-15（2.0.0 予定） |
+| 15 | `db/migrations/m015_add_external_actual_tables.py` | 現場実績CSVの登録待ちの表 `external_actual_batches`・`external_actual_rows` とインデックス2つを足す（既存のデータは変えない。`models/external_actual_rows.py`） | 2026-10-25（4.0.0 予定） |
 
 ### 開けなかったとき・適用に失敗したとき
 

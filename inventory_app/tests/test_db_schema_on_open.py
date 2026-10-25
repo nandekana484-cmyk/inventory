@@ -86,16 +86,16 @@ def test_switch_to_current_version_db_has_no_extra_dialog(host, current_db):
 
 
 def test_switch_to_unversioned_baseline_db_stamps_13(host, current_db):
-    """版の記録が無い基準の形の DB は、13 を書いてから本番のマイグレーション（014〜）を当てる（D-145 で 014 が入った）。"""
+    """版の記録が無い基準の形の DB は、13 を書いてから本番のマイグレーション（014〜）を当てる（D-145 で 014、現場実績CSVで 015 が入った）。"""
     target = _make_db("V0")
     _set_version(target, 0)
     _switch(host, "V0")
     assert config.DB_PATH == target
-    assert _version(target) == LATEST_VERSION == 14
+    assert _version(target) == LATEST_VERSION == 15
     backups = sv.list_migration_backups(target)
-    assert len(backups) == 1 and ".bak_v13_to_v14_" in backups[0]
+    assert len(backups) == 1 and ".bak_v13_to_v15_" in backups[0]
     (m1, m2) = [m[2] for m in _messages(host)]
-    assert m1.startswith("データベースを新しい形に更新しました（版 13 → 14）。") and backups[0] in m1
+    assert m1.startswith("データベースを新しい形に更新しました（版 13 → 15）。") and backups[0] in m1
     assert m2 == "データベースを切り替えました。"
 
 

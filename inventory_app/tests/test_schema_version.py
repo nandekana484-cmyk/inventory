@@ -93,8 +93,9 @@ def db_path(tmp_path, monkeypatch):
 
 def test_production_migrations():
     assert production_migrations.BASELINE_VERSION == 13
-    assert production_migrations.LATEST_VERSION == 14
-    assert [m.__name__ for m in production_migrations.load_migrations()] == ["db.migrations.m014_add_lot_merges"]
+    assert production_migrations.LATEST_VERSION == 15
+    assert [m.__name__ for m in production_migrations.load_migrations()] == [
+        "db.migrations.m014_add_lot_merges", "db.migrations.m015_add_external_actual_tables"]
 
 
 def test_validate_migrations_detects_gaps():
