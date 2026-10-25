@@ -22,7 +22,7 @@ from models.production_side_master import (
 from models.operation_log import log_operation
 from models.kitting_plan import (
     find_master_plan_discrepancies, find_unregistered_production_side_file_nos,
-    find_registered_file_nos_missing_line_combinations, list_mounting_lines_by_file_no,
+    list_mounting_lines_by_file_no,
 )
 from services.csv_parsing_common import open_csv_with_fallback
 from ui.loading_window import LoadingWindow
@@ -261,9 +261,6 @@ class ProductionSideMasterWindow(tk.Toplevel):
         ).pack(side=tk.LEFT, padx=(0, 5))
         ttk.Button(
             check_frame, text="マスター未登録のファイルNoを確認", command=self.on_show_unregistered,
-        ).pack(side=tk.LEFT, padx=(0, 5))
-        ttk.Button(
-            check_frame, text="実装ライン単位の未登録組み合わせ（参考情報）", command=self.on_show_missing_lines,
         ).pack(side=tk.LEFT)
 
         filter_frame = ttk.Frame(self, padding=(10, 5, 10, 0))
@@ -1036,38 +1033,3 @@ class ProductionSideMasterWindow(tk.Toplevel):
         btn_frame.pack(fill=tk.X)
         ttk.Button(btn_frame, text="CSV出力", command=_export).pack(side=tk.LEFT)
         ttk.Button(btn_frame, text="閉じる", command=win.destroy).pack(side=tk.RIGHT)
-
-    def on_show_missing_lines(self):
-        """
-        参考情報（判定には使わない。D-9x）: ファイルNoは登録があるが、計画データ上のこの実装ラインには登録が無い組み合わせを一覧表示する。
-        """
-        missing = find_registered_file_nos_missing_line_combinations()
-        win = tk.Toplevel(self)
-        win.title("生産面マスタ：実装ライン単位の未登録組み合わせ（参考情報）")
-        win.geometry("520x420")
-        center_window(win, self)
-
-        ttk.Label(
-            win, padding=10,
-            text=(
-                f"ファイルNo自体は登録済みだが、計画データ上のこの実装ラインには"
-                f"登録が無い組：{len(missing)}件\n"
-                "（参考情報です。ファイルNo単位の判定（片面の製品/面2待ち/生産面マスター未登録）には使いません。）"
-            ),
-            wraplength=480, justify=tk.LEFT,
-        ).pack(fill=tk.X)
-
-        cols = ("setup_file_no", "mounting_line")
-        tree = ttk.Treeview(win, columns=cols, show="headings")
-        tree.heading("setup_file_no", text="セットアップファイルNo")
-        tree.heading("mounting_line", text="実装ライン")
-        tree.column("setup_file_no", width=200, anchor=tk.W)
-        tree.column("mounting_line", width=160, anchor=tk.W)
-        vsb = ttk.Scrollbar(win, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=vsb.set)
-        vsb.pack(side=tk.RIGHT, fill=tk.Y)
-        tree.pack(expand=True, fill=tk.BOTH, padx=10, pady=(0, 10))
-        for item in missing:
-            tree.insert("", tk.END, values=(item["setup_file_no"], item["mounting_line"]))
-
-        ttk.Button(win, text="閉じる", command=win.destroy).pack(pady=(0, 10))

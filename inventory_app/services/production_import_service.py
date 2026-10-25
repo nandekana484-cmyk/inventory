@@ -1,26 +1,19 @@
 # services/production_import_service.py
 """
-実績CSV（lot_no + 製品名ベース）を取り込み、production_daily へ自動登録するサービス。
+実績CSV（lot_no + 製品名ベース）を解析し、登録待ちへ取り込むサービス（登録そのものは行わない）。
 
 CSVフォーマットは未確定のため、services.csv_parsing_common（元は
 services.master_import_service内にあったが、マスタインポート画面削除時に
 共有ユーティリティとして切り出された）と同様に、COLUMN_MAP_PRODUCTION +
 parse_csv_generic による列名ゆらぎ吸収構造を採用する。
 CSVには kitting_list_no が存在しないため、lot_no + 製品名（表記ゆらぎ許容）で
-kitting_plan_items を特定し（models.kitting_plan.resolve_plan_by_lot_and_name）、
-確定できた行のみ既存の services.production_service.register_daily_result() で保存する。
+kitting_plan_items の候補を探す（models.kitting_plan.find_matching_plan_items）。
 """
 from datetime import datetime
 
 from services.csv_parsing_common import parse_csv_generic
-from services.production_service import (
-    register_daily_result,
-    overwrite_daily_result,
-    DailyResultAlreadyExists,
-)
 from models.kitting_plan import (  # normalize_product_name は段階4で models へ移した（ここから re-export する）
     normalize_product_name,
-    resolve_plan_by_lot_and_name,
     find_matching_plan_items,
     list_active_plan_items,
 )
@@ -87,11 +80,10 @@ def group_active_plan_items_by_lot(include_completed=False):
     計画こそ「既に登録済み」判定の対象になるため。詳細はis_already_
     registered()のdocstring参照）。
 
-    import_production_csv()は、CSVの行数分models.kitting_plan.
-    find_matching_plan_items()を呼ぶが、以前はその内部で毎回
+    CSVの行数分models.kitting_plan.find_matching_plan_items()を呼ぶと、その内部で毎回
     list_active_plan_items()（現在アクティブな全計画のフルスキャン＋累計実績の
-    一括集計）が実行されており、CSV行数に比例して同じ全件取得が繰り返される
-    N+1状態だった（実測：2000行で約61秒）。services.production_service.
+    一括集計）が実行され、CSV行数に比例して同じ全件取得が繰り返される
+    N+1状態になる（実測：2000行で約61秒）。services.production_service.
     list_incomplete_lots()で採用済みの「1回だけ全件取得→Python側でlot_noごとに
     グルーピング」と同じアプローチをこちらにも適用し、ループに入る前に本関数で
     1回だけ計画一覧を取得する。
@@ -311,185 +303,6 @@ def is_already_registered(lot_no, product_name, daily_qty, plan_items_by_lot=Non
     }
 
 
-def import_production_csv(file_path, default_worker_id=None):
-    """
-    実績CSVを解析し、lot_no + 製品名で計画（kitting_plan_items）を特定して
-    production_daily へ登録する（拡張ポイント：CSVフォーマット確定後も
-    COLUMN_MAP_PRODUCTION の調整のみで対応できる構造）。
-
-    必須列：lot_no, product_name, daily_qty（欠けている・空の行は警告してスキップ）
-    任意列：
-      - report_date（省略時は register_daily_result() のデフォルト＝当日）
-      - worker_id（省略時は default_worker_id を使用。呼び出し側でログイン作業者等を渡す想定）
-
-    lot_no + 製品名で計画を一意に特定できなかった行は保存せず、unmatched に集める。
-    register_daily_result() へは、この行の計画特定に使ったlot_noをそのまま渡す
-    （kitting_list_no単体では計画を一意に特定できないケースが実DBに存在するため、
-    register_daily_result()はkitting_list_no・lot_noの両方を必須で受け取る仕様）。
-
-    上書き（「1計画=1レコード、常に上書き」ルール）：
-    register_daily_result(check_duplicate=True) を呼び、その計画（kitting_list_no・
-    lot_no）に既存レコードがあれば（report_dateを問わず）DailyResultAlreadyExists
-    が送出されるので、overwrite_daily_result() で上書きする。CSVに同一計画の行が
-    複数回（異なるreport_dateを含む）出現した場合も、後の行が前の行を上書きする。
-
-    反対側の面には登録しない（面1への自動入力は廃止。D-169）。
-
-    register_daily_result()/overwrite_daily_result() が例外を送出した行（計画は
-    特定できたが登録に失敗した行。例：処理中に計画が削除された等）は、その行だけを
-    エラーとして errors に記録し、残りの行の処理は継続する（1行の異常で全行の結果が
-    失われないようにするため）。
-
-    戻り値：{
-        "imported": [{"lot_no", "product_name", "kitting_list_no", "daily_qty",
-                       "worker_id", "report_date", "app_cumulative_qty"}, ...],
-        "unmatched": [{"lot_no", "product_name", "report_date", "worker_id",
-                        "daily_qty", "reason"}, ...],
-        "warnings": [CSV解析時点の警告メッセージ（必須列欠落・数値変換エラー等）],
-        "errors": [{"row", "lot_no", "product_name", "kitting_list_no", "daily_qty",
-                     "worker_id", "report_date", "error"}, ...]
-                    （register_daily_result()/overwrite_daily_result() 呼び出し時、
-                     または反対側の面への連動登録時に例外が発生した行。
-                     既存呼び出し元との後方互換のため追加したキー。
-                     未対応の呼び出し元は単に参照しないだけで動作に影響しない）,
-    }
-    """
-    rows = parse_csv_generic(file_path, COLUMN_MAP_PRODUCTION)
-
-    imported = []
-    unmatched = []
-    warnings = []
-    errors = []
-    required_column_skipped_count = 0
-
-    # list_active_plan_items()（現在アクティブな全計画のフルスキャン＋累計実績の
-    # 一括集計）をCSVの行数分繰り返し呼ぶN+1を避けるため、ループに入る前に1回だけ
-    # 呼び、lot_noごとにグルーピングしておく（group_active_plan_items_by_lot()参照）。
-    plan_items_by_lot = group_active_plan_items_by_lot()
-
-    for i, row in enumerate(rows, start=2):  # 1行目はヘッダーのためCSV上の行番号に合わせる
-        lot_no = row.get("lot_no")
-        product_name = row.get("product_name")
-        daily_qty_raw = row.get("daily_qty")
-
-        if not lot_no or not product_name:
-            warnings.append(f"{i}行目: lot_no または product_name が空のためスキップしました。")
-            required_column_skipped_count += 1
-            continue
-
-        if daily_qty_raw in (None, ""):
-            warnings.append(f"{i}行目: daily_qty が空のためスキップしました。")
-            required_column_skipped_count += 1
-            continue
-
-        try:
-            daily_qty = float(daily_qty_raw)
-        except (TypeError, ValueError):
-            warnings.append(f"{i}行目: daily_qty「{daily_qty_raw}」を数値に変換できないためスキップしました。")
-            continue
-
-        lot_no = str(lot_no).strip()
-        report_date = row.get("report_date") or None
-        worker_id = row.get("worker_id") or default_worker_id or "CSV_IMPORT"
-
-        product_name_normalized = normalize_product_name(product_name)
-        kitting_list_no = resolve_plan_by_lot_and_name(lot_no, product_name_normalized, plan_items_by_lot)
-        if kitting_list_no:
-            # 統合した組では、候補の計画が CSV と別の元のロットのことがあるので、計画の元のロットNoで登録する（D-161）。
-            _, matched_plans = find_matching_plan_items(lot_no, product_name_normalized, plan_items_by_lot)
-            lot_no = match_lot_of(next(p for p in matched_plans if p["kitting_list_no"] == kitting_list_no), lot_no)
-
-        if not kitting_list_no:
-            candidates, matched = find_matching_plan_items(lot_no, product_name_normalized, plan_items_by_lot)
-            if not candidates:
-                reason = "計画が見つからない（該当lot_noの計画なし）"
-            elif not matched:
-                reason = "製品名ゆらぎ（一致する基板名が見つからない）"
-            else:
-                reason = "複数候補あり（lot_no+製品名で一意に特定できない）"
-
-            unmatched.append({
-                "lot_no": lot_no,
-                "product_name": product_name,
-                "report_date": report_date,
-                "worker_id": worker_id,
-                "daily_qty": daily_qty,
-                "reason": reason,
-            })
-            continue
-
-        try:
-            # lot_noは、この行の計画特定に使ったのと同じ値をそのまま渡す（実DBで
-            # 同一kitting_list_noが複数の異なるlot_noにまたがって存在するケースが
-            # 478件確認されているため、register_daily_result()はkitting_list_noに
-            # 加えてlot_noも必須で受け取る仕様になった）。
-            # check_duplicate=Trueにより、その計画（kitting_list_no・lot_no）に
-            # 既存レコードがあれば（report_dateを問わず）DailyResultAlreadyExists
-            # が送出されるので、overwrite_daily_result()で上書きする
-            # （「1計画=1レコード、常に上書き」ルール。except DailyResultAlready
-            # Existsは、Exceptionのサブクラスのためexcept Exceptionより前に置く
-            # 必要がある）。
-            new_cumulative = register_daily_result(
-                kitting_list_no, lot_no, daily_qty, worker_id, report_date, check_duplicate=True,
-            )
-        except DailyResultAlreadyExists:
-            try:
-                new_cumulative = overwrite_daily_result(kitting_list_no, lot_no, daily_qty, worker_id, report_date)
-            except Exception as e2:
-                errors.append({
-                    "row": i,
-                    "lot_no": lot_no,
-                    "product_name": product_name,
-                    "kitting_list_no": kitting_list_no,
-                    "daily_qty": daily_qty,
-                    "worker_id": worker_id,
-                    "report_date": report_date,
-                    "error": str(e2),
-                })
-                continue
-        except Exception as e:
-            errors.append({
-                "row": i,
-                "lot_no": lot_no,
-                "product_name": product_name,
-                "kitting_list_no": kitting_list_no,
-                "daily_qty": daily_qty,
-                "worker_id": worker_id,
-                "report_date": report_date,
-                "error": str(e),
-            })
-            continue
-
-        imported.append({
-            "lot_no": lot_no,
-            "product_name": product_name,
-            "kitting_list_no": kitting_list_no,
-            "daily_qty": daily_qty,
-            "worker_id": worker_id,
-            "report_date": report_date,
-            "app_cumulative_qty": new_cumulative,
-        })
-
-    # 区切り文字・列名の不一致でヘッダーが正しく認識されないと、全行が
-    # 「lot_noまたはproduct_nameが空」「daily_qtyが空」として一律にスキップ
-    # されてしまう（実際に発生した事例：ui.master.parts_attributes_import_window.py
-    # と同種のパターン）。これに気づきやすくするため、必須列の空欄による
-    # スキップが読み込み行数の9割以上を占める場合は、通常の行単位警告とは別に、
-    # 列名の確認を促す注意喚起メッセージを warnings の先頭に追加する。
-    total_rows = len(rows)
-    if total_rows > 0 and required_column_skipped_count / total_rows >= 0.9:
-        warnings.insert(
-            0,
-            f"※ 読み込んだ{total_rows}行中{required_column_skipped_count}行"
-            f"（{required_column_skipped_count / total_rows * 100:.0f}%）が"
-            "lot_no・product_name・daily_qtyのいずれかの空欄でスキップされました。"
-            "CSVの列名がCOLUMN_MAP_PRODUCTIONの候補列名と一致していない可能性が"
-            "あります。列名をご確認ください。",
-        )
-
-    return {"imported": imported, "unmatched": unmatched, "warnings": warnings, "errors": errors}
-
-
 # ステージング一覧（ui.production.production_import_staging_window._load_staged_rows_
 # from_db()が、同モジュールのevaluate_auto_register_eligibility()を使って
 # 組み立てる"status"）の表示ラベル。UI側（ui/production_import_staging_
@@ -539,16 +352,10 @@ def parse_production_csv_for_staging(file_path, default_worker_id=None):
     """
     実績CSVを解析し、production_daily へは書き込まず、
     models.production_import_staging.pending_csv_import_rows へ永続化する
-    （「確認・選択・転記」方式の実績取込一覧向け）。import_production_csv()
-    （即時登録版）とは別のエントリーポイントとして新設した。
-    import_production_csv()自体は後方互換のため変更していない（本関数と
-    同種の「実績0件の誤判定」は無い。import_production_csv()はis_already_
-    registered()を使わず、register_daily_result(check_duplicate=True)の
-    例外ハンドリングで無条件に登録・上書きする設計のため。2026-10-06確認）。
+    （「確認・選択・転記」方式の実績取込一覧向け）。
 
     必須列の検証（lot_no・product_name・daily_qtyの空欄チェック、daily_qtyの
-    数値変換）・9割スキップ時の注意喚起は import_production_csv() と同じ
-    ロジックを踏襲する。
+    数値変換）・9割スキップ時の注意喚起を行う。
 
     以前は本関数がここでmodels.kitting_plan.find_matching_plan_items()を
     呼んで候補（candidates/matched）・状態（status）を計算していたが、

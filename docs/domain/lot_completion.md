@@ -8,7 +8,7 @@
 ## 実績の登録
 
 - 1計画（kitting_list_no・lot_no）＝1レコード、常に上書き。以前は当日分だけを重複・削除の対象にしていたが、日付を問わず対象にした
-- `register_daily_result(check_duplicate=True)`: 既存の実績があれば追記せず `DailyResultAlreadyExists` を送出する。CSV 自動取込（`import_production_csv()`）は check_duplicate=False（無条件に追記）のまま。手入力（`KittingProductionEntryWindow`）は確認ダイアログで既存の有無を先に見せているので、例外を使わず register / overwrite を呼び分ける
+- `register_daily_result(check_duplicate=True)`: 既存の実績があれば追記せず `DailyResultAlreadyExists` を送出する。（旧方式の CSV 即時取込 `import_production_csv()` は check_duplicate=False だったが、D-186 で削除した。）手入力（`KittingProductionEntryWindow`）は確認ダイアログで既存の有無を先に見せているので、例外を使わず register / overwrite を呼び分ける
 - 既存レコードが複数ある（仕様変更前の過去データ）ときは、最も新しい日付のものを使う
 - `overwrite_daily_result()` の report_date: None を今日にせず、そのまま `replace_daily_result()` に渡して既存行の日付を引き継ぐ（2026-09-29 の調査で、手で数量を直して再登録するたびに CSV 由来の正しい日付が今日に書き換わる問題が見つかったため）。既存行が無ければ今日
 - 反対側の面には実績を書かない（2026-10-19、D-169）。以前は面2の登録で面1へ同じ数量を自動入力していた（`register_opposite_side_daily_result()`、D-113）が、面2があれば面1の実績を計算に使わなくなった（D-167）ので削除した。置き換え前の確認（D-126、`preview_opposite_side_overwrite(s)()`）も削除した

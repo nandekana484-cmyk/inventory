@@ -1406,7 +1406,7 @@ D-81の修正（候補が複数ある場合も、いずれか1件の実績合計
 | D-141 | フォルダ構成を整理した。`ui/` は main_window・login_window・loading_window だけを直下に置き、ほかを common・kitting・production・inventory・ng_wip・reports・master・system に分けた。旧位置に互換用のファイルは残さない（ファイルが二重になり、読む人や AI が迷うため）。段階1〜5で別のファイルへ移した関数は、旧位置に re-export か別名を残した（例外は `docs/migrate_to_refactored.md`）。単発スクリプトは `inventory_app/scripts/`、マイグレーションの記録は `db/legacy/` | CLAUDE.md「フォルダの役割」、docs/architecture.md、docs/migrate_to_refactored.md |
 | D-142 | 開発の進め方を `CLAUDE.md`（Claude Code が毎回読む。80行以内）と `docs/` にまとめた。リファクタリングでは挙動を変えず、移す前の動きをテストで固定してから移す。「コメント整理」「ファイル移動」「挙動変更」を同じコミットに混ぜない。コミットはテストが全件成功したときだけ行う（段階6で、テストが1件失敗したままコミットしたことがあったため追加） | CLAUDE.md「作業ルール」 |
 | D-143 | `tests/test_checkbox_filter_popup.py` がまれに「Windows fatal exception: access violation」で強制終了した件（§49.4）の原因と直し方（2026-10-15）。原因：テストがポップアップを開いた直後に、Tk のイベントを処理しないまま（`invoke()` で）閉じていたこと。このプロセスに OS のフォーカスが無い状態（新しいウィンドウが前面に出られない状態。いつ起きるかは利用者の操作に左右され、テストからは選べない）でだけ、次の `update()` の中で Tk が落ちる。同じ状態で、`popup.focus_get()` が None になり、最初の3件（`test_popup_layout_and_values`）も失敗していた（強制終了の原因ではない。最初の3件を外しても落ちた）。直し方（テストだけ。`ui/common/column_filter.py` は変えていない）：(1) ポップアップを開いた後に `popup.update()` を呼ぶ（アプリではイベントループが回っているので、処理前に閉じることは起きない）。(2) フォーカスの確認を、OS のフォーカスに左右されない「検索欄に `focus_set()` したか」に変えた（`focus_lastfor()` も同じ状態で失敗したため使わない）。確認：直す前はこのPCで、このファイル単独 40回中32回・全体 5回中4回が強制終了。直した後はこのファイル単独 50回・全体 10回で、強制終了・失敗とも0件（各回の直前に直す前のコピーを流し、単独では50回中48回、全体では10回すべてで、そのコピーが落ちる状態だったことを確かめた） | 本ファイル §51.1 |
-| D-144 | 今後の課題（2026-10-15、未着手）：`inventory_app/scripts/` の古い単発スクリプト10本（check_*・delete_*・dump_schema・list_plan_batches_detail・verify_failed_batch_deletion）は、`if __name__ == "__main__"` が無く、import しただけで `config.DB_PATH` の DB につないで SQL を実行する。うち `delete_failed_batches.py`・`delete_test_batches.py` は DELETE して commit する。誤って実行しないための整理（削除、または実行時に対象の DB を示して確認を求める形への変更）を検討する。`check_code_unchanged.py`・`check_db_versions.py` は対象外（import しただけでは何もしない） | 本ファイル §51.2 |
+| D-144 | **解決（2026-10-25、D-186 で10本を削除した）**。今後の課題（2026-10-15、未着手だった）：`inventory_app/scripts/` の古い単発スクリプト10本（check_*・delete_*・dump_schema・list_plan_batches_detail・verify_failed_batch_deletion）は、`if __name__ == "__main__"` が無く、import しただけで `config.DB_PATH` の DB につないで SQL を実行する。うち `delete_failed_batches.py`・`delete_test_batches.py` は DELETE して commit する。誤って実行しないための整理（削除、または実行時に対象の DB を示して確認を求める形への変更）を検討する。`check_code_unchanged.py`・`check_db_versions.py` は対象外（import しただけでは何もしない） | 本ファイル §51.2 |
 | D-145 | ロット統合（D-136）の第1段階（2026-10-15）。統合の情報を月次DB の新しい表 `lot_merges` に保存する（`member_lot` 主キー・`target_lot`・`merged_at`・`merged_by`・`note`。1行が「統合されるロット（例 123456-）→ 統合先（123456）」）。既存の DB にはマイグレーション 014（`db/migrations/m014_add_lot_merges.py`、段階7b の仕組みで最初の本番のマイグレーション）で足し、`LATEST_VERSION` を 14 にした。014 は表とインデックスを作るだけで、既存のデータは書き換えない。新しく作る DB は `db/schema.sql` の同じ CREATE 文で作る（2つの CREATE 文が一字一句同じことをテストで確かめる）。「member_lot は target_lot の末尾に - を1つ付けたもの」と「target_lot の末尾は - でない」は、表の CHECK と書き込む関数（`models/lot_merges.py`）の両方で確かめる。第1段階では完成数・ロット進捗・引落・照合などの集計に反映しない。版 14 の DB は v1.3.0 以前のアプリでは開けない（「アプリを最新版に更新してください」） | 本ファイル §52、docs/domain/lot_merge.md、docs/db.md |
 | D-146 | ロット統合の共通の関数を `services/lot_merge_service.py` に置いた。`load_lot_merge_map()` が表を1回だけ読み、`target_of()`（ロットNo. → 統合後のロットNo.）・`members_of()`（統合後 → 統合しているロットの一覧）を返す（集計1回につき1つ作って使い回す）。統合（`merge_lots()`）・解除（`unmerge_lot()`）は、条件の確認（末尾「-」1つの形・両方に有効な計画・未統合）のうえで、統合の行と操作履歴（「ロット統合」「ロット統合解除」）を1つのトランザクションで書く（`models/operation_log.insert_operation_log()` を足した）。既定DB（未選択）では DB に触れない。第1段階では、既存の集計からは呼ばない | 本ファイル §52.3 |
 | D-147 | ロット統合の画面（`ui/production/lot_merge_window.py`）を、ロット進捗チェックの「ロット統合」ボタンから開く。候補は、今の月次DB の有効な計画に X と X- の両方があるロットの組と、統合済みの組。組ごとに、基板名・ファイルNo.・面・発注数・実績・状態を、今の計算のまま（`evaluate_lot_status()`、統合しない計算）並べる。統合済みと未統合を「統合」列と背景色で区別する。統合の確認には「統合すると、123456- の実績の日付の引落が、後から増えることがあります（例：7/15 に +1）」と「この版では集計にはまだ反映されません」、解除の確認には「統合している間に登録した実績などはそのまま残ります」を出す。操作できる人は限定しない。在庫値出力済みの DB では、ほかの操作と同じ警告を出す（D-58。禁止はしない） | 本ファイル §52.4 |
@@ -1448,6 +1448,7 @@ D-81の修正（候補が複数ある場合も、いずれか1件の実績合計
 | D-183 | 構成基板数マスターの今後の課題（2026-10-20、利用者の決定。今回は記録だけ）：(1) 1件ずつの編集（生産面マスターと同じやり方。画面で行を足す・値を変える・消すを選んで保存する）、(2) 取り込む前に、ほかのロットへの影響を示す（例「202196 が一致→不一致」。構成基板数を変えると、ロット進捗チェック・日報・月報の判定が変わるロットがあるため） | 本ファイル §61 |
 | D-184 | 利用者の決定（2026-10-20、§61 の報告への回答、§61.4）：(1) ロット進捗チェックの「不足」の備考で、計画のファイルNoと基板名の内訳が3件を超えるときは、先頭（ファイルNo順）の3件だけを出し、残りを「ほかN件」とまとめる（例「構成基板数 21 に対し、計画のファイルNo は 12 件（0735：…、0736：…、0737：…、ほか9件）」。件数は全件の数のまま。3件以下は今のまま。`SHORTFALL_DETAIL_MAX_FILES`）、(2) 構成基板数マスターの書き出しの既定のファイル名 board_structure_master.csv と見出し「構成数」は今のままでよい（D-182）、(3) 既存の実績がある計画への右クリックの登録が、「断る」から重複の確認（合計して登録／手入力で対応／キャンセル）に変わったこと（D-176）は、このままでよい（上書きの選択肢は無いので） | 本ファイル §61 |
 | D-185 | .exe v3.1.0 のビルド（2026-10-20、§62）。機能の追加なので2桁目を上げた（`APP_VERSION = "3.1.0"`、`BUILD_DATE = "2026-10-20"`）。含まれる変更は D-176〜D-184（§61）。DB の形は版 14 のままで、3.0.0 と同じデータを使える。.exe の SHA-256 は `741549BA46D9224CFD254B1BD6CC10663B1F1341E94925DC40E0B9C4C480A0D1`（130,891,096バイト）。.spec は変えていない。dist の退避は `C:\work\inventory_dist_backup_20261020_094116_before_v3_1`（v3.0.0 の .exe と実データの DB・app_settings.json） | 本ファイル §62 |
+| D-186 | 使っていない機能とスクリプトを削った（2026-10-25、§63、利用者の決定にもとづく。`docs/feature_inventory.md` の K1・K2・K3・K6（残した）・K7・D9）。(1) K1 `import_production_csv()`（約177行。D-7 の「2系統の併存」は終わり、標準の登録待ち方式 `parse_production_csv_for_staging()` だけが残る）と、そのためだけの import 4つ。(2) K2 `ui/production/unmatched_production_window.py`。(3) K3 古い単発スクリプト10本（D-144 を解決）。(4) K7 ルートの `check_db.py`（7月の DB を決め打ちで見る）を削除し、`check_env.py` を「今の .exe が使う部品（tkcalendar・babel・reportlab）と、テスト・ビルドの部品（pytest・PyInstaller）」だけ確かめる形に直した（足りないと終了コード 1）。(5) D9 `find_registered_file_nos_missing_line_combinations()` と、生産面マスターの「実装ライン単位の未登録組み合わせ（参考情報）」ボタン・`on_show_missing_lines()`。(6) K6 `scripts/make_lot_merge_sample_db.py` は**削らない**：`tests/test_lot_merge.py` が importlib で読み込み、その fixture `sample_db` をロット統合・訂正のテストが使っている（コードのコメントでこのスクリプトに触れるテストは5本）。削った行数は約850行（追加48・削除896）。挙動の変更は、画面の1ボタンが無くなったことだけ。残したもの（利用者の決定）：E3・C8・K8。**削除で使い手が無くなったが、この決定の範囲外のため残した関数**：`models/kitting_plan.py::resolve_plan_by_lot_and_name()`、`models/production_side_master.py::get_second_side_status()`（呼び出しゼロ。次の整理の候補） | 本ファイル §63 |
 
 ### 30.1 Shift+Sの検証結果（D-84）
 
@@ -3454,3 +3455,35 @@ D-155 の一覧と、前回の設計案のお勧め（統合したロットで�
 1. アプリを閉じる（ほかのPCで開いていないことも確かめる）
 2. `dist\InventoryApp.exe` を、退避した v3.0.0（`C:\work\inventory_dist_backup_20261020_094116_before_v3_1\InventoryApp.exe`）に置き換える
 3. DB の形は同じ（版 14）なので、3.1.0 で入力したデータをそのまま開ける。「合計して登録」した実績は1件の実績として残る。ロット進捗チェックの備考・凡例・書き出しのボタンは無くなる
+
+## 63. 使っていない機能とスクリプトの削除（2026-10-25、D-186）
+
+`docs/feature_inventory.md` の「要検討」11件のうち、利用者の決定で「削る」とされたものを削った（`main` の de2f528 から。dist のビルドと `version.py` は触っていない）。
+
+### 63.1 削る前の参照の確認
+
+モジュール名と関数名の両方で、`git grep`（コード・.spec・テスト・文書）で全件確かめた。
+
+- `import_production_csv`：コードからの呼び出しはゼロ（コメント・docstring・文書に名前が残るだけ）。テストも使っていない
+- `unmatched_production_window`・`UnmatchedProductionWindow`：自分自身のファイルだけ。.spec にも出てこない
+- K3 の10本：コード・テスト・.spec からの参照はゼロ。文書（CANONICAL・CLAUDE.md・docs）にだけ名前がある
+- `find_registered_file_nos_missing_line_combinations`：生産面マスターの画面1か所だけ
+- `check_db.py`：文書に名前が無い（コードからの参照ゼロ）
+- **`make_lot_merge_sample_db`（K6）：`tests/test_lot_merge.py` が importlib で読み込み、その fixture をほかのテストも使っている** → 削らず、報告した
+
+### 63.2 削ったもの・直したもの
+
+| 項目 | 内容 |
+|---|---|
+| K1 | `services/production_import_service.py` の `import_production_csv()`（約177行）と、それだけが使っていた import（`register_daily_result`・`overwrite_daily_result`・`DailyResultAlreadyExists`・`resolve_plan_by_lot_and_name`）。モジュールの説明と、この関数に触れていたコメントを今の動きに合わせた |
+| K2 | `ui/production/unmatched_production_window.py`（56行） |
+| K3 | `scripts/` の check_failed_batch_references・check_kitting_plan_schema・check_production_daily_schema・check_test_batch_references・check_test_versions・delete_failed_batches・delete_test_batches・dump_schema・list_plan_batches_detail・verify_failed_batch_deletion（合わせて518行） |
+| K7 | `check_db.py` を削除。`check_env.py` を、今の .exe とテスト・ビルドに必要な部品だけ確かめる形に直した |
+| D9 | `models/kitting_plan.py` の関数1つと、生産面マスター画面のボタン・`on_show_missing_lines()` |
+| 残した | K6、E3、C8、K8（表は記録だけ）。PDF読み取り（J1）と K9 は次のコミット（D-187） |
+
+### 63.3 検証
+
+- pytest：削る前 610 件成功、削った後 610 件成功（出力はファイルに書き、終了コード 0 と集計行で確かめた）
+- 隔離環境（`config.APP_DATA_DIR`・`DB_PATH`・`MASTER_DB_PATH` を一時フォルダに差し替え）で、`MainWindow` を作り、メニューの `open_*` 14個すべてで画面を生成して開けた（import エラーなし）。画面の自動クリックはしていない
+- 既定DB（未選択）で `MainWindow` を作っただけでは、一時フォルダにファイルは1つも作られなかった

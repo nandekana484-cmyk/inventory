@@ -185,9 +185,7 @@ def get_second_side_status(setup_file_no, mounting_line):
     単位）を使うよう変更した（同じファイルNoで先行面・後行面が異なる実装
     ラインを流れることがあるため、本関数の「同じ実装ラインに後行面がある
     か」という基準では誤って「未登録」「片面」と判定してしまう、D-9x改訂
-    参照）。本関数自体は、実装ラインごとの登録状況を参考情報として個別に
-    確認する用途（find_registered_file_nos_missing_line_combinations()）の
-    ためにそのまま残す。
+    参照）。現在この関数を呼ぶ処理は無い（実装ライン単位の未登録組み合わせの表示を削ったため。D-186）。
     """
     init_production_side_master_table()
     norm_file = normalize_setup_file_no(setup_file_no)

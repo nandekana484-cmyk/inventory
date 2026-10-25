@@ -73,7 +73,7 @@ git pull --ff-only
 |---|---|
 | `ui/checkable_treeview.py`・`highlight_colors.py`・`window_utils.py`・`db_delete_helper.py` | `ui/common/` |
 | `ui/kitting_plan_import.py`・`kitting_production_entry.py`・`plan_candidate_dialog.py` | `ui/kitting/` |
-| `ui/production_import_staging_window.py`・`unmatched_production_window.py`・`daily_drawdown_window.py`・`lot_progress_window.py` | `ui/production/` |
+| `ui/production_import_staging_window.py`・`unmatched_production_window.py`（2026-10-25 に削除、D-186）・`daily_drawdown_window.py`・`lot_progress_window.py` | `ui/production/` |
 | `ui/inventory_input_window.py`・`inventory_diff_window.py`・`theoretical_inventory_import_window.py` | `ui/inventory/` |
 | `ui/ng_input_window.py`・`scrap_correction_window.py`・`wip_expansion_window.py`・`wip_scrap_correction_window.py` | `ui/ng_wip/` |
 | `ui/daily_report_window.py`・`unified_report_window.py`・`parts_ng_report_window.py`・`product_ng_report_window.py`・`wip_parts_report_window.py`・`wip_product_report_window.py` | `ui/reports/` |
@@ -87,7 +87,7 @@ import は `from ui.kitting.kitting_production_entry import KittingProductionEnt
 
 | 旧 | 新 |
 |---|---|
-| `inventory_app/check_*.py`・`delete_*.py`・`verify_*.py`・`dump_schema.py`・`list_plan_batches_detail.py` | `inventory_app/scripts/`（どれも import しただけで DB につなぐ。実行するときは対象の DB に注意） |
+| `inventory_app/check_*.py`・`delete_*.py`・`verify_*.py`・`dump_schema.py`・`list_plan_batches_detail.py` | `inventory_app/scripts/`（どれも import しただけで DB につなぐ）。2026-10-25 に10本とも削除した（D-186）ので、旧環境から持ってくる必要は無い |
 | `inventory_app/test_kitting_import.py`（単発スクリプト） | `inventory_app/tests/test_kitting_import.py`（pytest のテスト） |
 | `inventory_app/db/migrate_001.py`・`migration_002〜013_*.py` | `inventory_app/db/legacy/`（記録。実行しない） |
 | `services/lot_status_history.py` | `services/lot_status_history_service.py`（旧ファイルは re-export だけを残している） |

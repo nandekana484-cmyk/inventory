@@ -634,39 +634,6 @@ def find_unregistered_production_side_file_nos() -> list:
     return result
 
 
-def find_registered_file_nos_missing_line_combinations() -> list:
-    """
-    参考情報（判定には使わない。D-9x）: ファイルNoはマスターに登録があるが、計画データ上のこの実装ラインには登録が無い組を返す。
-    戻り値は [{"setup_file_no", "mounting_line"}, ...]（昇順）。
-    """
-    from models.production_side_master import (
-        normalize_setup_file_no, normalize_mounting_line,
-        get_second_side_status, get_second_side_status_by_file_no,
-    )
-
-    with get_connection() as con:
-        plan_rows = [dict(r) for r in con.execute(
-            "SELECT DISTINCT setup_file_no, mounting_line FROM kitting_plan_items WHERE COALESCE(is_active,1)=1"
-        )]
-
-    seen = set()
-    result = []
-    for row in plan_rows:
-        norm_file = normalize_setup_file_no(row["setup_file_no"])
-        norm_line = normalize_mounting_line(row["mounting_line"])
-        key = (norm_file, norm_line)
-        if key in seen:
-            continue
-        seen.add(key)
-        if get_second_side_status_by_file_no(norm_file) is None:
-            continue
-        if get_second_side_status(norm_file, norm_line) is None:
-            result.append({"setup_file_no": norm_file, "mounting_line": norm_line})
-
-    result.sort(key=lambda r: (r["setup_file_no"], r["mounting_line"]))
-    return result
-
-
 def list_mounting_lines_by_file_no(file_nos) -> dict:
     """
     setup_file_no ごとに、計画データにある実装ラインの一覧を返す（D-9x。未登録のファイルNoの CSV 出力で、登録すべきラインを示すため）。

@@ -58,7 +58,7 @@ from ui.common.highlight_colors import (
 from ui.common.color_legend import build_color_legend
 from ui.production.duplicate_plan_dialog import ask_duplicate_resolution, DUPLICATE_SUM, DUPLICATE_MANUAL
 
-# 「候補なし」行を CSV 出力するときの理由。import_production_csv() の unmatched の理由と同じ文言。
+# 「候補なし」行を CSV 出力するときの理由。
 REASON_NO_CANDIDATES = "計画が見つからない（該当lot_noの計画なし）"
 
 # 候補一覧の色の凡例（D-181）。値は行の色付け（_create_candidate_pane() の tag_configure）と同じ定数を使う。

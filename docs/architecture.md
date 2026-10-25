@@ -48,7 +48,6 @@ import の向きだけを見ているので、実際の呼び出し回数や呼�
 | production/lot_merge_window.py | inventory_diff_service, lot_merge_items_service, lot_merge_service | — | common/window_utils, production/lot_progress_window |
 | production/lot_progress_window.py | lot_merge_items_service, lot_status_remarks, lot_status_service, production_report_service, production_service | — | common/lot_row_style, common/window_utils, loading_window, production/lot_merge_window※ |
 | production/production_import_staging_window.py | lot_merge_service, lot_status_service, production_entry_service, production_import_service, production_service, staging_eligibility | kitting_plan, production, production_import_staging | common/color_legend, common/highlight_colors, common/window_utils, kitting/kitting_production_entry※, kitting/plan_candidate_dialog, production/duplicate_plan_dialog |
-| production/unmatched_production_window.py | — | — | common/window_utils |
 | reports/daily_report_window.py | — | board_structure_master | common/lot_row_style, common/window_utils |
 | reports/parts_ng_report_window.py | — | scrap_records | common/window_utils, reports/daily_report_window |
 | reports/product_ng_report_window.py | — | kitting_plan, scrap_records | common/window_utils, ng_wip/ng_input_window※, reports/daily_report_window |
