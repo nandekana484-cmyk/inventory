@@ -1,8 +1,4 @@
 
-# Data processing
-pandas>=2.0.0
-openpyxl>=3.1.0
-
 # Report output (PDF)
 reportlab>=4.0.0
 
@@ -12,15 +8,11 @@ tkcalendar>=1.6.1
 # Tests
 pytest>=7.4.0
 
-# Reserved for a future web API
-fastapi>=0.100.0
-uvicorn[standard]>=0.22.0
-python-dotenv>=1.0.0
-
 # Build and distribution (.exe)
 pyinstaller>=5.13.0
 
-# PDF reading and OCR. Tesseract and Poppler must be installed on the OS (see docs/setup.md).
+# PDF reading and OCR. Unfinished: not in the .exe or the menu (see PDF_OCR_FEATURE_NOTES.md).
+# Only for running the source under services/pdf_ocr_service.py. Tesseract and Poppler must be installed on the OS (see docs/setup.md).
 pdfplumber>=0.11.0
 pytesseract>=0.3.10
 pdf2image>=1.17.0

@@ -5,12 +5,11 @@ inventory_app.spec
 部品在庫管理アプリ（inventory_app）をPyInstallerで.exe化するための設定。
 
 方針（調査結果・ユーザー確定事項に基づく）：
-- Tesseract OCR本体・Poppler本体（tessdata_local含む）は同梱しない。PDF読み取り
-  機能はOS側に別途インストールされている前提のまま（PDF_OCR_FEATURE_NOTES.md
-  §3参照）。コード自体（services/pdf_ocr_service.py等）はそのまま同梱され、
-  Tesseract未インストール環境では起動時ではなく、実際にPDF読み取り機能を
-  使った時点でエラーメッセージが表示される設計（既存のtry/except、config.py
-  の TESSERACT_CMD 等のデフォルト値のみ使用）。
+- PDF読み取り（在庫照合）は未完成のため、.exeには入れない（D-187）。メニューの
+  項目と、画面までのimportを外した。ソース（services/pdf_ocr_service.py等）は
+  リポジトリに残してあり、使う部品（pdfplumber・pytesseract・pdf2image・
+  opencv・numpy）は下のexcludesで外している。再開の手順は
+  PDF_OCR_FEATURE_NOTES.md（冒頭）を参照。Tesseract・Poppler本体は、元から同梱しない。
 - --onefile形式を採用する。config.py（BASE_DIR算出部）のコメントに
   「PyInstallerのonefile形式では実行のたびにOSの一時フォルダ(sys._MEIPASS)へ
   自己展開してから動くため、__file__ではなくsys.executableを基準にする」と
@@ -69,8 +68,7 @@ version_info = VSVersionInfo(
     ],
 )
 
-# pandas・opencv-python-headless・reportlab・babel（tkcalendarの依存）・
-# pdfplumber（pdfminer.six等を内部で使う）は、通常のimport解析だけでは
+# reportlab・babel（tkcalendarの依存）・tkcalendarは、通常のimport解析だけでは
 # 取りこぼされやすいデータファイル・隠れたサブモジュールを持つため、
 # collect_all()でデータ・バイナリ・隠れimportをまとめて収集する
 # （PyInstaller公式ドキュメント推奨の対応方法）。
@@ -78,7 +76,7 @@ datas = []
 binaries = []
 hiddenimports = []
 
-for pkg in ("pandas", "cv2", "reportlab", "babel", "pdfplumber", "pdfminer", "tkcalendar"):
+for pkg in ("reportlab", "babel", "tkcalendar"):
     pkg_datas, pkg_binaries, pkg_hiddenimports = collect_all(pkg)
     datas += pkg_datas
     binaries += pkg_binaries
@@ -103,27 +101,22 @@ hiddenimports += [
     "tkinter.filedialog",
     "tkinter.messagebox",
     "tkinter.font",
-    "openpyxl",
-    "pytesseract",
-    "pdf2image",
-    "PIL",
-    "PIL._tkinter_finder",
-    "fastapi",
-    "uvicorn",
-    "uvicorn.loops.auto",
-    "uvicorn.protocols.http.auto",
-    "uvicorn.protocols.websockets.auto",
-    "uvicorn.lifespan.on",
-    "dotenv",
 ]
 
 # 月次DB のマイグレーション（db/migrations/m0NN_*.py、段階7b）は、DB を開くときに名前で探して import するので、
 # import 解析では見つからない。パッケージの中のモジュールをすべて同梱する。
 hiddenimports += collect_submodules("db.migrations")
 
-# Tesseract OCR本体・Poppler本体・tessdata_local（同梱しない方針、モジュール
-# docstring参照）はdatas/binariesに含めない。コード（services/pdf_ocr_service.py
-# 等）自体はPythonソースとして通常通り同梱される（exclude対象ではない）。
+# アプリが使わない部品（D-187）。どこからもimportされないが、他の部品のフックや
+# 間接の依存で入り込まないよう、明示的に外す。pandas・openpyxl・fastapi・uvicorn・
+# dotenvはアプリのどこからも使っていない。残りはPDF読み取り（未完成）だけが使う部品。
+# PDF読み取りを.exeに戻すときは、ここから外し、collect_all()の対象にcv2・pdfplumber・
+# pdfminerを足し、hiddenimportsにpytesseract・pdf2imageを足す。
+EXCLUDED_MODULES = [
+    "pandas", "openpyxl", "fastapi", "uvicorn", "dotenv",
+    "cv2", "numpy", "pdfplumber", "pdfminer", "pytesseract", "pdf2image",
+]
+# PIL（Pillow）は外さない：reportlab（帳票のPDF出力）が lib/utils.py で無条件に import する。
 
 a = Analysis(
     [os.path.join(APP_DIR, "main.py")],
@@ -134,7 +127,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=EXCLUDED_MODULES,
     noarchive=False,
     cipher=block_cipher,
 )

@@ -22,7 +22,7 @@
 
 ## OS に別途インストールが必要なもの（PDF 読み取り・OCR）
 
-pdfplumber・pytesseract・pdf2image は Python のパッケージだけでは動かない。メニューの「PDF読み取り」は現在、常に無効（D-85）。
+pdfplumber・pytesseract・pdf2image は Python のパッケージだけでは動かない。PDF読み取りは未完成のため、メニューと .exe から外している（D-187）。ソースを動かして試すときだけ要る。戻す手順は `PDF_OCR_FEATURE_NOTES.md` の冒頭。
 
 - Tesseract OCR 本体（日本語データ jpn.traineddata を含む）
   - 場所は `config.TESSERACT_CMD`。既定は `C:\Program Files\Tesseract-OCR\tesseract.exe`（Windows 版の公式ビルドの既定のインストール先）。環境変数 `TESSERACT_CMD` で変えられる
@@ -35,11 +35,9 @@ pdfplumber・pytesseract・pdf2image は Python のパッケージだけでは�
 
 | パッケージ | 用途 |
 |---|---|
-| pandas・openpyxl | データ処理（2026-10-09 時点で、inventory_app のコードからは import されていない） |
 | reportlab | 帳票出力（PDF） |
 | tkcalendar | 日付入力の UI |
 | pytest | テスト |
-| fastapi・uvicorn[standard]・python-dotenv | 将来の拡張・Web API 化用 |
 | pyinstaller | ビルド・配布（.exe、`inventory_app.spec`） |
-| pdfplumber・pytesseract・pdf2image | PDF 読み取り・OCR（PDF → CSV 変換） |
-| opencv-python-headless | OCR の前処理（傾き補正・コントラスト強調・ノイズ除去）。GUI の機能（imshow など）は使わないので、依存の軽い headless 版にした |
+| pdfplumber・pytesseract・pdf2image | PDF 読み取り・OCR（PDF → CSV 変換）。未完成のため .exe には入れない（D-187） |
+| opencv-python-headless | PDF 読み取りの OCR の前処理（傾き補正・コントラスト強調・ノイズ除去）。GUI の機能（imshow など）は使わないので、依存の軽い headless 版にした |

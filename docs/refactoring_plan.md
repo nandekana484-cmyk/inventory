@@ -116,7 +116,7 @@ CANONICAL_DESIGN_DECISIONS.md §7（実行環境・依存パッケージのド�
 2026-10-09 に `.venv` を作り直したとき、`inventory_app\requirements.txt`（`>=4.9.0`）から opencv-python-headless 5.0.0.93 が入った（`requirements.lock.txt` に記録）。それまでの `.venv` に入っていた版は記録が無く、未確認。
 
 - 使っているのは PDF 読み取りの OCR の前処理（`services/pdf_ocr_service.py` の `preprocess_image_for_ocr()`・`_deskew()`。bilateralFilter・CLAHE・adaptiveThreshold・minAreaRect など）
-- メニューの「PDF読み取り」は常に無効（D-85）なので、画面から動作を確かめられない。有効にするときに、OCR の前処理が以前と同じ結果になるかを確認する（`docs/domain/pdf_ocr.md` の調整値は 2026-09-25 前後に決めたもので、そのときの版は未確認）
+- メニューの「PDF読み取り」は D-187 で外した（それまでは常に無効）ので、画面から動作を確かめられない。戻すときに、OCR の前処理が以前と同じ結果になるかを確認する（`docs/domain/pdf_ocr.md` の調整値は 2026-09-25 前後に決めたもので、そのときの版は未確認）
 
 ### リポジトリ直下の requirements.txt（段階8で削除した）
 
@@ -142,7 +142,7 @@ D-9x と同じく、D番号が決まる前に書かれた仮番号。どれに�
   - `ui/main_window.py`: `__init__()`（2か所）、`_set_menu_enabled()`、`_confirm_proceed_despite_exported_db()`、`_update_current_db_label()`（2か所）、`_refresh_inventory_diff_export_warning()`
   - `models/operation_log.py`: `list_operation_log()` 付近（1か所）
 - D-8x（3か所）: 内容から D-81〜D-85 のどれかと思われる
-  - `ui/main_window.py`: `__init__()` の PDF読み取りボタンを常に無効にするコメント（CHANGELOG では D-85）
+  - `ui/main_window.py`: ~~`__init__()` の PDF読み取りボタンを常に無効にするコメント~~（D-187 でボタンごと削除した）
   - `services/production_import_service.py`: `is_already_registered()`（2か所。CHANGELOG では D-83 の内容）
 
 ## 既知の違反

@@ -1,5 +1,32 @@
 # PDF_OCR_FEATURE_NOTES.md
 
+## 0. 現在の状態：未完成のため .exe とメニューから外した（2026-10-25、D-187）
+
+PDF読み取り（在庫照合）は未完成のため、**.exe とメニューから外した**。ソースはリポジトリに残してある（消していない）。
+
+- 残してあるもの：`inventory_app/ui/system/pdf_ocr_import_window.py`、`inventory_app/services/pdf_ocr_service.py`、`config.py` の `TESSERACT_CMD`・`TESSDATA_DIR`・`POPPLER_PATH`、`docs/domain/pdf_ocr.md`、本ファイル、`requirements.txt` の PDF 用の部品（pdfplumber・pytesseract・pdf2image・opencv-python-headless）
+- 外したもの：メニューの「PDF読み取り（在庫照合）」のボタンと `MainWindow.open_pdf_ocr_import()`。これで、アプリの起動（`main.py` → ログイン → メインメニュー）から `pdf_ocr_import_window`・`pdf_ocr_service` への import の道筋は無い（どちらも、ほかのファイルから import されない）
+- .exe に入れないもの：`inventory_app.spec` の `EXCLUDED_MODULES`（cv2・numpy・pdfplumber・pdfminer・pytesseract・pdf2image。あわせて、アプリが使っていない pandas・openpyxl・fastapi・uvicorn・dotenv）
+- .exe に残したもの：reportlab（帳票の PDF 出力）、**Pillow（PIL）**（reportlab が無条件に import するので外せない。OCR の画像処理にも使うが、.exe には reportlab のために入っている）、babel・tkcalendar（日付入力）
+
+### 0.1 作業を再開するときの手順
+
+1. **メニューに戻す**（`inventory_app/ui/main_window.py`）。外した直前の版は、コミット `3970220`（`git show 3970220:inventory_app/ui/main_window.py`）にある。
+   - 「ツール」見出しの下、「操作履歴」ボタンの前に、ボタンを作る：`ttk.Button(master_frame, text="PDF読み取り（在庫照合）", command=self.open_pdf_ocr_import)` を `pack(fill=tk.X, pady=5)`
+   - メソッドを戻す：`open_pdf_ocr_import()`。中で `from ui.system.pdf_ocr_import_window import PdfOcrImportWindow` を都度 import し、`self._open_singleton_window("pdf_ocr_import", lambda: PdfOcrImportWindow(self))` を呼ぶ（循環 import を避けるため、先頭では import しない）
+   - ボタンを有効にするなら、`_menu_widgets`（既定DBのとき押せなくする対象）に入れるかを決める。以前は `config(state=tk.DISABLED)` で常に無効にしていた（D-85）
+2. **.spec に戻す部品**（`inventory_app.spec`）
+   - `EXCLUDED_MODULES` から、cv2・numpy・pdfplumber・pdfminer・pytesseract・pdf2image を外す（PIL は元から入っている）
+   - `collect_all()` の対象（`for pkg in (...)`）に、cv2・pdfplumber・pdfminer を足す
+   - `hiddenimports` に、pytesseract・pdf2image を足す（以前は PIL・PIL._tkinter_finder もここにあった。PIL は reportlab のために入るので、足さなくてよい）
+   - `inventory_app/main.py` の `multiprocessing.freeze_support()` は、OCR の並列処理（`ProcessPoolExecutor`）のために置いてある。残してあるので、そのままでよい
+3. **必要な外部ソフト**（OS 側に別途インストール。.exe には同梱しない）：Tesseract OCR 本体（日本語データ jpn.traineddata を含む）と、Poppler（pdftoppm など）。場所と環境変数は §3 と `docs/setup.md`。言語データは `inventory_app/tessdata_local/`（Git 管理外）に jpn・eng・osd の traineddata を置く
+4. **確かめること**：開発環境で、`pip install -r inventory_app/requirements.txt` の PDF 用の部品が入っていること（`.venv` には今も入っている）。画面を開いて、サンプルの PDF を読み取る。OCR の前処理（OpenCV）が以前と同じ結果になるかは、`docs/refactoring_plan.md` の opencv の項を参照。.exe を作り直して、起動と同梱を確かめる（`pdfplumber`・`cv2` などが .exe の中にあること）
+
+以下は、外す前の記録（§1 以降）。「メニューの項目は常に無効」などの記述は、外す前の状態を指す。
+
+---
+
 ## 1. 概要
 
 **目的**：PDF読み取り→CSV変換→`inventory_stock`との照合・抽出という新規オプション機能（PDF OCR機能）について、環境構築手順・実装内容・決定事項・動作確認結果をまとめ、次にこの機能に触れる人（別の開発環境でのセットアップ担当者を含む）が同じ調査・試行錯誤をやり直さずに済むようにする。

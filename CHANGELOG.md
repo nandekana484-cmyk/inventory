@@ -321,7 +321,12 @@ D-81の追加検証で見つかった1件の不具合を修正（D-83）。
 - 古い単発スクリプト10本（`inventory_app/scripts/` の check_*・delete_*・dump_schema・list_plan_batches_detail・verify_failed_batch_deletion）と、ルートの `check_db.py` を削除した（D-144 は解決）。
 - ルートの `check_env.py` を、今の .exe が使う部品（tkcalendar・babel・reportlab）とテスト・ビルドの部品（pytest・PyInstaller）だけ確かめる形に直した。
 - 生産面マスターの「実装ライン単位の未登録組み合わせ（参考情報）」ボタンを削除した（判定には使っていなかった）。
-- 画面の動きの変更は、上のボタンが無くなったことだけ。DB の形（版 15）・`version.py` は変えていない。
+- 画面の動きの変更は、上のボタンが無くなったことだけ。DB の形（版 14）・`version.py` は変えていない。
+
+### 使っていない部品と PDF読み取りを .exe から外す（D-187）
+- fastapi・uvicorn・python-dotenv・openpyxl・pandas を `inventory_app.spec` と requirements から外した（アプリはどれも使っていなかった）。
+- PDF読み取り（在庫照合）は未完成のため、メニューの項目と画面までの import を外し、.exe に入れない部品（cv2・numpy・pdfplumber・pdfminer・pytesseract・pdf2image）を `EXCLUDED_MODULES` で外した。ソースは残してあり、再開の手順は `PDF_OCR_FEATURE_NOTES.md` の冒頭にある。Pillow は reportlab（帳票の PDF 出力）が必須で使うため残した。
+- 試しのビルドでは、.exe が 127,431,629 → 35,837,369 バイト、ログイン画面が出るまでが約7.0秒 → 約4.3秒になった。本番の .exe は再ビルドするまで変わらない。
 
 ## 既知の制約・未対応事項
 

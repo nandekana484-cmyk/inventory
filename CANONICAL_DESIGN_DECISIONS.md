@@ -1449,6 +1449,7 @@ D-81の修正（候補が複数ある場合も、いずれか1件の実績合計
 | D-184 | 利用者の決定（2026-10-20、§61 の報告への回答、§61.4）：(1) ロット進捗チェックの「不足」の備考で、計画のファイルNoと基板名の内訳が3件を超えるときは、先頭（ファイルNo順）の3件だけを出し、残りを「ほかN件」とまとめる（例「構成基板数 21 に対し、計画のファイルNo は 12 件（0735：…、0736：…、0737：…、ほか9件）」。件数は全件の数のまま。3件以下は今のまま。`SHORTFALL_DETAIL_MAX_FILES`）、(2) 構成基板数マスターの書き出しの既定のファイル名 board_structure_master.csv と見出し「構成数」は今のままでよい（D-182）、(3) 既存の実績がある計画への右クリックの登録が、「断る」から重複の確認（合計して登録／手入力で対応／キャンセル）に変わったこと（D-176）は、このままでよい（上書きの選択肢は無いので） | 本ファイル §61 |
 | D-185 | .exe v3.1.0 のビルド（2026-10-20、§62）。機能の追加なので2桁目を上げた（`APP_VERSION = "3.1.0"`、`BUILD_DATE = "2026-10-20"`）。含まれる変更は D-176〜D-184（§61）。DB の形は版 14 のままで、3.0.0 と同じデータを使える。.exe の SHA-256 は `741549BA46D9224CFD254B1BD6CC10663B1F1341E94925DC40E0B9C4C480A0D1`（130,891,096バイト）。.spec は変えていない。dist の退避は `C:\work\inventory_dist_backup_20261020_094116_before_v3_1`（v3.0.0 の .exe と実データの DB・app_settings.json） | 本ファイル §62 |
 | D-186 | 使っていない機能とスクリプトを削った（2026-10-25、§63、利用者の決定にもとづく。`docs/feature_inventory.md` の K1・K2・K3・K6（残した）・K7・D9）。(1) K1 `import_production_csv()`（約177行。D-7 の「2系統の併存」は終わり、標準の登録待ち方式 `parse_production_csv_for_staging()` だけが残る）と、そのためだけの import 4つ。(2) K2 `ui/production/unmatched_production_window.py`。(3) K3 古い単発スクリプト10本（D-144 を解決）。(4) K7 ルートの `check_db.py`（7月の DB を決め打ちで見る）を削除し、`check_env.py` を「今の .exe が使う部品（tkcalendar・babel・reportlab）と、テスト・ビルドの部品（pytest・PyInstaller）」だけ確かめる形に直した（足りないと終了コード 1）。(5) D9 `find_registered_file_nos_missing_line_combinations()` と、生産面マスターの「実装ライン単位の未登録組み合わせ（参考情報）」ボタン・`on_show_missing_lines()`。(6) K6 `scripts/make_lot_merge_sample_db.py` は**削らない**：`tests/test_lot_merge.py` が importlib で読み込み、その fixture `sample_db` をロット統合・訂正のテストが使っている（コードのコメントでこのスクリプトに触れるテストは5本）。削った行数は約850行（追加48・削除896）。挙動の変更は、画面の1ボタンが無くなったことだけ。残したもの（利用者の決定）：E3・C8・K8。**削除で使い手が無くなったが、この決定の範囲外のため残した関数**：`models/kitting_plan.py::resolve_plan_by_lot_and_name()`、`models/production_side_master.py::get_second_side_status()`（呼び出しゼロ。次の整理の候補） | 本ファイル §63 |
+| D-187 | 使っていない部品と PDF読み取りを .exe から外した（2026-10-25、§64、利用者の決定にもとづく。`docs/feature_inventory.md` の K9・J1）。(1) K9：fastapi・uvicorn・python-dotenv・openpyxl・pandas は、アプリのどこからも（間接的にも）使われていないことを確かめて（コードの import ゼロ、`importlib` を使うのは `db/migrations` だけ）、`inventory_app.spec` の hiddenimports・collect_all と `requirements.txt`・`requirements.lock.txt` から外した。(2) J1：メニューの項目と `open_pdf_ocr_import()` を削除し、起動からその画面までの import の道筋を無くした（`ui/system/pdf_ocr_import_window.py`・`services/pdf_ocr_service.py` のソースは残す）。.spec は `EXCLUDED_MODULES`（cv2・numpy・pdfplumber・pdfminer・pytesseract・pdf2image と K9 の5つ）で外した。(3) **Pillow（PIL）は外さない**：reportlab 5.0.1 が `reportlab/lib/utils.py` で `from PIL import Image` を無条件に行う（最初の試しのビルドで PIL を除外し、開発環境で import を塞いで確かめたところ、帳票の PDF 出力が import の時点で壊れることが分かった）。(4) 試しのビルド（dist とは別の一時フォルダ）：.exe は 127,431,629 → 35,837,369 バイト（-91,594,260、約72%減）、ログイン画面が出るまで約7.0秒（6.8〜8.9）→ 約4.3秒。dist の全ファイルの SHA-256 は前後で同じ。`version.py`・dist は変えていない。再開の手順は `PDF_OCR_FEATURE_NOTES.md` の冒頭 | 本ファイル §64 |
 
 ### 30.1 Shift+Sの検証結果（D-84）
 
@@ -3487,3 +3488,47 @@ D-155 の一覧と、前回の設計案のお勧め（統合したロットで�
 - pytest：削る前 610 件成功、削った後 610 件成功（出力はファイルに書き、終了コード 0 と集計行で確かめた）
 - 隔離環境（`config.APP_DATA_DIR`・`DB_PATH`・`MASTER_DB_PATH` を一時フォルダに差し替え）で、`MainWindow` を作り、メニューの `open_*` 14個すべてで画面を生成して開けた（import エラーなし）。画面の自動クリックはしていない
 - 既定DB（未選択）で `MainWindow` を作っただけでは、一時フォルダにファイルは1つも作られなかった
+
+## 64. 使っていない部品と PDF読み取りを .exe から外す（2026-10-25、D-187）
+
+`main` の 3970220（D-186）の続き。`version.py` と dist は変えていない（ビルドは利用者の指示を待つ）。
+
+### 64.1 部品ごとの扱い
+
+| 部品 | 扱い | 理由 |
+|---|---|---|
+| pandas | 外した（.spec・requirements） | コードの import ゼロ。K9 |
+| openpyxl | 外した | 同上 |
+| fastapi・uvicorn（`uvicorn[standard]` の追加の部品を含む） | 外した | 同上。「将来の Web API 用」のまま使われていなかった |
+| python-dotenv | 外した | 同上（`config.py` は `os.getenv` だけを使う） |
+| pdfplumber・pdfminer.six | .exe から外した（requirements には残す） | PDF読み取り（`pdf_ocr_service.py`）だけが使う |
+| pytesseract・pdf2image | .exe から外した（requirements には残す） | 同上 |
+| opencv-python-headless（cv2） | .exe から外した（requirements には残す） | 同上（OCR の前処理だけ） |
+| numpy | .exe から外した | `pdf_ocr_service.py` と pandas・cv2 だけが使う。reportlab は使わない |
+| **Pillow（PIL）** | **残した** | reportlab（帳票の PDF 出力）が `from PIL import Image` を無条件に行う |
+| reportlab | 残した | 帳票の PDF 出力（`daily_report_window.py`） |
+| babel・tkcalendar | 残した | 日付入力 |
+| pytz・tzdata | 今の .exe には入っている（外していない） | この `.venv` に pandas の依存として入っていて、babel が `import pytz` を試す（無くても動く。`babel/dates.py` の try/except）ため。lock から外したので、`.venv` を lock から作り直すと、.exe からも無くなる |
+
+`requirements.lock.txt` は、新しい `requirements.txt` の最上位の部品から依存をたどって（`importlib.metadata`、extras は含めない）、閉包に入らない25件を外した（上の5つのほか、それらが引いていた annotated-doc・annotated-types・anyio・click・et_xmlfile・h11・httptools・idna・opentelemetry-api・pydantic・pydantic_core・python-dateutil・pytz・PyYAML・six・starlette・typing-inspection・tzdata・watchfiles・websockets）。**新しい環境で lock から `pip install -r` して、ビルドし直すところまでは未実施**（今回のビルドは、今の `.venv` のまま）。
+
+### 64.2 PDF読み取りの道筋
+
+- 外した：`ui/main_window.py` のボタンと `open_pdf_ocr_import()`（`ui/system/pdf_ocr_import_window.py` を都度 import していた唯一の場所）
+- 残した：ソース（`ui/system/pdf_ocr_import_window.py`・`services/pdf_ocr_service.py`）、`config.py` の `TESSERACT_CMD` などの設定、`docs/domain/pdf_ocr.md`
+- 確かめた：.exe の PYZ に `services.pdf_ocr_service`・`ui.system.pdf_ocr_import_window` が無い。開発環境でも、`ui.main_window` を import したあと `pdf_ocr` を含むモジュールは1つも読み込まれない
+
+### 64.3 試しのビルドの結果（dist とは別の一時フォルダ、同じ `.venv`・同じ PyInstaller 6.22.3）
+
+比較のため、変更前（de2f528、`version.py` は 3.1.0）も同じ方法でビルドした。**dist にある .exe は v1.2.1（127,381,395バイト）で、利用者が挙げた v3.1.0 の 130,891,096 バイトとは別のもの**。v3.1.0 の .exe はこの PC には無い。
+
+| | バイト | ログイン画面が出るまで（5回、秒） |
+|---|---|---|
+| 変更前（de2f528 を、この PC で試しにビルド） | 127,431,629 | 8.95・6.83・6.87・7.11・7.04（中央値 7.04） |
+| 変更後 | 35,837,369 | 4.30・4.35・4.29・4.38・4.32（中央値 4.32） |
+| 利用者が挙げた v3.1.0（主 PC のビルド） | 130,891,096 | 測っていない |
+
+- 起動は、.exe だけを空の一時フォルダに置き、Windows のウィンドウ一覧で表示中のウィンドウを調べた（画面の操作はしていない）。10回とも、ウィンドウはログイン画面（`TkTopLevel`）だけ。エラーのダイアログなし、作られたファイルは `db\master.db`（12,288バイト）だけ、`CloseMainWindow` のあとにプロセスは残らなかった
+- .exe の中のアーカイブ（CArchive 3,521件・PYZ 1,276モジュール。変更前は 5,408件・3,676）を読んだ：外した部品は1つも入っていない。reportlab（350件）・PIL・babel・tkcalendar・`db/schema.sql`・`db.migrations` は入っている
+- 開発環境で、外した部品の import をすべて塞いだ状態にして、`build_daily_report_pdf()` が複数ページの PDF を作れること、`ui.main_window` を import できることを確かめた
+- **確かめていないこと**：.exe でログインしたあとの画面（自動クリックをしない決まりのため）。実機での確認が要る。帳票の PDF 出力を .exe から実際に出すことも未確認

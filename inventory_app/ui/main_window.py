@@ -265,13 +265,6 @@ class MainWindow(tk.Tk):
         # 「ツール」見出し（D-50）。番号は付けない。月次DB を使うが、配置上の都合でここに置いている。
         ttk.Label(master_frame, text="ツール", font=("Helvetica", 11, "bold")).pack(anchor=tk.W, pady=(15, 5))
 
-        btn_pdf_ocr_import = ttk.Button(
-            master_frame, text="PDF読み取り（在庫照合）", command=self.open_pdf_ocr_import
-        )
-        btn_pdf_ocr_import.pack(fill=tk.X, pady=5)
-        # 常に無効にする（D-8x）。機能のコードは残す。_menu_widgets にも _default_db_locked_widgets にも入れないので、DISABLED が保たれる。
-        btn_pdf_ocr_import.config(state=tk.DISABLED)
-
         btn_operation_log = ttk.Button(
             master_frame, text="操作履歴", command=self.open_operation_log
         )
@@ -295,7 +288,7 @@ class MainWindow(tk.Tk):
             btn_parts_attributes_import, btn_production_side_master,
             btn_worker_registration, btn_board_structure_import, btn_logout,
         ]
-        # btn_pdf_ocr_import は入れない（常に無効）。admin のときだけ作るボタンは、あるときだけ追加する。
+        # admin のときだけ作るボタンは、あるときだけ追加する。
         if self.btn_worker_management is not None:
             self._menu_widgets.append(self.btn_worker_management)
         if self.btn_merge_master is not None:
@@ -620,11 +613,6 @@ class MainWindow(tk.Tk):
         if not self._confirm_proceed_despite_exported_db():
             return
         self._open_singleton_window("wip_expansion", lambda: WipExpansionWindow(self, self.current_worker))
-
-    def open_pdf_ocr_import(self):
-        """循環import回避のため、ここで都度importする。"""
-        from ui.system.pdf_ocr_import_window import PdfOcrImportWindow
-        self._open_singleton_window("pdf_ocr_import", lambda: PdfOcrImportWindow(self))
 
     def open_parts_attributes_import(self):
         self._open_singleton_window(
