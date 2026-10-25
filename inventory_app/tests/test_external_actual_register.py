@@ -178,6 +178,22 @@ def test_empty_face1_kitting_no_with_zero_ng_side1_is_registerable_and_face1_ng_
     assert get_ng_declaration("K2", 2, lot_no="L1")["ng_qty"] == 1 and get_ng_declaration("K1", 1, lot_no="L1") is None
 
 
+def test_ng_side2_without_face1_kitting_no_is_noted_as_not_linked(db):
+    add_rows({"ng_side2": 2, "face1_kitting_list_no": ""},
+             {"kitting_list_no": "K3", "lot_no": "L2", "file_no": "0002", "ng_side2": 2, "face1_kitting_list_no": ""},
+             {"kitting_list_no": "K4", "lot_no": "L3", "file_no": "0003", "side": "1", "ng_side2": 0},
+             {"kitting_list_no": "K5", "lot_no": "L4", "file_no": "0004", "ng_side2": 0, "face1_kitting_list_no": ""})
+    items = preview()
+    assert svc.NG_UNLINKED_REMARK == "NG面2は面1に連動しません"
+    assert svc.NG_UNLINKED_REMARK in items[("K2", "L1")]["remarks"] and svc.NG_UNLINKED_REMARK in items[("K3", "L2")]["remarks"]
+    assert svc.NG_UNLINKED_REMARK not in items[("K4", "L3")]["remarks"]                      # 面1の行
+    assert all(svc.NG_UNLINKED_REMARK not in i["remarks"] for i in items.values() if i["ng2_new"] == 0)   # NG面2が0
+    add_rows({"ng_side2": 2, "face1_kitting_list_no": "K1"}, exported="2026-10-21 18:00:00")
+    assert svc.NG_UNLINKED_REMARK not in preview()[("K2", "L1")]["remarks"]                  # 面1のキッティングNo.があれば連動する
+    register()
+    assert get_ng_declaration("K1", 1, lot_no="L1")["ng_qty"] == 2
+
+
 def test_face1_is_decided_by_the_csv_column_not_guessed(db):
     """面1の計画が2つあるロット（K1・K1x）でも、CSV の面1のキッティングNo.の計画にNGを保存する。"""
     add_rows({"ng_side1": 2, "ng_side2": 0, "face1_kitting_list_no": "K1", "daily_qty": 98})
@@ -283,3 +299,18 @@ def test_preview_does_not_query_per_row(db, monkeypatch):
     few = count_connections([{"kitting_list_no": f"P{i}", "lot_no": f"M{i}", "file_no": "0100", "ng_side2": 0, "daily_qty": 100} for i in range(3)])
     many = count_connections([{"kitting_list_no": f"P{i}", "lot_no": f"M{i}", "file_no": "0100", "ng_side2": 0, "daily_qty": 100} for i in range(3, 40)])
     assert few > 0 and few == many
+
+
+def test_sql_in_the_trial_doc_runs_against_a_registered_db(db, capsys):
+    """docs/external_actual_trial.md の確認用スクリプトが、登録後のDB でそのまま動き、登録した内容を出す。"""
+    import re
+    doc = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "docs", "external_actual_trial.md")
+    text = open(doc, encoding="utf-8").read()
+    script = re.search(r"```python\n(.*?)```", text, re.S).group(1)
+    script = re.sub(r'^DB = r".*"$', lambda m: "DB = " + repr(config.DB_PATH), script, flags=re.M)
+    add_rows({"ng_side1": 1, "ng_side2": 1, "face1_kitting_list_no": "K1", "daily_qty": 98})
+    register()
+    exec(compile(script, "check_trial.py", "exec"), {})
+    out = capsys.readouterr().out
+    assert "'kitting_list_no': 'K2'" in out and "'daily_qty': 98" in out and "'ng_qty': 2.0" in out
+    assert "'status': 'registered'" in out and "現場CSV取込登録" in out and "external_csv" in out

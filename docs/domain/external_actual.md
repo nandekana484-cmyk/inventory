@@ -71,3 +71,5 @@ UTF-8（BOM 付き）。**書式版は 2**。ヘッダーは次の13列で、こ
 6. `lot_status_history` は行ごとには記録せず、最後にロットごとに1回（`trigger_source = external_csv`）
 
 画面を開いている間は、生産実績入力画面の登録・実績修正のボタンを押せない。登録後は `refresh_after_external_registration()` で、表示中の計画と計画一覧を更新する。
+
+実機でつなぐ確認の手順は docs/external_actual_trial.md。

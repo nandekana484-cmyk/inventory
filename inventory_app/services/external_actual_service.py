@@ -34,6 +34,7 @@ HISTORY_TRIGGER = "external_csv"
 
 STATE_RED, STATE_YELLOW, STATE_GREEN, STATE_GRAY = "red", "yellow", "green", "gray"
 NG_ZERO_REMARK = "NG 0 は既存の申告を変えません"
+NG_UNLINKED_REMARK = "NG面2は面1に連動しません"
 
 # register_rows() の結果の status
 RESULT_REGISTERED, RESULT_PARTIAL, RESULT_FAILED = "registered", "partial", "failed"
@@ -303,6 +304,8 @@ def evaluate_rows(rows: list) -> list:
                     remarks.append(f"日付が {now['daily_date']} から {row['report_date']} に変わります")
             if any(s not in res["save_qty"] for s, p in res["ng_side_plans"].items() if p is not None):
                 remarks.append(NG_ZERO_REMARK)
+            if row["side"] == "2" and not row["face1_kitting_list_no"] and row["ng_side2"]:
+                remarks.append(NG_UNLINKED_REMARK)          # 面1の計画が分からないので、面2の NG を面1に足せない
         item.update({"state": state, "remarks": remarks})
         evaluated.append(item)
     return evaluated
