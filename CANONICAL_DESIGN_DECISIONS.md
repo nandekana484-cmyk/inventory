@@ -1450,6 +1450,7 @@ D-81の修正（候補が複数ある場合も、いずれか1件の実績合計
 | D-185 | .exe v3.1.0 のビルド（2026-10-20、§62）。機能の追加なので2桁目を上げた（`APP_VERSION = "3.1.0"`、`BUILD_DATE = "2026-10-20"`）。含まれる変更は D-176〜D-184（§61）。DB の形は版 14 のままで、3.0.0 と同じデータを使える。.exe の SHA-256 は `741549BA46D9224CFD254B1BD6CC10663B1F1341E94925DC40E0B9C4C480A0D1`（130,891,096バイト）。.spec は変えていない。dist の退避は `C:\work\inventory_dist_backup_20261020_094116_before_v3_1`（v3.0.0 の .exe と実データの DB・app_settings.json） | 本ファイル §62 |
 | D-186 | 使っていない機能とスクリプトを削った（2026-10-25、§63、利用者の決定にもとづく。`docs/feature_inventory.md` の K1・K2・K3・K6（残した）・K7・D9）。(1) K1 `import_production_csv()`（約177行。D-7 の「2系統の併存」は終わり、標準の登録待ち方式 `parse_production_csv_for_staging()` だけが残る）と、そのためだけの import 4つ。(2) K2 `ui/production/unmatched_production_window.py`。(3) K3 古い単発スクリプト10本（D-144 を解決）。(4) K7 ルートの `check_db.py`（7月の DB を決め打ちで見る）を削除し、`check_env.py` を「今の .exe が使う部品（tkcalendar・babel・reportlab）と、テスト・ビルドの部品（pytest・PyInstaller）」だけ確かめる形に直した（足りないと終了コード 1）。(5) D9 `find_registered_file_nos_missing_line_combinations()` と、生産面マスターの「実装ライン単位の未登録組み合わせ（参考情報）」ボタン・`on_show_missing_lines()`。(6) K6 `scripts/make_lot_merge_sample_db.py` は**削らない**：`tests/test_lot_merge.py` が importlib で読み込み、その fixture `sample_db` をロット統合・訂正のテストが使っている（コードのコメントでこのスクリプトに触れるテストは5本）。削った行数は約850行（追加48・削除896）。挙動の変更は、画面の1ボタンが無くなったことだけ。残したもの（利用者の決定）：E3・C8・K8。**削除で使い手が無くなったが、この決定の範囲外のため残した関数**：`models/kitting_plan.py::resolve_plan_by_lot_and_name()`、`models/production_side_master.py::get_second_side_status()`（呼び出しゼロ。次の整理の候補） | 本ファイル §63 |
 | D-187 | 使っていない部品と PDF読み取りを .exe から外した（2026-10-25、§64、利用者の決定にもとづく。`docs/feature_inventory.md` の K9・J1）。(1) K9：fastapi・uvicorn・python-dotenv・openpyxl・pandas は、アプリのどこからも（間接的にも）使われていないことを確かめて（コードの import ゼロ、`importlib` を使うのは `db/migrations` だけ）、`inventory_app.spec` の hiddenimports・collect_all と `requirements.txt`・`requirements.lock.txt` から外した。(2) J1：メニューの項目と `open_pdf_ocr_import()` を削除し、起動からその画面までの import の道筋を無くした（`ui/system/pdf_ocr_import_window.py`・`services/pdf_ocr_service.py` のソースは残す）。.spec は `EXCLUDED_MODULES`（cv2・numpy・pdfplumber・pdfminer・pytesseract・pdf2image と K9 の5つ）で外した。(3) **Pillow（PIL）は外さない**：reportlab 5.0.1 が `reportlab/lib/utils.py` で `from PIL import Image` を無条件に行う（最初の試しのビルドで PIL を除外し、開発環境で import を塞いで確かめたところ、帳票の PDF 出力が import の時点で壊れることが分かった）。(4) 試しのビルド（dist とは別の一時フォルダ）：.exe は 127,431,629 → 35,837,369 バイト（-91,594,260、約72%減）、ログイン画面が出るまで約7.0秒（6.8〜8.9）→ 約4.3秒。dist の全ファイルの SHA-256 は前後で同じ。`version.py`・dist は変えていない。再開の手順は `PDF_OCR_FEATURE_NOTES.md` の冒頭 | 本ファイル §64 |
+| D-188 | 現場実績入力アプリ（別アプリ）の実績CSVを取り込む機能（2026-10-25、§65）。(1) 取り込んだ行は、実績・NG に書かず、別の表（`external_actual_batches`・`external_actual_rows`、マイグレーション015、版 15）に登録待ちとしてためる。既存の登録待ち（`pending_csv_import_rows`）には列を足さない、(2) 人が一覧（今→新の差・色）で確認し、選んだ行だけを `register_actual_and_ng()` で登録する。自動では登録しない、(3) 登録の直前に今の値を読み直し、一覧と違う行は登録しない、(4) 取り込み先のDB（フォルダ名）が今のDB と違うときは取り込みも登録も止める。登録待ちは月次DB ごとで、前月からの引き継ぎでは引き継がない（警告だけ）、(5) 登録待ちの表に行ごとの `exported_at` を足した（設計の表になかった。CSV の書き出し日時は行ごとに違いうるため） | 本ファイル §65、docs/domain/external_actual.md |
 
 ### 30.1 Shift+Sの検証結果（D-84）
 
@@ -3532,3 +3533,29 @@ D-155 の一覧と、前回の設計案のお勧め（統合したロットで�
 - .exe の中のアーカイブ（CArchive 3,521件・PYZ 1,276モジュール。変更前は 5,408件・3,676）を読んだ：外した部品は1つも入っていない。reportlab（350件）・PIL・babel・tkcalendar・`db/schema.sql`・`db.migrations` は入っている
 - 開発環境で、外した部品の import をすべて塞いだ状態にして、`build_daily_report_pdf()` が複数ページの PDF を作れること、`ui.main_window` を import できることを確かめた
 - **確かめていないこと**：.exe でログインしたあとの画面（自動クリックをしない決まりのため）。実機での確認が要る。帳票の PDF 出力を .exe から実際に出すことも未確認
+
+## 65. 現場実績CSVの取り込み（2026-10-25、D-188）
+
+現場実績入力アプリ（別アプリ）が書き出す実績CSV（書式版 2、13列。固定。最初は書式版 1・12列だったが、面1のキッティングNo.の列を足して 2 にした。§65.2）を、人が確認したうえで実績（production_daily）とNG申告（ng_declarations）に登録する。仕様と使い方は docs/domain/external_actual.md。
+
+### 65.1 先に確かめたこと
+
+- `production_daily.daily_qty` の型: `db/schema.sql:48` は `daily_qty INTEGER NOT NULL`（新しく作った DB の `PRAGMA table_info` でも INTEGER）。SQLite の INTEGER 親和性なので、`12.0` は整数の 12 で入り、`12.5` は実数のまま入る（確かめた）。**実DBの定義は、CLAUDE.md の決まりで DB を開かないため、確かめていない**。取り込みでは、生産数・NG を整数に限った（整数でない値は、その行を止める）
+- 担当者IDが `workers` に無い行を赤にして問題ないか: 問題ない。月次DB の `production_daily.worker_id` は `REFERENCES workers(worker_id)` と書いてあるが、(a) 作業者は master.db にあり（月次DB の `workers` は使っていない）、(b) 外部キーは有効にしていない（`get_connection()` は `PRAGMA foreign_keys` を設定しない）、(c) アプリのどこにも `workers` との結合は無い（`worker_id` は保存して、実績修正の画面に文字のまま出すだけ）。レポートが `workers` と結合する箇所は無いので、不明な担当者IDの実績が入っても集計は壊れない。ただし、今の実績CSV取込・生産実績入力は `worker_id` を確かめずに保存しており（既定値は `SYSTEM`）、すでに `workers` に無い値が入っている可能性はある（実DBは確かめていない）。現場CSVでは、設計どおり、`workers` に無い担当者IDを赤（登録不可）にした。作業者マスターで無効（`is_active = 0`）の担当者は、IDが一致すれば登録できる（過去の記録を消さない方針と同じ）
+
+### 65.2 設計から変えた点・補った点
+
+- 面1のNG（2026-10-25 改訂）: 最初の版（書式版 1、12列）は CSV に面1のキッティングNo.が無く、取り込み側で `find_opposite_side_plan()` で面1を推測していた。利用者の決定で、書式版 2（13列）に「面1のキッティングNo.」を足し、推測をやめた。古い形式を読む処理は作らない。面2の行で面1のキッティングNo.があれば、そのキッティングNo.とロットNo.の面1の計画が存在し、面が 1・ファイルNo.が同じであることを確かめる（違えば赤）。空で NG面1 が 0 より大きければ赤。空で NG面1 が 0 なら登録できる。登録待ちの表に `face1_kitting_list_no` を足した（版 15 は未配布なので、015 と schema.sql を直接直した）
+- `exported_at` を行にも持たせた（登録待ちの表）。バッチの `exported_at` は、そのファイルの行の最大値
+- 生産数・NG は整数に限った（65.1）。書き出し日時の形式は決められていなかったので、`YYYY-MM-DD HH:MM:SS`・ISO 8601・`YYYY/MM/DD HH:MM[:SS]` を読む
+- 解析と検査を `services/external_actual_csv.py` に分けた（`external_actual_service.py` が500行に収まらなくなるため。設計の構成は services が1ファイルだった）
+- 誤投入の警告は、現場CSV取込の側（実績CSV・計画CSVを選んだとき）に加えて、実績CSV取込・キッティング計画CSV取込の側（現場CSVを選んだとき）にも出す
+- 「画面を開いている間は登録ボタンを無効にする」は、現場CSV取込画面を開いている間、生産実績入力画面の登録・実績修正のボタンを押せなくする、と解釈した。現場CSV取込画面の「選んだ行を登録」も、処理中は押せない
+- 同じファイルを2回取り込んだときは、警告だけで取り込む（登録待ちが同じ内容に置き換わるだけ）。書き出し日時が同じ行も取り込む（古い行だけを断る）
+- 完成済みロットの判定は、差がある行だけ、ロットごと（`lot_completion_state()` のキャッシュ）に行う。`preview_completed_lot_registration()` に省略できる引数を足した（動きは変えていない）。300ロットで約1秒
+
+### 65.3 まだ決めていないこと
+
+- 現場アプリが書き出すキッティングNo.・ロットNo.の表記が、このアプリの計画と NFKC・空白除去だけで一致するか（実データでは未確認。一致しない行は「計画がありません」の赤になる）
+- 実DB（`dist` のもの）で `workers` に無い `worker_id` がすでに入っているか
+- 複数のPCで使うときの、同じ登録待ちの同時の登録（月次DB はPCごとのローカルで共有していないので、今は起きない。docs/db.md「月別DB を共有する場合」）

@@ -5,7 +5,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from services.kitting_import_service import import_kitting_plan_csv, list_plan_items_for_batch
 from services.csv_format_detection import (
-    read_csv_header, detect_format_mismatch_warnings,
+    read_csv_header, detect_format_mismatch_warnings, detect_external_actual_csv_warnings,
     PLAN_CSV_SIGNATURE_COLUMNS, PLAN_CSV_FORMAT_LABEL,
     PRODUCTION_CSV_SIGNATURE_COLUMNS, PRODUCTION_CSV_FORMAT_LABEL,
 )
@@ -232,7 +232,7 @@ class KittingPlanImportWindow(tk.Toplevel):
         warnings = detect_format_mismatch_warnings(
             header, PLAN_CSV_SIGNATURE_COLUMNS, PLAN_CSV_FORMAT_LABEL,
             PRODUCTION_CSV_SIGNATURE_COLUMNS, PRODUCTION_CSV_FORMAT_LABEL,
-        )
+        ) + detect_external_actual_csv_warnings(header, PLAN_CSV_FORMAT_LABEL)
         if not warnings:
             return True
 

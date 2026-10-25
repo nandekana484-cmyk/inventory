@@ -1025,6 +1025,9 @@ class MainWindow(tk.Tk):
             # この時点で config.DB_PATH は新しい DB なので、操作履歴は新しい DB に記録される。
             detail = (f"成功{summary['lots_copied']}件 / スキップ{len(skipped_lot_nos)}件 / "
                       f"失敗{len(failed_lot_nos)}件 / ロット統合{summary.get('lot_merges_copied', 0)}件")
+            external_pending = summary.get("external_pending_rows_not_copied") or 0
+            if external_pending:
+                detail += f" / 引き継がなかった現場CSVの登録待ち{external_pending}行"
             if merges_not_copied:
                 detail += " / 片方だけのため引き継がなかったロット統合: " + "、".join(
                     f"{m['member_lot']}→{m['target_lot']}（引き継いだのは{m['carried_lot']}）" for m in merges_not_copied)
@@ -1053,6 +1056,10 @@ class MainWindow(tk.Tk):
                 more = f"\n...ほか{len(merges_not_copied) - 10}件" if len(merges_not_copied) > 10 else ""
                 msg += (f"\n\n※ 次のロット統合は、片方のロットだけを引き継いだため、新しいデータベースには引き継いでいません"
                         f"（{len(merges_not_copied)}件）。\n" + "\n".join(lines) + more)
+
+            if external_pending:
+                msg += (f"\n\n※ 引き継ぎ元のデータベースに、現場CSVの登録待ちが {external_pending} 行あります。"
+                        "新しいデータベースには引き継いでいません。引き継ぎ元に切り替えて登録するか、新しいデータベースで現場CSVを取り込み直してください。")
 
             duplicate_warnings = summary.get("duplicate_lot_warnings") or []
             if duplicate_warnings:
@@ -1086,6 +1093,8 @@ class MainWindow(tk.Tk):
                     "既に成功した分はスキップされ、失敗した分だけ再試行されます。"
                 )
                 messagebox.showwarning("一部失敗", msg, parent=self.winfo_toplevel())
+            elif external_pending:
+                messagebox.showwarning("完了（確認が必要です）", msg, parent=self.winfo_toplevel())
             else:
                 messagebox.showinfo("完了", msg, parent=self.winfo_toplevel())
         else:

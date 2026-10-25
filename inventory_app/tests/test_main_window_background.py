@@ -205,6 +205,19 @@ def test_create_db_with_carry_over_success(host, monkeypatch):
     assert host.db_folder_var.get() == "2026-08" and host.new_db_folder_var.get() == ""
 
 
+def test_create_db_with_carry_over_warns_about_external_pending_rows(host, monkeypatch):
+    """現場CSVの登録待ちは引き継がない。残っている行があれば、警告の文を出す（警告だけで、作成は止めない）。"""
+    monkeypatch.setattr(mw, "carry_over_incomplete_lots", lambda old, new, imported_by=None: dict(SUMMARY, external_pending_rows_not_copied=3))
+    host.new_db_folder_var.set("2026-08")
+    host.on_create_database()
+    _pump(host, lambda: _messages(host))
+    (_, kind, title, message), = _messages(host)
+    assert (kind, title) == ("showwarning", "完了（確認が必要です）")
+    assert "現場CSVの登録待ちが 3 行あります。新しいデータベースには引き継いでいません。" in message
+    assert host.events[4][3].endswith("引き継がなかった現場CSVの登録待ち3行")
+    assert host.db_folder_var.get() == "2026-08"
+
+
 def test_create_db_with_carry_over_error(host, monkeypatch):
     def fake_carry_over(old, new, imported_by=None):
         raise ValueError("引き継ぎ失敗")

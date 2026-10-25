@@ -331,18 +331,21 @@ def lot_completion_state(lot_no: str, cache: dict = None):
     return state
 
 
-def preview_completed_lot_registration(plan: dict, daily_qty: float):
+def preview_completed_lot_registration(plan: dict, daily_qty: float, state_cache: dict = None, own_existing=None):
     """
     plan（計画1件）に daily_qty を登録する前に、そのロットが完成済みなら確認用の内容を返す（D-130）。完成していなければ None。
     new_total は、登録した後の、その計画の (ファイルNo, 面) の実績の合計（完成数の計算に使う値。1計画＝1レコードなので既存分は置き換わる）。
     その計画に既に実績がある（数量を直す）場合は、直した後の合計が発注数を超え、かつ今より増えるときだけ返す（D-133）。
+    state_cache・own_existing は多数の行をまとめて調べる呼び出し元用（ロットごとの評価の使い回しと、計画の今の累計を渡して DB を引かない）。
+    省略すると従来どおり、その場で評価して累計を引く。
     """
-    state = lot_completion_state(plan["lot_no"])
+    state = lot_completion_state(plan["lot_no"], state_cache)
     if state is None or not state["completed"]:
         return None
     file_key = (plan["setup_file_no"], plan["production_side"])
     current_total = state["file_actuals"].get(file_key, 0)
-    own_existing = get_app_cumulative_qty(plan["kitting_list_no"], plan["lot_no"])
+    if own_existing is None:
+        own_existing = get_app_cumulative_qty(plan["kitting_list_no"], plan["lot_no"])
     new_total = current_total - own_existing + daily_qty
     if own_existing and not (new_total > state["order_quantity"] and new_total > current_total):
         return None

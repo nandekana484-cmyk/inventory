@@ -36,7 +36,7 @@
    - 処理中に `config.DB_PATH` を旧DB→新DBへ一時的に切り替える。成功しても失敗しても、戻るときは必ず新DBになっている
    - 実行中はメインメニューの操作をまとめて無効にする（`_set_menu_enabled()`）
    - 引き継ぐもの: 未完了ロットの kitting_plan_items（アクティブな行）と production_daily。まだ着手していない計画は、実装開始予定日が50日以内のものだけ
-   - 引き継がないもの: scrap_records・ng_declarations・wip_board_snapshot・wip_scrap_records
+   - 引き継がないもの: scrap_records・ng_declarations・wip_board_snapshot・wip_scrap_records、現場CSVの登録待ち（`external_actual_rows`。残りの行数だけ `summary["external_pending_rows_not_copied"]` で知らせ、画面に警告を出す）
    - 既知の制約: 引き継ぎが終わる前に旧DBのロックが解放される（CANONICAL §22.6、D-75）
 
 ## 削除（`MainWindow.on_delete_local_database()` → `ui/common/db_delete_helper.py` → `services/db_delete_service.py`・`services/db_lifecycle_service.delete_database()`）
@@ -88,6 +88,7 @@
 | 版 | ファイル | 内容 | 追加 |
 |---|---|---|---|
 | 14 | `db/migrations/m014_add_lot_merges.py` | ロット統合の表 `lot_merges` とインデックスを足す（既存のデータは変えない。D-145） | 2026-10-15（2.0.0 予定） |
+| 15 | `db/migrations/m015_add_external_actual_tables.py` | 現場実績CSVの登録待ちの表 `external_actual_batches`・`external_actual_rows` とインデックス2つを足す（既存のデータは変えない。`models/external_actual_rows.py`、docs/domain/external_actual.md、D-188） | 2026-10-25（4.0.0） |
 
 ### 開けなかったとき・適用に失敗したとき
 
