@@ -92,6 +92,10 @@ def _screen(p, rows):
         fake._plan_date_from_entry = _DateEntry()
         fake._plan_date_to_entry = _DateEntry()
         fake._hide_completed_var = _Var(False)
+        # 古い計画を隠す・計画終了日が来たものだけ（D-192）。ここでは両方オフのままで、既存の絞り込みの動きを確かめる。
+        fake._hide_stale_var = _Var(False)
+        fake._only_ended_var = _Var(False)
+        fake._stale_hidden_label = types.SimpleNamespace(config=lambda **kwargs: None)
         fake._plan_date_range_predicate = types.MethodType(cls._plan_date_range_predicate, fake)
     setattr(fake, spec["sort_states"], {})
     return fake

@@ -4,8 +4,10 @@
 リファクタリング段階1で移した。旧位置には re-export か、ここを呼ぶだけの薄いメソッドを残しているので、
 既存の呼び出し側はそのまま動く。業務ルールは docs/domain/production_entry.md。
 """
+import re
 from datetime import datetime
 
+from models.kitting_plan_batches import fetch_latest_csv_batch_scope
 from models.ng_declarations import save_ng_declaration
 from models.operation_log import log_operation
 from services.date_parsing import parse_flexible_date
@@ -220,6 +222,86 @@ def register_combined_with_existing(info, worker_id, worker_name, record_history
         detail=f"{info['kitting_list_no']} / ロットNo. {info['lot_no']} / {info['total']:g}（合計：{parts}）",
     )
     return new_cumulative
+
+
+# ---------------------------------------------------------------- 計画一覧の絞り込み（古い計画を隠す・計画終了日が来たものだけ。D-192）
+# 一覧の行の末尾は [..., 分類, 計画終了日, 古い計画の印, production_side]（row[-1] が production_side という契約は変えない）。
+PLAN_ROW_END_INDEX = -3
+PLAN_ROW_STALE_INDEX = -2
+STALE_MARK = "1"
+
+_PLAN_DATETIME_PATTERN = re.compile(r"^(\d{4})/(\d{1,2})/(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$")
+
+
+def normalize_plan_datetime(value):
+    """
+    計画開始日・終了日の値を "YYYY/MM/DD HH:MM:SS" にそろえる（"-" は "/" に直し、秒が無ければ 00 を補う。時刻が無ければ 00:00:00）。
+    空や解釈できない値（存在しない日付を含む）は None。
+    """
+    text = ("" if value is None else str(value)).strip().replace("-", "/")
+    match = _PLAN_DATETIME_PATTERN.match(text)
+    if match is None:
+        return None
+    year, month, day, hour, minute, second = (int(g) if g is not None else 0 for g in match.groups())
+    try:
+        parsed = datetime(year, month, day, hour, minute, second)
+    except ValueError:
+        return None
+    return parsed.strftime("%Y/%m/%d %H:%M:%S")
+
+
+def load_stale_plan_scope():
+    """
+    「古い計画を隠す」の判定に使う {"period": (最小の計画開始日, 最大の計画終了日), "keys": {(キッティングNo., ロットNo.)}}。
+    最新の取り込みが無い、または期間が決まらない（開始日・終了日が解釈できる行が無い）ときは None（何も隠さない）。
+    一覧を作るときに1回だけ呼ぶこと。取り込みの行は、絞り込みのたびには読まない。
+    """
+    batch = fetch_latest_csv_batch_scope()
+    if batch is None:
+        return None
+    starts = [d for d in (normalize_plan_datetime(s) for s, _e in batch["datetimes"]) if d]
+    ends = [d for d in (normalize_plan_datetime(e) for _s, e in batch["datetimes"]) if d]
+    if not starts or not ends:
+        return None
+    return {"period": (min(starts), max(ends)), "keys": batch["keys"]}
+
+
+def is_stale_plan(plan_item, actual_qty, scope):
+    """
+    古い計画か（隠す対象）。開始日と終了日がどちらも期間に収まり、(キッティングNo., ロットNo.) が最新の取り込みに無く、
+    実績が入っていない有効な計画。日時が空・解釈できない計画と、実績のある計画は判定しない（隠さない）。
+    """
+    if scope is None or (actual_qty or 0) > 0:
+        return False
+    start = normalize_plan_datetime(plan_item.get("plan_start_datetime"))
+    end = normalize_plan_datetime(plan_item.get("plan_end_datetime"))
+    if start is None or end is None:
+        return False
+    period_start, period_end = scope["period"]
+    if start < period_start or end > period_end:
+        return False
+    return (plan_item["kitting_list_no"], plan_item.get("lot_no") or "") not in scope["keys"]
+
+
+def is_plan_ended(plan_end_datetime, today):
+    """計画終了日の日付が today（date）以前か（今日の夕方に終わる計画も True）。空や解釈できない値は True（隠さない）。"""
+    end = normalize_plan_datetime(plan_end_datetime)
+    if end is None:
+        return True
+    return end[:10] <= today.strftime("%Y/%m/%d")
+
+
+def filter_plan_rows_by_end_and_stale(rows, hide_stale, only_ended, today):
+    """
+    計画一覧の行（絞り込み済み）に、「計画終了日が来たものだけ」（only_ended）と「古い計画を隠す」（hide_stale）を AND で適用する。
+    戻り値は (残した行, 古い計画として隠した件数)。隠した件数は、ほかの絞り込みを通った行のうち A で除いた数。
+    """
+    if only_ended:
+        rows = [row for row in rows if is_plan_ended(row[PLAN_ROW_END_INDEX], today)]
+    if not hide_stale:
+        return rows, 0
+    kept = [row for row in rows if row[PLAN_ROW_STALE_INDEX] != STALE_MARK]
+    return kept, len(rows) - len(kept)
 
 
 # 段階6で公開名を付けた。旧名は同じものを指す別名として残す（呼び出し側は新しい名前を使う）。

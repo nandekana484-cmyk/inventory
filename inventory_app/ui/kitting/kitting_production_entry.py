@@ -110,6 +110,9 @@ class KittingProductionEntryWindow(PlanListFiltersMixin, tk.Toplevel):
         self._plan_col_index = {}
         self._plan_filter_labels = {}
         self._hide_completed_var = tk.BooleanVar(value=False)
+        # 古い計画を隠す・計画終了日が来たものだけ（D-192）。初期はどちらもオフ。判定は plan_list_filters.py。
+        self._hide_stale_var = tk.BooleanVar(value=False)
+        self._only_ended_var = tk.BooleanVar(value=False)
         self._plan_date_from_entry = None
         self._plan_date_to_entry = None
         self._plan_row_iid_by_kitting_no = {}
@@ -292,6 +295,17 @@ class KittingProductionEntryWindow(PlanListFiltersMixin, tk.Toplevel):
             filter_row2, text="入力済みを隠す", variable=self._hide_completed_var,
             command=self.apply_plan_filters,
         ).pack(side=tk.LEFT, padx=(15, 5))
+
+        ttk.Checkbutton(
+            filter_row2, text="古い計画を隠す", variable=self._hide_stale_var,
+            command=self.apply_plan_filters,
+        ).pack(side=tk.LEFT, padx=(5, 2))
+        self._stale_hidden_label = ttk.Label(filter_row2, text="")
+        self._stale_hidden_label.pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Checkbutton(
+            filter_row2, text="計画終了日が来たものだけ", variable=self._only_ended_var,
+            command=self.apply_plan_filters,
+        ).pack(side=tk.LEFT, padx=(5, 5))
 
         ttk.Button(
             filter_row2, text="絞り込みクリア", command=self.clear_plan_filters

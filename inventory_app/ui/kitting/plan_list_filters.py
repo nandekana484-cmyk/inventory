@@ -1,14 +1,21 @@
 """生産実績入力画面の計画一覧の絞り込み（文字・日付範囲・チェックボックス）と、一覧の取得・表示・更新。KittingProductionEntryWindow の mixin。
 kitting_production_entry.py から移した（関数の中身は変えていない。D-190）。
 """
+import logging
 import tkinter as tk
+from datetime import date
 from tkinter import ttk
 from tkcalendar import DateEntry
 from services.production_service import calculate_lot_completion
 from services.lot_merge_service import merged_lot_nos
 from models.kitting_plan import classify_side1_only_plan, list_active_plan_items
 from ui.common.column_filter import CheckboxFilterPopup, build_filter_predicates, date_range_predicate, filter_rows, row_matches
-from services.production_entry_service import is_plan_row_completed, plan_row_tag
+from services.production_entry_service import (
+    PLAN_ROW_STALE_INDEX, STALE_MARK, filter_plan_rows_by_end_and_stale, is_plan_row_completed, is_stale_plan,
+    load_stale_plan_scope, plan_row_tag,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class PlanListFiltersMixin:
@@ -118,6 +125,13 @@ class PlanListFiltersMixin:
         """
         rows = []
         lot_completion_cache = {}
+        # 「古い計画を隠す」の判定は一覧を作るときに1回だけ（最新の取り込みの行を、絞り込みのたびには読まない。D-192）。
+        # 失敗しても一覧は出す（何も隠さない）。
+        try:
+            stale_scope = load_stale_plan_scope()
+        except Exception:
+            logger.exception("古い計画の判定に使う最新の取り込みを読めませんでした（何も隠しません）")
+            stale_scope = None
 
         # 完了済みも取得し、表示/非表示は「入力済みを隠す」で切り替える。
         for plan_item in list_active_plan_items(include_completed=True):
@@ -149,7 +163,11 @@ class PlanListFiltersMixin:
                 f"{lot_remaining:.0f}",
                 # 隠し要素1: 生産面マスターの分類（D-9x）。row[-1] は production_side という契約なので、その前に置く。
                 str(classify_side1_only_plan(plan_item) or ""),
-                # 隠し要素2: production_side。「入力済みを隠す」が (setup_file_no, production_side) で file_actuals を引くのに使う。
+                # 隠し要素2: 計画終了日（「計画終了日が来たものだけ」用。D-192）。
+                plan_item["plan_end_datetime"] or "",
+                # 隠し要素3: 古い計画の印（「古い計画を隠す」用。D-192）。
+                STALE_MARK if is_stale_plan(plan_item, actual_qty, stale_scope) else "",
+                # 隠し要素4: production_side。「入力済みを隠す」が (setup_file_no, production_side) で file_actuals を引くのに使う。
                 str(plan_item.get("production_side") or ""),
             ))
 
@@ -166,7 +184,7 @@ class PlanListFiltersMixin:
             self.tree_plan_list.delete(item)
 
         self._plan_row_iid_by_kitting_no = {}
-        # 末尾の隠し要素2つ（分類・production_side）は Treeview に渡さない。
+        # 末尾の隠し要素4つ（分類・計画終了日・古い計画の印・production_side）は Treeview に渡さない。
         col_count = len(self._plan_col_index)
         for values in rows:
             classification = values[col_count] if len(values) > col_count else ""
@@ -188,6 +206,9 @@ class PlanListFiltersMixin:
         for col_key in self._plan_checkbox_buttons:
             self._update_plan_filter_button_style(col_key)
         self._hide_completed_var.set(False)
+        self._hide_stale_var.set(False)
+        self._only_ended_var.set(False)
+        self._stale_hidden_label.config(text="")
         if self._plan_date_from_entry is not None:
             self._plan_date_from_entry.delete(0, tk.END)
         if self._plan_date_to_entry is not None:
@@ -230,6 +251,10 @@ class PlanListFiltersMixin:
             actual_qty = plan_item["app_cumulative_qty"]
             diff = order_qty - actual_qty
 
+            key = (kitting_list_no, lot_no)
+            row_index = row_index_by_key.get(key)
+            # 古い計画の印は、一覧を作ったときの判定を引き継ぐ。登録して実績が入ったら外す（実績のある計画は隠さない）。
+            was_stale = row_index is not None and self._all_plan_rows[row_index][PLAN_ROW_STALE_INDEX] == STALE_MARK
             new_row = (
                 kitting_list_no,
                 lot_no,
@@ -242,13 +267,13 @@ class PlanListFiltersMixin:
                 f"{diff:.0f}",
                 f"{lot_completed:.0f}",
                 f"{lot_remaining:.0f}",
-                # _fetch_plan_list_rows()と同じ末尾の隠し要素（分類・production_side）。
+                # _fetch_plan_list_rows()と同じ末尾の隠し要素（分類・計画終了日・古い計画の印・production_side）。
                 str(classify_side1_only_plan(plan_item) or ""),
+                plan_item["plan_end_datetime"] or "",
+                STALE_MARK if was_stale and actual_qty <= 0 else "",
                 str(plan_item.get("production_side") or ""),
             )
 
-            key = (kitting_list_no, lot_no)
-            row_index = row_index_by_key.get(key)
             if row_index is not None:
                 self._all_plan_rows[row_index] = new_row
 
@@ -303,6 +328,13 @@ class PlanListFiltersMixin:
 
             filtered = [row for row in filtered if not is_row_completed(row)]
 
+        # 「計画終了日が来たものだけ」「古い計画を隠す」。DB には触れず、一覧を作ったときの隠し要素で判定する（D-192）。
+        hide_stale = self._hide_stale_var.get()
+        filtered, stale_hidden_count = filter_plan_rows_by_end_and_stale(
+            filtered, hide_stale, self._only_ended_var.get(), date.today(),
+        )
+        self._stale_hidden_label.config(text=f"古い計画 {stale_hidden_count}件を隠しています" if hide_stale else "")
+
         self._populate_plan_list_tree(filtered)
 
     def clear_plan_filters(self):
@@ -313,6 +345,8 @@ class PlanListFiltersMixin:
         for col_key in self._plan_checkbox_buttons:
             self._update_plan_filter_button_style(col_key)
         self._hide_completed_var.set(False)
+        self._hide_stale_var.set(False)
+        self._only_ended_var.set(False)
         if self._plan_date_from_entry is not None:
             self._plan_date_from_entry.delete(0, tk.END)
         if self._plan_date_to_entry is not None:
