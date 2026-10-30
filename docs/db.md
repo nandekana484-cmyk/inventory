@@ -11,11 +11,13 @@
 |---|---|---|
 | 月次DB | `<APP_DATA_DIR>/db/<フォルダ名>/inventory.db` | `config.DB_PATH`。切り替えの対象 |
 | 既定DB | `<APP_DATA_DIR>/db/inventory.db` | 一度もDBを選んでいないときの `DB_PATH`。「未選択」として扱い、アプリは読み書きしない（`config.is_default_db()`） |
-| マスタDB | `<APP_DATA_DIR>/db/master.db` | `config.MASTER_DB_PATH`。固定パスで、切り替えの対象外。board_structure_master・parts_attributes・workers・parts・final_products・production_side_master・db_lifecycle_log が入る |
+| マスタDB | `<APP_DATA_DIR>/db/master.db` | `config.MASTER_DB_PATH`。固定パスで、切り替えの対象外。board_structure_master・parts_attributes・workers・parts・final_products・production_side_master・db_lifecycle_log・board_teitori_map（表）・v_board_teitori（ビュー、現場アプリが読む。D-191、`docs/domain/board_teitori.md`）が入る |
 
 - `APP_DATA_DIR`: 開発環境では `inventory_app/`、.exe 実行時は .exe が置かれたフォルダ（`config.py`）
 - フォルダ名 `db` は予約済みで、ユーザーは作れない（`config.is_default_db()` の docstring）
 - 接続は `models/db_common.py` の `get_connection()`（月次DB）と `get_master_connection()`（master.db）。timeout は30秒
+- 月次DB を読むだけの処理（基板丁数の対応表の取得）は `models/monthly_db_readonly.py` で `mode=ro` ＋ `PRAGMA query_only = ON` で開く。切り替えや形の確認はしない
+- master.db のジャーナルモードは delete のまま（WAL にしない）。`board_teitori_map` への書き込みは50組以下ずつの短いトランザクション。表の作成はマイグレーションではなく、使うときに `CREATE TABLE IF NOT EXISTS`。ビューは定義が違うときだけ作り直す
 
 ## 切り替え
 

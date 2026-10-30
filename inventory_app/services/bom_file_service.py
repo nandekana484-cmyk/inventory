@@ -186,6 +186,11 @@ class BOMFileIndex:
         """インデックス済みの file_no 一覧（ソート済み）を返す。"""
         return sorted(self._index.keys())
 
+    def get_mtime(self, file_no: str) -> Optional[float]:
+        """索引に登録した時点の TSV の更新日時（os.path.getmtime）。索引に無ければ None。読み取り専用（D-191）。"""
+        entry = self._index.get(file_no)
+        return entry["mtime"] if entry is not None else None
+
     def resolve_file_no(self, setup_file_no: str) -> Optional[str]:
         """
         kitting_plan_items.setup_file_no のような表記（例："0103"）から、

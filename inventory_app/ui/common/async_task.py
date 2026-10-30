@@ -1,7 +1,7 @@
 """
 重い処理を別スレッドで実行し、終わったら UI スレッドで結果を受け取る部品（段階6）。
 LoadingWindow を出す → threading.Thread(daemon=True) で実行 → queue.Queue に結果を入れる → after(200) でポーリング、という
-各画面で同じだったパターンをまとめた。今は ui/main_window.py の4か所だけが使う（ほかの画面は以前のまま）。
+各画面で同じだったパターンをまとめた。今は ui/main_window.py の5か所だけが使う（ほかの画面は以前のまま）。
 """
 import queue
 import threading

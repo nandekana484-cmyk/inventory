@@ -1453,6 +1453,7 @@ D-81の修正（候補が複数ある場合も、いずれか1件の実績合計
 | D-188 | 現場実績入力アプリ（別アプリ）の実績CSVを取り込む機能（2026-10-25、§65）。(1) 取り込んだ行は、実績・NG に書かず、別の表（`external_actual_batches`・`external_actual_rows`、マイグレーション015、版 15）に登録待ちとしてためる。既存の登録待ち（`pending_csv_import_rows`）には列を足さない、(2) 人が一覧（今→新の差・色）で確認し、選んだ行だけを `register_actual_and_ng()` で登録する。自動では登録しない、(3) 登録の直前に今の値を読み直し、一覧と違う行は登録しない、(4) 取り込み先のDB（フォルダ名）が今のDB と違うときは取り込みも登録も止める。登録待ちは月次DB ごとで、前月からの引き継ぎでは引き継がない（警告だけ）、(5) 登録待ちの表に行ごとの `exported_at` を足した（設計の表になかった。CSV の書き出し日時は行ごとに違いうるため） | 本ファイル §65、docs/domain/external_actual.md |
 | D-189 | 現場CSV取込の小さな修正2つ（2026-10-25、§65.4、利用者の決定）。(1) 面=1 の行のロットが「生産面マスター未登録」（`classify_side1_only_plan()` が c）のときは、緑ではなく黄（要確認）にして、備考に「生産面マスター未登録（片面の製品か面2待ちか、確かめてから登録してください）」を出す。「緑をすべて選ぶ」では選ばれず、1行ずつ自分で選べば登録できる（既存の登録待ち一覧が D-94 で未登録の面1に確認を求めるのに合わせた。差がある行だけが対象で、変更なし（グレー）の行と面2の行は変わらない）。(2) 拡張子が `.csv` でないファイル（現場アプリが書き出し中に置く `.tmp` など）は取り込まず、理由をメッセージで出す（`file_reject_reason()`。画面は形式の確認より前に断り、サービスも断る。大文字小文字は問わない）。`version.py` は 4.0.0 のまま。テスト9件を足し（合計 723件）、既存の1件は、片面の製品として生産面マスターに登録してから緑を確かめる形に直した | 本ファイル §65.4 |
 | D-190 | 動きを変えないリファクタリング（2026-10-25、利用者の承認。`docs/refactoring_plan.md` の「分割A」「分割B」）。1000行を超える画面から、境目が明確で、テストのある部分を、mixin クラスとして別ファイルへ移した。**分割A**（登録待ち一覧 `ui/production/production_import_staging_window.py` 1714→1312行）：登録済みリスト 6メソッド → `staging_already_registered.py`、不一致・候補なしの印付けと CSV 出力 8メソッド → `staging_marking.py`。移す前に、テストが2つのモジュールの属性を `monkeypatch` で差し替えている箇所を全件調べた：移すメソッドが使う属性への差し替えは無い（差し替えは `ask_duplicate_resolution` だけで、これは移さない `_resolve_duplicate()` が使う）。関数の中身は変えず、移す前と後で54関数すべてのコメント以外の構文が同じことを確かめた。移した後に使われなくなった import は消した。**分割B**（生産実績入力 `ui/kitting/kitting_production_entry.py` 1626→1318行）：計画一覧の絞り込みと一覧の取得・表示・更新 15メソッド（連なりの途中の `_fetch_plan_list_rows` など一覧の取得を含む）→ `plan_list_filters.py`。`main_window.py` が `KittingProductionEntryWindow._fetch_plan_list_rows()` をクラスから呼ぶが、継承で今までどおり見える。登録確認の部分（約300行）は手を付けていない。61関数すべてでコメント以外の構文が同じ。テストは723件のまま | docs/refactoring_plan.md |
+| D-191 | 計画ごとの丁取り数を引ける対応表を master.db に作る（2026-10-30、現場アプリからの依頼、利用者の決定 1〜7、§66）。表 `board_teitori_map`（キー：正規化した (ファイルNo., 実装ライン)）とビュー `v_board_teitori`（ファイルNo.・実装ライン・96コード・丁取り数・status・取得日時）。(1) 正規化：計画の取り込みは変えず、表のキーだけ `normalize_setup_file_no`・`normalize_mounting_line` で正規化し、現場アプリが同じ規則で引く。(2) 対象の計画：`COALESCE(is_active,1)=1 AND COALESCE(delete_flag,0)=0`（完了済みのロットを含む）。`delete_flag` の列が無い古い版の DB では `is_active` だけ。(3) status は TSV から決まる6つ（ok・tsv_not_found・ambiguous_tsv・read_error・no_k_row・multi_k）を表に、`code_not_in_master`・`teitori_invalid` を足した8つをビューに。丁取り数は ok のときだけ1以上の整数。(4) 取得のタイミング：計画の取り込みが成功した後、前月引き継ぎが完了した後、バッチの復元の後、手動の再取得（ふだんは差分だけを背景で。復元は今のアプリに画面からの操作が無いので足していない）。(5) 手動の再取得は、db フォルダの下のすべての月次DB（既定DB を除く）を全部引き直す。(6) 再取得の入口はメインメニューの基板丁数マスターの下で、使える人も同じ。(7) .xlsx は読まない（tsv_not_found のまま）。月次DB は `mode=ro` ＋ `query_only` で読み、master.db のジャーナルモードは delete のまま、50組以下ずつ書く。BOM の共有フォルダを読めないときは取得を止める（全組を上書きしない） | 本ファイル §66、docs/domain/board_teitori.md |
 
 ### 30.1 Shift+Sの検証結果（D-84）
 
@@ -3570,3 +3571,31 @@ D-155 の一覧と、前回の設計案のお勧め（統合したロットで�
 - **`.csv` 以外は取り込まない**：`file_reject_reason()`。サービスの取り込みの最初と、画面の「ファイルを選ぶ」の直後の両方で断る。ファイル名の形（`actuals_<年月日>_<時分秒>_<番号4桁>.csv`）までは検査しない
 
 テスト：`test_external_actual_register.py` に2件（未登録の面1は黄で、選べば登録できる／面2の行は対象外）と、直した1件（片面の製品は、生産面マスターに登録すれば緑）、`test_external_actual_import.py` に5件（`.tmp`・`.txt`・拡張子なし・`.csv.tmp` を断る、`.CSV` は取り込む）、`test_external_actual_window.py` に2件（`.tmp` を断るメッセージ、「緑をすべて選ぶ」が黄を選ばない）。
+
+## 66. 基板丁数の対応表（現場アプリ向け、2026-10-30、D-191）
+
+現場アプリが、計画ごとの丁取り数を引けるようにする。丁取り数は計画に入っておらず、BOM TSV の K行の96コードを基板丁数マスターで引く必要があるので、既存アプリが先に済ませて master.db に置く。業務ルールと読み方は `docs/domain/board_teitori.md`。
+
+### 66.1 作ったもの
+
+- `models/board_teitori_map.py`：表とビューの作成（使うときに作る。マイグレーション無し）、読み書き。ビューの定義は、作るときに今の定義と比べ、違うときだけ作り直す
+- `models/kitting_plan_setup_pairs.py`：対象の計画の組を集める（`kitting_plan.py` が大きいので別ファイル）
+- `models/monthly_db_readonly.py`：月次DB を `mode=ro` ＋ `query_only` で開く（形の確認・マイグレーション・`config.DB_PATH` の切り替え・ロックファイルは触らない）
+- `services/board_teitori_service.py`：K行の読み取りと status の判定、ふだんの取得（差分）、手動の再取得（全部）。取得は1つずつ（ロック）
+- `services/board_teitori_runner.py`：ふだんの取得を背景で走らせる。走っている間の依頼は、終わった後に1回だけまとめて走らせる。失敗は logging に残す
+- `BOMFileIndex.get_mtime()`：TSV の更新日時を返す読み取りのメソッド（既存の動きは変えていない）
+- 走らせる場所：計画CSV取込の成功後（`ui/kitting/kitting_plan_import.py`）、前月引き継ぎの完了後（`ui/main_window.py` の `_on_create_db_finished()`）、メインメニューのボタン（`on_refresh_board_teitori_map()`）
+
+### 66.2 決めたこと・補ったこと
+
+- 利用者の決定は D-191 の (1)〜(7)
+- バッチの復元は、今のアプリに画面からの操作が無い（`mark_batch_deleted(deleted=False)` を呼ぶ画面が無い）ので、走らせる場所を足していない。復元された計画の組は、次の取得で拾われる
+- BOM の共有フォルダを読めない（TSV が1つも見えない）ときは、取得を止めて何も書かない（一時的なネットワークの不通で、全組を `tsv_not_found` に書き換えないため）
+- 実装ラインは、TSV 側も組のキーと同じ正規化をして比べる（`_calculate_bom` は計画の値と文字列で比べる）
+- ファイルNo.・実装ラインが空欄の計画は、表に入れない
+- 開けない月次DB、計画の表が無い月次DB は、手動の再取得で飛ばして数える
+
+### 66.3 まだ確かめていないこと
+
+- 現場アプリが読んでいる最中の master.db に書き込んだときの待ち（読み取りが長いと、書き込みのコミットが最大30秒待つ）。現場アプリは短く読んで閉じる前提（docs/domain/board_teitori.md）
+- 2台以上のPCが同じ master.db に同時に書くこと（master.db は各PCのローカルで、今は共有していない）

@@ -19,6 +19,7 @@ from models.kitting_plan import (
 )
 from models.operation_log import log_operation
 from ui.loading_window import LoadingWindow
+from services.board_teitori_runner import request_board_teitori_refresh
 from ui.common.window_utils import center_window
 
 class KittingPlanImportWindow(tk.Toplevel):
@@ -289,6 +290,8 @@ class KittingPlanImportWindow(tk.Toplevel):
                 detail=f"バッチID: {batch_id} / {count}件（{filename}）",
             )
             messagebox.showinfo("取込完了", msg, parent=self.winfo_toplevel())
+            # 基板丁数の対応表（現場アプリ用、D-191）を背景で更新する。失敗しても画面は出さない。
+            request_board_teitori_refresh()
 
             # 今回の取込で追加された面2の計画によって、実績が登録済みの面1の
             # 計画が一覧から隠れることになった組を通知する（2026-10-07新設、

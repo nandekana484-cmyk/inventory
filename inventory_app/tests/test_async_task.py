@@ -59,11 +59,11 @@ def test_error_passes_exception_and_traceback(tk_root):
 
 
 def test_main_window_uses_run_in_background():
-    """メイン画面は4か所で run_in_background() を呼び、自分ではスレッドもキューも作らない（コメントは数えない）。"""
+    """メイン画面は5か所で run_in_background() を呼び、自分ではスレッドもキューも作らない（コメントは数えない）。5か所目は基板丁数の対応表の再取得（D-191）。"""
     import ast
     import inspect
     from ui import main_window
     tree = ast.parse(inspect.getsource(main_window))
     calls = [ast.unparse(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)]
-    assert calls.count("run_in_background") == 4
+    assert calls.count("run_in_background") == 5
     assert not {"threading.Thread", "queue.Queue", "LoadingWindow"} & set(calls)

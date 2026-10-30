@@ -26,6 +26,8 @@ from models.operation_log import log_operation, get_inventory_diff_export_status
 from models.db_lifecycle_log import record_db_lifecycle_event, OPERATION_TYPE_CREATE_WITH_CARRY_OVER
 from ui.common.db_delete_helper import confirm_and_delete_database
 from services.db_migration_carryover import carry_over_incomplete_lots
+from services.board_teitori_runner import request_board_teitori_refresh
+from services.board_teitori_service import refresh_all_monthly
 from services.backup_service import (
     backup_databases, validate_monthly_db_backup,
 )
@@ -242,6 +244,12 @@ class MainWindow(tk.Tk):
         )
         btn_parts_attributes_import.pack(fill=tk.X, pady=5)
 
+        # 基板丁数の対応表（現場アプリ用、D-191）の手動の再取得。表示条件と権限は、基板丁数マスターと同じ（ロールを問わず表示）。
+        btn_board_teitori_refresh = ttk.Button(
+            master_frame, text="　基板丁数の対応表を再取得", command=self.on_refresh_board_teitori_map
+        )
+        btn_board_teitori_refresh.pack(fill=tk.X, pady=5)
+
         # 生産面マスター（D-9x）。表示条件と権限は、構成基板数マスター・基板丁数マスターと同じ（ロールを問わず表示）。
         btn_production_side_master = ttk.Button(
             master_frame, text="3. 生産面マスター", command=self.open_production_side_master
@@ -285,7 +293,7 @@ class MainWindow(tk.Tk):
             btn_kitting_import, btn_kitting_production, btn_inventory_input,
             btn_theoretical_import, btn_inventory_diff, btn_ng_input, btn_wip_expansion,
             btn_operation_log,
-            btn_parts_attributes_import, btn_production_side_master,
+            btn_parts_attributes_import, btn_board_teitori_refresh, btn_production_side_master,
             btn_worker_registration, btn_board_structure_import, btn_logout,
         ]
         # admin のときだけ作るボタンは、あるときだけ追加する。
@@ -300,7 +308,7 @@ class MainWindow(tk.Tk):
             btn_kitting_import, btn_kitting_production, btn_inventory_input,
             btn_theoretical_import, btn_inventory_diff, btn_ng_input, btn_wip_expansion,
             btn_operation_log,
-            btn_board_structure_import, btn_parts_attributes_import, btn_production_side_master,
+            btn_board_structure_import, btn_parts_attributes_import, btn_board_teitori_refresh, btn_production_side_master,
             btn_worker_registration,
             self.btn_backup_databases,
         ]
@@ -619,6 +627,21 @@ class MainWindow(tk.Tk):
             "parts_attributes_import",
             lambda: PartsAttributesImportWindow(self, current_worker=self.current_worker),
         )
+
+    def on_refresh_board_teitori_map(self):
+        """基板丁数の対応表（master.db）を、すべての月次DB（既定DB を除く）から全部引き直す（D-191）。"""
+        def _on_success(summary):
+            lines = [f"{status}：{count}組" for status, count in summary["view_by_status"].items()]
+            msg = (f"{summary['pairs']}組を引き直しました（{summary['seconds']}秒）。\n\n" + "\n".join(lines)
+                   + f"\n\n飛ばした月次DB：{len(summary['skipped_dbs'])}件")
+            log_operation(self.current_worker.get("name", "unknown"), "基板丁数の対応表の再取得",
+                          detail=f"{summary['pairs']}組 / 飛ばした月次DB {len(summary['skipped_dbs'])}件")
+            messagebox.showinfo("再取得完了", msg, parent=self.winfo_toplevel())
+
+        def _on_error(error, traceback_text):
+            messagebox.showerror("エラー", f"基板丁数の対応表の再取得に失敗しました：\n{error}", parent=self.winfo_toplevel())
+
+        run_in_background(self, "基板丁数の対応表を再取得しています…", refresh_all_monthly, _on_success, _on_error)
 
     def open_board_structure_import(self):
         self._open_singleton_window(
@@ -1038,6 +1061,8 @@ class MainWindow(tk.Tk):
                 worker_name=self.current_worker.get("name", "unknown"),
                 source_info=self._create_db_old_db_folder,
             )
+            # 基板丁数の対応表（現場アプリ用、D-191）を背景で更新する。config.DB_PATH は新しい DB。
+            request_board_teitori_refresh()
 
             msg = (
                 "新しいデータベースを作成しました。\n"
