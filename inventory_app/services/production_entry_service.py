@@ -7,7 +7,7 @@
 import re
 from datetime import datetime
 
-from models.kitting_plan_batches import fetch_latest_csv_batch_scope
+from models.kitting_plan_batches import fetch_stale_plan_keys
 from models.ng_declarations import save_ng_declaration
 from models.operation_log import log_operation
 from services.date_parsing import parse_flexible_date
@@ -250,37 +250,12 @@ def normalize_plan_datetime(value):
     return parsed.strftime("%Y/%m/%d %H:%M:%S")
 
 
-def load_stale_plan_scope():
+def load_stale_plan_keys():
     """
-    「古い計画を隠す」の判定に使う {"period": (最小の計画開始日, 最大の計画終了日), "keys": {(キッティングNo., ロットNo.)}}。
-    最新の取り込みが無い、または期間が決まらない（開始日・終了日が解釈できる行が無い）ときは None（何も隠さない）。
-    一覧を作るときに1回だけ呼ぶこと。取り込みの行は、絞り込みのたびには読まない。
+    画面の「古い計画を隠す」で隠す計画の {(キッティングNo., ロットNo.)}。判定は月次DB のビュー v_plan_stale にあり（D-193）、ここでは読むだけ。
+    ビューの is_stale = 1 かつ has_legacy_actuals = 0。一覧を作るときに1回だけ呼ぶこと（絞り込みのたびには読まない）。
     """
-    batch = fetch_latest_csv_batch_scope()
-    if batch is None:
-        return None
-    starts = [d for d in (normalize_plan_datetime(s) for s, _e in batch["datetimes"]) if d]
-    ends = [d for d in (normalize_plan_datetime(e) for _s, e in batch["datetimes"]) if d]
-    if not starts or not ends:
-        return None
-    return {"period": (min(starts), max(ends)), "keys": batch["keys"]}
-
-
-def is_stale_plan(plan_item, actual_qty, scope):
-    """
-    古い計画か（隠す対象）。開始日と終了日がどちらも期間に収まり、(キッティングNo., ロットNo.) が最新の取り込みに無く、
-    実績が入っていない有効な計画。日時が空・解釈できない計画と、実績のある計画は判定しない（隠さない）。
-    """
-    if scope is None or (actual_qty or 0) > 0:
-        return False
-    start = normalize_plan_datetime(plan_item.get("plan_start_datetime"))
-    end = normalize_plan_datetime(plan_item.get("plan_end_datetime"))
-    if start is None or end is None:
-        return False
-    period_start, period_end = scope["period"]
-    if start < period_start or end > period_end:
-        return False
-    return (plan_item["kitting_list_no"], plan_item.get("lot_no") or "") not in scope["keys"]
+    return fetch_stale_plan_keys()
 
 
 def is_plan_ended(plan_end_datetime, today):

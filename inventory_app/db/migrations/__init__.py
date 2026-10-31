@@ -14,7 +14,7 @@ import re
 BASELINE_VERSION = 13
 
 # このアプリが扱える最新の版。マイグレーションを追加したら上げる（load_migrations() が食い違いを検出する）。
-LATEST_VERSION = 15
+LATEST_VERSION = 16
 
 _MODULE_NAME = re.compile(r"^m(\d{3})_\w+$")
 

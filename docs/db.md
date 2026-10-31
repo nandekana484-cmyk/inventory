@@ -91,6 +91,13 @@
 |---|---|---|---|
 | 14 | `db/migrations/m014_add_lot_merges.py` | ロット統合の表 `lot_merges` とインデックスを足す（既存のデータは変えない。D-145） | 2026-10-15（2.0.0 予定） |
 | 15 | `db/migrations/m015_add_external_actual_tables.py` | 現場実績CSVの登録待ちの表 `external_actual_batches`・`external_actual_rows` とインデックス2つを足す（既存のデータは変えない。`models/external_actual_rows.py`、docs/domain/external_actual.md、D-188） | 2026-10-25（4.0.0） |
+| 16 | `db/migrations/m016_add_plan_stale_view.py` | 古い計画の判定のビュー `v_plan_stale` を足す（表のデータは変えない。`models/plan_stale_view.py`、docs/domain/plan_stale.md、D-193）。**版 16 の DB は 4.x 以前の .exe では開けない** | 2026-10-31（5.0.0 予定） |
+
+### ビューを参照する表を作り直すとき
+
+- 月次DB のビュー `v_plan_stale`（D-193）は、`kitting_plan_items`・`kitting_plan_batches`・`production_daily` を参照する。SQLite は、ビューが参照する表を `DROP TABLE` してから `ALTER TABLE ... RENAME` すると `error in view v_plan_stale: no such table` で失敗する
+- この3つの表を作り直すマイグレーション（下の「表を作り直す変更」）は、**先にビューを消し（`models/plan_stale_view.drop_plan_stale_view(con)`）、表を作り直してから、最後にビューを作り直す**（`create_plan_stale_view(con)`。マイグレーションの中では、そのときの定義の CREATE 文を一字一句書いて作る）こと
+- 確かめるテスト：`tests/test_plan_stale_view.py` の `test_rebuilding_a_table_needs_the_view_dropped_first`
 
 ### 開けなかったとき・適用に失敗したとき
 

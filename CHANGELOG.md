@@ -360,7 +360,16 @@ D-81の追加検証で見つかった1件の不具合を修正（D-83）。
 - PDF読み取り（在庫照合）は未完成のため、メニューの項目と画面までの import を外し、.exe に入れない部品（cv2・numpy・pdfplumber・pdfminer・pytesseract・pdf2image）を `EXCLUDED_MODULES` で外した。ソースは残してあり、再開の手順は `PDF_OCR_FEATURE_NOTES.md` の冒頭にある。Pillow は reportlab（帳票の PDF 出力）が必須で使うため残した。
 - .exe の大きさと起動時間：.exe は 35,876,686 バイト（3.1.0 の試しのビルドは 127,431,629 バイト。この PC の dist にあった旧い v1.2.1 は 127,381,395 バイト）。ログイン画面が出るまでは、一時フォルダに .exe だけを置いて 5 回測り、5.18・3.91・3.86・3.99・3.94 秒（中央値 3.94 秒。1回目は初回の読み込みで遅い）。3.1.0 のコードを同じ方法で測ったときは約 7.0 秒
 
-## 未リリース（4.1.0 の予定。`version.py` はまだ変えていない）
+## 未リリース（5.0.0 の予定。`version.py` はまだ変えていない）
+
+> **警告：月次DB の版が 16 になる。更新した月次DB は 4.x 以前の .exe では開けない**（「アプリを最新版に更新してください」と出る）。5.0.0 にまとめるのは、D-191・D-192・共有フォルダのエラー表示・D-193 の変更。バックアップは、DB を開くときに自動で取る（`inventory.db.bak_v15_to_v16_…`）。
+
+### 古い計画の判定を月次DB のビューにした（現場アプリ向け、D-193）
+- 月次DB の版を 16 に上げた（マイグレーション 016）。ビュー `v_plan_stale` を足した：有効な計画1つにつき1行で、`is_stale`（古い計画）・`has_legacy_actuals`（実績の有無）・`replacement_kitting_list_no` / `replacement_count`（置き換え先。古い計画のときだけ）・`latest_batch_id`・`judge_reason`・`judged_at` を持つ。読み方は `docs/domain/plan_stale.md`。
+- 生産実績入力の「古い計画を隠す」は、このビューを読む形に変えた（判定は1か所。Python 側の判定は無くした）。隠れる計画は変わらない。
+- 計画CSVの取り込みの完了メッセージに「古い計画と判定された計画：N件」を足した。
+- 古い月の月次DB は、新しいアプリで一度開くとビューができる（開くまでビューは無い）。
+- `kitting_plan_items`・`kitting_plan_batches`・`production_daily` を作り直すマイグレーションは、先にビューを消してから作り直す決まりを `docs/db.md` に書いた。
 
 ### 計画ごとの丁取り数の対応表（現場アプリ向け、D-191）
 - master.db に、表 `board_teitori_map` とビュー `v_board_teitori` を足した。計画の (ファイルNo., 実装ライン) ごとに、BOM TSV の K行の96コードと基板丁数マスターの丁取り数を引ける。status は8種類（ok・tsv_not_found・ambiguous_tsv・read_error・no_k_row・multi_k・code_not_in_master・teitori_invalid）。読み方は `docs/domain/board_teitori.md`。

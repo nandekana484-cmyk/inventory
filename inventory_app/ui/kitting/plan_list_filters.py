@@ -11,8 +11,8 @@ from services.lot_merge_service import merged_lot_nos
 from models.kitting_plan import classify_side1_only_plan, list_active_plan_items
 from ui.common.column_filter import CheckboxFilterPopup, build_filter_predicates, date_range_predicate, filter_rows, row_matches
 from services.production_entry_service import (
-    PLAN_ROW_STALE_INDEX, STALE_MARK, filter_plan_rows_by_end_and_stale, is_plan_row_completed, is_stale_plan,
-    load_stale_plan_scope, plan_row_tag,
+    PLAN_ROW_STALE_INDEX, STALE_MARK, filter_plan_rows_by_end_and_stale, is_plan_row_completed, load_stale_plan_keys,
+    plan_row_tag,
 )
 
 logger = logging.getLogger(__name__)
@@ -125,13 +125,13 @@ class PlanListFiltersMixin:
         """
         rows = []
         lot_completion_cache = {}
-        # 「古い計画を隠す」の判定は一覧を作るときに1回だけ（最新の取り込みの行を、絞り込みのたびには読まない。D-192）。
+        # 「古い計画を隠す」の判定は、月次DB のビュー v_plan_stale を一覧を作るときに1回だけ読む（絞り込みのたびには読まない。D-192・D-193）。
         # 失敗しても一覧は出す（何も隠さない）。
         try:
-            stale_scope = load_stale_plan_scope()
+            stale_keys = load_stale_plan_keys()
         except Exception:
-            logger.exception("古い計画の判定に使う最新の取り込みを読めませんでした（何も隠しません）")
-            stale_scope = None
+            logger.exception("古い計画の判定（v_plan_stale）を読めませんでした（何も隠しません）")
+            stale_keys = set()
 
         # 完了済みも取得し、表示/非表示は「入力済みを隠す」で切り替える。
         for plan_item in list_active_plan_items(include_completed=True):
@@ -166,7 +166,7 @@ class PlanListFiltersMixin:
                 # 隠し要素2: 計画終了日（「計画終了日が来たものだけ」用。D-192）。
                 plan_item["plan_end_datetime"] or "",
                 # 隠し要素3: 古い計画の印（「古い計画を隠す」用。D-192）。
-                STALE_MARK if is_stale_plan(plan_item, actual_qty, stale_scope) else "",
+                STALE_MARK if (kitting_list_no, lot_no or "") in stale_keys else "",
                 # 隠し要素4: production_side。「入力済みを隠す」が (setup_file_no, production_side) で file_actuals を引くのに使う。
                 str(plan_item.get("production_side") or ""),
             ))

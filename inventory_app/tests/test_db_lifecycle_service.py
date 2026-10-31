@@ -72,6 +72,6 @@ def test_new_db_is_stamped_latest_version():
     from db.migrations import LATEST_VERSION
     from db.schema_version import ensure_schema
     path = _make_db("NEWVER")
-    assert sqlite3.connect(path).execute("PRAGMA user_version").fetchone()[0] == LATEST_VERSION == 15
+    assert sqlite3.connect(path).execute("PRAGMA user_version").fetchone()[0] == LATEST_VERSION == 16
     result = ensure_schema(path)          # 開くときの確認では何もしない
     assert result["stamped_baseline"] is False and result["applied"] == [] and result["backup_path"] is None

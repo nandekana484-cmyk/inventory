@@ -46,7 +46,7 @@ def test_csv_extension_is_case_insensitive(tmp_path, month_db):
 def test_db_version_mismatch_is_refused(tmp_path, month_db):
     with sqlite3.connect(month_db) as con:
         con.execute("PRAGMA user_version = 14")
-    with pytest.raises(svc.ExternalActualRefused, match="版（14）がこのアプリの版（15）と違う"):
+    with pytest.raises(svc.ExternalActualRefused, match="版（14）がこのアプリの版（16）と違う"):
         _import(tmp_path, line())
     assert svc.check_db_ready() is not None
 

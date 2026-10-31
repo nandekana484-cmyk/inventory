@@ -41,9 +41,9 @@ def month_db(tmp_path):
 
 
 def test_new_db_has_tables_and_latest_version(month_db):
-    assert _version(month_db) == LATEST_VERSION == 15
+    assert _version(month_db) == LATEST_VERSION == 16
     assert ear.tables_exist()
-    assert ear.get_db_user_version() == 15
+    assert ear.get_db_user_version() == 16
 
 
 def test_migration_015_gives_the_same_shape_as_a_new_db(month_db, tmp_path):
@@ -53,7 +53,7 @@ def test_migration_015_gives_the_same_shape_as_a_new_db(month_db, tmp_path):
     assert [d for d in fresh if d[1] not in OBJECTS] == other          # 既存の表・インデックスは変わっていない
 
     result = sv.ensure_schema(month_db)
-    assert (result["from_version"], result["to_version"], result["applied"]) == (14, 15, [15])
+    assert (result["from_version"], result["to_version"], result["applied"]) == (14, 16, [15, 16])      # 016 は計画の表が無い DB では何もしない
     assert _definitions(month_db) == fresh                              # 新しく作った形と一致する
 
 

@@ -12,7 +12,6 @@ import pytest
 import config
 from db.init_db import init_database_at
 from models.kitting_plan import create_plan_batch, create_plan_version, mark_batch_deleted
-from models.kitting_plan_batches import fetch_latest_csv_batch_scope
 from models.production import insert_daily_production
 from services import production_entry_service as svc
 from ui.kitting.kitting_production_entry import KittingProductionEntryWindow
@@ -48,40 +47,6 @@ def test_is_plan_ended(end, expected):
     assert svc.is_plan_ended(end, TODAY) is expected
 
 
-# ---------------------------------------------------------------- A の判定（純粋関数）
-
-def _scope(keys=(("K1", "L1"),), period=("2026/07/03 00:00:00", "2026/07/13 17:19:59")):
-    return {"period": period, "keys": set(keys)}
-
-
-def _plan(kitting="K9", lot="L9", start="2026/07/05 08:00:00", end="2026/07/06 08:00:00"):
-    return {"kitting_list_no": kitting, "lot_no": lot, "plan_start_datetime": start, "plan_end_datetime": end}
-
-
-def test_stale_plan_inside_period_and_not_in_latest():
-    assert svc.is_stale_plan(_plan(), 0, _scope()) is True
-
-
-@pytest.mark.parametrize("start, end, expected", [
-    ("2026/07/03 00:00:00", "2026/07/13 17:19:59", True),     # 端ちょうどは収まる
-    ("2026/07/02 23:59:59", "2026/07/06 08:00:00", False),    # 開始が期間より前
-    ("2026/07/05 08:00:00", "2026/07/13 17:20:00", False),    # 終了が期間の最大より後（日付は同じで時刻だけ後）
-    ("2026/07/05 08:00:00", "2026/07/14 00:00:00", False),
-])
-def test_period_edges_are_compared_down_to_the_time(start, end, expected):
-    assert svc.is_stale_plan(_plan(start=start, end=end), 0, _scope()) is expected
-
-
-def test_stale_judgement_skips_empty_or_unparseable_dates_keys_in_latest_and_actuals():
-    assert svc.is_stale_plan(_plan(end=""), 0, _scope()) is False
-    assert svc.is_stale_plan(_plan(start=None), 0, _scope()) is False
-    assert svc.is_stale_plan(_plan(end="xx"), 0, _scope()) is False
-    assert svc.is_stale_plan(_plan(kitting="K1", lot="L1"), 0, _scope()) is False     # 最新の取り込みにある
-    assert svc.is_stale_plan(_plan(), 5, _scope()) is False                          # 実績のある計画は隠さない
-    assert svc.is_stale_plan(_plan(), 0, None) is False
-    assert svc.is_stale_plan(_plan(lot=None), 0, _scope(keys=[("K9", "")])) is False  # ロットNo. が空は '' で比べる
-
-
 def _row(end, mark, side="1"):
     return ("K", "L", "s", "f", "b", "1", "1", "0", "1", "0", "1", "", end, mark, side)
 
@@ -97,7 +62,7 @@ def test_filter_rows_counts_only_rows_removed_by_stale():
     assert len(kept) == 1 and hidden == 2
 
 
-# ---------------------------------------------------------------- 最新の取り込み（models）
+# ---------------------------------------------------------------- 取り込みの準備（ビューのテストは tests/test_plan_stale_view.py）
 
 @pytest.fixture
 def db(monkeypatch):
@@ -125,47 +90,6 @@ def add_batch(rows, source="plan.csv", imported_at=None):
     return batch
 
 
-def test_no_batches_gives_none(db):
-    assert fetch_latest_csv_batch_scope() is None
-    assert svc.load_stale_plan_scope() is None
-
-
-def test_latest_batch_rules(db):
-    first = add_batch([("K1", "L1", "2026/07/01 00:00:00", "2026/07/02 00:00:00", {})], imported_at="2026-10-01 09:00:00")
-    second = add_batch([("K2", "L2", "2026/07/03 00:00:00", "2026/07/04 00:00:00", {})], imported_at="2026-10-02 09:00:00")
-    assert fetch_latest_csv_batch_scope()["plan_batch_id"] == second
-    # 前月引き継ぎは最新に数えない
-    add_batch([("K3", "L3", "2026/07/05 00:00:00", "2026/07/06 00:00:00", {})], source="carry_over:202609", imported_at="2026-10-03 09:00:00")
-    assert fetch_latest_csv_batch_scope()["plan_batch_id"] == second
-    # 削除したバッチも数えない。復元すれば戻る
-    mark_batch_deleted(second, True)
-    assert fetch_latest_csv_batch_scope()["plan_batch_id"] == first
-    mark_batch_deleted(second, False)
-    assert fetch_latest_csv_batch_scope()["plan_batch_id"] == second
-    # 同じ時刻なら plan_batch_id が大きい方
-    third = add_batch([("K4", "L4", "2026/07/07 00:00:00", "2026/07/08 00:00:00", {})], imported_at="2026-10-02 09:00:00")
-    assert fetch_latest_csv_batch_scope()["plan_batch_id"] == third
-
-
-def test_period_uses_every_row_of_the_batch_including_delete_flag_1(db):
-    add_batch([
-        ("K1", "L1", "2026/07/05 08:00:00", "2026/07/06 08:00:00", {}),
-        ("K2", "L2", "2026/07/01 08:00:00", "2026/07/09 20:00:00", {"delete_flag": 1}),     # 明細の「削除」の列が1の行も期間に入る
-    ])
-    scope = svc.load_stale_plan_scope()
-    assert scope["period"] == ("2026/07/01 08:00:00", "2026/07/09 20:00:00")
-    assert scope["keys"] == {("K1", "L1"), ("K2", "L2")}
-
-
-def test_period_is_computed_after_normalizing_mixed_formats(db):
-    add_batch([
-        ("K1", "L1", "2026-07-02 08:00:00", "2026/07/06 08:00:00", {}),
-        ("K2", "L2", "2026/7/1 08:00", "2026/07/05 08:00:00", {}),
-        ("K3", "L3", "解釈できない", "", {}),
-    ])
-    assert svc.load_stale_plan_scope()["period"] == ("2026/07/01 08:00:00", "2026/07/06 08:00:00")
-
-
 # ---------------------------------------------------------------- 出し直し全体（A で古い計画だけが隠れる）
 
 FIRST = [
@@ -180,10 +104,10 @@ FIRST = [
 
 
 def stale_keys():
-    scope = svc.load_stale_plan_scope()
+    """画面が隠す計画のうち、一覧に載るもの（ビューの is_stale=1 かつ has_legacy_actuals=0。D-193）。"""
     from models.kitting_plan import list_active_plan_items
-    return {(p["kitting_list_no"], p["lot_no"]) for p in list_active_plan_items(include_completed=True)
-            if svc.is_stale_plan(p, p["app_cumulative_qty"], scope)}
+    listed = {(p["kitting_list_no"], p["lot_no"] or "") for p in list_active_plan_items(include_completed=True)}
+    return svc.load_stale_plan_keys() & listed
 
 
 def seed_reissue():
@@ -217,9 +141,14 @@ def test_old_plan_with_actuals_is_not_hidden(db):
     assert stale_keys() == {("A3", "L3")}
 
 
+def _latest_batch_id():
+    with sqlite3.connect(config.DB_PATH) as con:
+        return con.execute("SELECT latest_batch_id FROM v_plan_stale LIMIT 1").fetchone()[0]
+
+
 def test_deleting_the_newest_batch_uses_the_previous_one_and_restore_comes_back(db):
     seed_reissue()
-    newest = fetch_latest_csv_batch_scope()["plan_batch_id"]
+    newest = _latest_batch_id()
     mark_batch_deleted(newest, True)
     assert stale_keys() == set()                              # 1つ前の取り込みが最新になり、そこに無い有効な計画は無い
     mark_batch_deleted(newest, False)
@@ -243,7 +172,7 @@ def test_filters_do_not_change_plans(db):
     with sqlite3.connect(config.DB_PATH) as con:
         before = con.execute("SELECT plan_item_id, is_active, delete_flag, updated_at FROM kitting_plan_items ORDER BY 1").fetchall()
     KittingProductionEntryWindow._fetch_plan_list_rows()
-    svc.load_stale_plan_scope()
+    svc.load_stale_plan_keys()
     with sqlite3.connect(config.DB_PATH) as con:
         assert con.execute("SELECT plan_item_id, is_active, delete_flag, updated_at FROM kitting_plan_items ORDER BY 1").fetchall() == before
 

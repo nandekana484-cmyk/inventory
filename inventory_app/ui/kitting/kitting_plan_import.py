@@ -282,6 +282,10 @@ class KittingPlanImportWindow(tk.Toplevel):
             if confirmed_from_pending_count:
                 status_text += f"（保留から確定：{confirmed_from_pending_count}件）"
                 msg += f"\n{confirmed_from_pending_count}件が保留から確定されました。"
+            stale_plan_count = payload.get("stale_plan_count")
+            if stale_plan_count is not None:
+                # 最新の取り込みに無い古い計画（D-193）。画面の「古い計画を隠す」で隠せる。
+                msg += f"\n古い計画と判定された計画：{stale_plan_count}件"
 
             self.result_label.config(text=status_text)
             log_operation(

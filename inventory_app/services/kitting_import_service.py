@@ -10,6 +10,7 @@ from models.kitting_plan import (
     list_plan_items_for_batch,  # noqa: F401 （ui/kitting/kitting_plan_import.py が ui から models を直接呼ばないよう、ここから使う）
 )
 from models.board_structure_master import normalize_board_name
+from models.kitting_plan_batches import count_stale_plans
 
 # 保留（pending_kitting_plan_items）から確定へ引き継ぐ際、現在のCSV行の値が
 # 空欄・未設定であれば保留側の値で補う対象フィールド。識別キー自体
@@ -250,9 +251,17 @@ def import_kitting_plan_csv(
     if confirmed_from_pending_count:
         print(f"[kitting_import] confirmed {confirmed_from_pending_count} row(s) from pending table.")
 
+    # 取り込みの後に、古い計画（v_plan_stale の is_stale = 1。D-193）の数を数える。数えられなければ None（完了メッセージには出さない）。
+    try:
+        stale_plan_count = count_stale_plans()
+    except Exception:
+        print("[kitting_import] could not count stale plans")
+        stale_plan_count = None
+
     return {
         "batch_id": batch_id,
         "inserted": inserted,
         "pending_saved_count": pending_saved_count,
         "confirmed_from_pending_count": confirmed_from_pending_count,
+        "stale_plan_count": stale_plan_count,
     }

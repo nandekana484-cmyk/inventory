@@ -91,11 +91,11 @@ def test_switch_to_unversioned_baseline_db_stamps_13(host, current_db):
     _set_version(target, 0)
     _switch(host, "V0")
     assert config.DB_PATH == target
-    assert _version(target) == LATEST_VERSION == 15
+    assert _version(target) == LATEST_VERSION == 16
     backups = sv.list_migration_backups(target)
-    assert len(backups) == 1 and ".bak_v13_to_v15_" in backups[0]
+    assert len(backups) == 1 and ".bak_v13_to_v16_" in backups[0]
     (m1, m2) = [m[2] for m in _messages(host)]
-    assert m1.startswith("データベースを新しい形に更新しました（版 13 → 15）。") and backups[0] in m1
+    assert m1.startswith("データベースを新しい形に更新しました（版 13 → 16）。") and backups[0] in m1
     assert m2 == "データベースを切り替えました。"
 
 

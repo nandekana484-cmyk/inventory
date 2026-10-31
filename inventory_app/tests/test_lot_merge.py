@@ -60,7 +60,7 @@ def _as_v130(path):
 def test_new_db_has_lot_merges_and_latest_version(tmp_path):
     path = str(tmp_path / "new" / "inventory.db")
     init_database_at(path)
-    assert _version(path) == LATEST_VERSION == 15
+    assert _version(path) == LATEST_VERSION == 16
     with sqlite3.connect(path) as con:
         assert [r[1] for r in con.execute("PRAGMA table_info(lot_merges)")] == [
             "member_lot", "target_lot", "merged_at", "merged_by", "note"]
@@ -73,8 +73,8 @@ def test_migration_014_matches_schema_sql_and_keeps_existing_tables(sample_db, t
     before_schema, before_counts = _schema(sample_db), _counts(sample_db)
 
     result = sv.ensure_schema(sample_db)
-    assert (result["from_version"], result["to_version"], result["applied"]) == (13, 15, [14, 15])
-    assert _version(sample_db) == 15
+    assert (result["from_version"], result["to_version"], result["applied"]) == (13, 16, [14, 15, 16])
+    assert _version(sample_db) == 16
     after_schema, after_counts = _schema(sample_db), _counts(sample_db)
     added = [s for s in after_schema if s not in before_schema]
     assert [s[1] for s in added] == ["idx_lot_merges_target_lot", "lot_merges"]

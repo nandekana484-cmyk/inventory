@@ -5,6 +5,7 @@ import unicodedata
 from datetime import datetime
 
 from models.db_common import get_connection
+from models.plan_stale_view import create_plan_stale_view
 from models.production import get_app_cumulative_qty_bulk, list_daily_production_by_kitting_no
 from models.production_side_master import get_second_side_status_by_file_no
 
@@ -114,6 +115,9 @@ def init_kitting_plan_tables():
                 COALESCE(production_side, ''), COALESCE(order_qty, 0)
             )
         """)
+
+        # 古い計画の判定のビュー（D-193）。新しく作る DB・前月引き継ぎで作る DB にも入るよう、表を作る場所の最後で作る。
+        create_plan_stale_view(con)
 
         con.commit()
 

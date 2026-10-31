@@ -1455,6 +1455,7 @@ D-81の修正（候補が複数ある場合も、いずれか1件の実績合計
 | D-190 | 動きを変えないリファクタリング（2026-10-25、利用者の承認。`docs/refactoring_plan.md` の「分割A」「分割B」）。1000行を超える画面から、境目が明確で、テストのある部分を、mixin クラスとして別ファイルへ移した。**分割A**（登録待ち一覧 `ui/production/production_import_staging_window.py` 1714→1312行）：登録済みリスト 6メソッド → `staging_already_registered.py`、不一致・候補なしの印付けと CSV 出力 8メソッド → `staging_marking.py`。移す前に、テストが2つのモジュールの属性を `monkeypatch` で差し替えている箇所を全件調べた：移すメソッドが使う属性への差し替えは無い（差し替えは `ask_duplicate_resolution` だけで、これは移さない `_resolve_duplicate()` が使う）。関数の中身は変えず、移す前と後で54関数すべてのコメント以外の構文が同じことを確かめた。移した後に使われなくなった import は消した。**分割B**（生産実績入力 `ui/kitting/kitting_production_entry.py` 1626→1318行）：計画一覧の絞り込みと一覧の取得・表示・更新 15メソッド（連なりの途中の `_fetch_plan_list_rows` など一覧の取得を含む）→ `plan_list_filters.py`。`main_window.py` が `KittingProductionEntryWindow._fetch_plan_list_rows()` をクラスから呼ぶが、継承で今までどおり見える。登録確認の部分（約300行）は手を付けていない。61関数すべてでコメント以外の構文が同じ。テストは723件のまま | docs/refactoring_plan.md |
 | D-191 | 計画ごとの丁取り数を引ける対応表を master.db に作る（2026-10-30、現場アプリからの依頼、利用者の決定 1〜7、§66）。表 `board_teitori_map`（キー：正規化した (ファイルNo., 実装ライン)）とビュー `v_board_teitori`（ファイルNo.・実装ライン・96コード・丁取り数・status・取得日時）。(1) 正規化：計画の取り込みは変えず、表のキーだけ `normalize_setup_file_no`・`normalize_mounting_line` で正規化し、現場アプリが同じ規則で引く。(2) 対象の計画：`COALESCE(is_active,1)=1 AND COALESCE(delete_flag,0)=0`（完了済みのロットを含む）。`delete_flag` の列が無い古い版の DB では `is_active` だけ。(3) status は TSV から決まる6つ（ok・tsv_not_found・ambiguous_tsv・read_error・no_k_row・multi_k）を表に、`code_not_in_master`・`teitori_invalid` を足した8つをビューに。丁取り数は ok のときだけ1以上の整数。(4) 取得のタイミング：計画の取り込みが成功した後、前月引き継ぎが完了した後、バッチの復元の後、手動の再取得（ふだんは差分だけを背景で。復元は今のアプリに画面からの操作が無いので足していない）。(5) 手動の再取得は、db フォルダの下のすべての月次DB（既定DB を除く）を全部引き直す。(6) 再取得の入口はメインメニューの基板丁数マスターの下で、使える人も同じ。(7) .xlsx は読まない（tsv_not_found のまま）。月次DB は `mode=ro` ＋ `query_only` で読み、master.db のジャーナルモードは delete のまま、50組以下ずつ書く。BOM の共有フォルダを読めないときは取得を止めて何も書かず（全組を上書きしない）、**エラーを画面に出す**（利用者の決定。2026-10-31 に追記。背景の取得はメイン画面のスレッドで、手動の再取得はその場で。文は「基板丁数の対応表を更新できませんでした。部品表の共有フォルダ（パス）を読めません。ネットワークを確かめてから、メインメニューの『基板丁数の対応表を再取得』を押してください。」）。それ以外の失敗は、背景ではログだけ | 本ファイル §66、docs/domain/board_teitori.md |
 | D-192 | 生産実績入力の計画一覧に、絞り込みを2つ足した（2026-10-31、利用者の決定、§67）。表示だけを変え、計画の is_active・delete_flag、計算、ほかの画面、現場アプリは変えない。どちらも初期はオフで、「更新」と「絞り込みクリア」でオフに戻る。置き場所は「入力済みを隠す」の隣。**「古い計画を隠す」**：(1) 最新の取り込み＝バッチの delete_flag が 1 でなく、source_file が `carry_over:` で始まらない（前月引き継ぎは数えない）取り込みのうち、imported_at が最新のもの（同じ時刻なら plan_batch_id が大きい方）。(2) 期間＝その取り込みのすべての行（明細の delete_flag が 1 の行も含む）の、計画開始日の最小〜計画終了日の最大。(3) 期間の端は時刻まで比べる。日時は `YYYY/MM/DD HH:MM:SS` にそろえ（`-` は `/` に、秒が無ければ補う）、解釈できない値の計画は判定しない（隠さない）。(4) 隠す計画＝有効な計画のうち、開始・終了がどちらも期間に収まり、(キッティングNo., ロットNo.) が最新の取り込みに無く、実績が入っていないもの。(5) オンにしたとき「古い計画 N件を隠しています」を出す。(6) 判定は一覧を作るときに1回だけ（行の隠し要素の印）。**「計画終了日が来たものだけ」**：計画終了日の日付が今日以前の計画を表示する（今日の夕方に終わる計画も表示）。終了日が空・解釈できない計画は表示する。既存の絞り込みとは AND。**最新の取り込みを削除しても、取り込み直しで無効になった古い版は有効に戻らない既存の動きは、今回は変えない**（§67.3） | 本ファイル §67、docs/domain/production_entry.md |
+| D-193 | 古い計画（D-192）の判定を、月次DB のビュー `v_plan_stale` にして、現場アプリが読めるようにした（2026-10-31、現場アプリからの依頼、利用者の決定 1〜6、§68）。(1) 月次DB の版を **16** に上げる（マイグレーション 016）。アプリの次の版は **5.0.0** にし、4.1.0 に予定していた変更（D-191・D-192・共有フォルダのエラー表示）もまとめる。(2) ビューの名前は `v_plan_stale`、1行＝有効な計画1つ（`COALESCE(is_active,1)=1 AND COALESCE(delete_flag,0)=0`）、キーは (kitting_list_no, lot_no)。(3) 列は kitting_list_no, lot_no, is_stale（D-192 の判定から「実績が入っていない」の条件を除いたもの）, has_legacy_actuals（`production_daily` の `daily_qty` の合計が 0 より大きいか。画面と同じ定義）, replacement_kitting_list_no / replacement_count（is_stale=1 のときだけ。それ以外は NULL と 0。候補が2つ以上なら NULL）, latest_batch_id, judge_reason（stale・in_latest_batch・outside_period・date_unparsable・no_period・no_latest_batch）, judged_at（最新の取り込みの imported_at。無ければ NULL）。(4) 既存アプリの画面の「古い計画を隠す」もこのビューを読む形に変えた（is_stale=1 かつ has_legacy_actuals=0 を隠す）。A の Python の判定は無くし、判定を1か所（ビュー）にした。B（計画終了日が来たものだけ）は今のまま。(5) 計画CSVの取り込み成功のメッセージに「古い計画と判定された計画：N件」を足した（取り込みの後にビューの is_stale=1 を数える）。(6) 古い月の月次DB（ビューが無い）は、現場アプリが「古い計画なし」として扱う。既存アプリでその月を一度開けばビューができる（docs に書いた）。**将来のための決まり**：`kitting_plan_items`・`kitting_plan_batches`・`production_daily` を作り直すマイグレーションは、先にビューを消してから作り直し、最後にビューを作り直す（SQLite は、ビューが参照する表を DROP してから RENAME すると失敗する。tests/test_plan_stale_view.py で確かめている） | 本ファイル §68、docs/domain/plan_stale.md |
 
 ### 30.1 Shift+Sの検証結果（D-84）
 
@@ -3619,3 +3620,36 @@ D-155 の一覧と、前回の設計案のお勧め（統合したロットで�
 
 - 最新の取り込みを削除しても、取り込み直しで無効になった古い版は有効に戻らない（`mark_batch_deleted()` の既存の動き）。そのため、削除の後は「1つ前の取り込み」で判定するが、その取り込みの計画は有効に戻らず、一覧からはその取り込みの計画が消えたままになる。復元すると戻る
 - 最新の取り込みが一部の計画だけのCSVだと、その期間内の計画が隠れる（「毎回、同じ長さの期間の計画をすべて入れる」運用が前提）。件数を画面に出すのは、そのとき気づけるようにするため
+
+## 68. 古い計画の判定を月次DB のビューにする（現場アプリ向け、2026-10-31、D-193）
+
+D-192 の「古い計画を隠す」を、現場アプリも読める形にする。判定の決まりを2つのアプリで二重に持たないよう、判定を月次DB のビューにして、既存アプリの画面もそのビューを読む。業務ルールと読み方は `docs/domain/plan_stale.md`。
+
+### 68.1 ビューにした理由（表にしなかった理由）
+
+- 作り直しの漏れが無い。表にすると、取り込み・取り込み直し・バッチの削除・復元・前月引き継ぎの後と、実績の登録・修正・削除（`production_daily` への書き込み5か所）のたびに作り直す必要がある
+- 既存アプリが月次DB に書き込む短いトランザクションと、現場アプリが `mode=ro` で読む待ちの問題が無い
+- 判定の決まりが SQL の1か所になる。日時をそろえる処理（`YYYY/MM/DD HH:MM:SS`、`-` を `/` に、秒が無ければ補う、存在しない日付は解釈できない）は、開始日と終了日で共通に1度だけ書いた。Python の `normalize_plan_datetime()` と同じ結果になることを、固定の35通りと乱数の3,000通りで確かめている（違うのは全角数字だけ。実データには出ない）
+
+### 68.2 作ったもの
+
+- `models/plan_stale_view.py`：`CREATE_VIEW_SQL`、`create_plan_stale_view(con)`（今の定義と比べ、違うときだけ作り直す）、`drop_plan_stale_view(con)`
+- `db/migrations/m016_add_plan_stale_view.py`：同じ CREATE 文を一字一句そのまま書いた（m015 と同じ方法。テストで定数との一致を確かめる）。`kitting_plan_items`・`kitting_plan_batches` が無い DB では何もしない。`LATEST_VERSION` を 16 にした
+- `models/kitting_plan.py` の `init_kitting_plan_tables()` の最後で `create_plan_stale_view()` を呼ぶ（新しく作る DB・前月引き継ぎで作る DB にも入る）
+- `models/kitting_plan_batches.py`：`fetch_stale_plan_keys()`（画面が隠す計画のキー）、`count_stale_plans()`（取り込みの完了メッセージ用）。ビューが無い DB は「古い計画なし」
+- `services/production_entry_service.py`：`load_stale_plan_keys()`。使われなくなった `fetch_latest_csv_batch_scope()`・`load_stale_plan_scope()`・`is_stale_plan()` は、関数名とモジュール名の両方で参照を確かめてから削った。`normalize_plan_datetime()`・`is_plan_ended()` は B で使うので残した
+- `services/kitting_import_service.py`：取り込みの戻り値に `stale_plan_count`。`ui/kitting/kitting_plan_import.py`：完了メッセージに「古い計画と判定された計画：N件」
+
+### 68.3 決めたこと・補ったこと
+
+- 版を上げる：版 14 → 2.0.0、版 15 → 4.0.0 の前例どおり、版 16 は 5.0.0（D-74 の1桁目）。**版 16 の DB は 4.x 以前の .exe では開けない**（`DatabaseTooNewError`）
+- ビューにあるのは `delete_flag = 0` の有効な計画だけ。画面の一覧は、これまで `delete_flag = 1` の有効な計画も出していたので、そのような計画は古い扱いにならない（実データでは0件）
+- 日時が解釈できない計画は、最新の取り込みにあっても `judge_reason = date_unparsable`（`is_stale = 0`）
+- 最新の取り込みを削除すると古い版が有効に戻らない既存の動きは、今回も変えていない
+- 最新の取り込みが一部の計画だけの CSV だと、大量に古い扱いになる（模擬データで、離れた2件だけの CSV：有効な計画 1034 件のうち 1030 件）。注意は `docs/domain/plan_stale.md` に書いた
+- 古い月の月次DB（この版のアプリで一度も開いていない）にはビューが無い。既存アプリでその月を一度開けばできる。他の月の DB に書き込んでビューを入れることはしない
+
+### 68.4 まだ確かめていないこと
+
+- 現場アプリの SQLite の版（CTE 付きのビューを読めること）
+- 取り込みを繰り返した本物の月次DB での動き（手元の複製は取り込み1回分）

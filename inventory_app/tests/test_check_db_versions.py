@@ -34,8 +34,8 @@ def test_check_folder(tmp_path):
     assert [(name, ok) for name, ok, _ in results] == [
         ("A_latest", True), ("B_unversioned", True), ("C_too_new", False), ("D_legacy", False),
     ]
-    assert results[0][2] == "開ける: 版 15（最新）"
-    assert results[1][2] == "開ける: 版の記録なし。開くと 13 を書き、15 までマイグレーションを適用する（自動でバックアップを取る）"
+    assert results[0][2] == "開ける: 版 16（最新）"
+    assert results[1][2] == "開ける: 版の記録なし。開くと 13 を書き、16 までマイグレーションを適用する（自動でバックアップを取る）"
     assert "アプリを最新版に更新する" in results[2][2]
     assert "古い形式" in results[3][2] and "production_daily.plan_item_id" in results[3][2]
     assert {p: os.path.getmtime(p) for p in root.rglob("inventory.db")} == before   # 書き込まない
