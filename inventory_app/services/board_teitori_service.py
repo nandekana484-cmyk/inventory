@@ -34,7 +34,23 @@ _RUN_LOCK = threading.Lock()
 
 
 class BomFolderUnavailableError(RuntimeError):
-    """BOM の共有フォルダを読めない（無い、またはTSVが1つも見えない）。全組を tsv_not_found で上書きしないために取得を止める。"""
+    """
+    BOM の共有フォルダを読めない（無い、またはTSVが1つも見えない）。全組を tsv_not_found で上書きしないために取得を止める。
+    画面に出す失敗は、これだけ（folder_unavailable_message()）。それ以外の失敗は、背景ではログに残すだけ。
+    """
+
+    def __init__(self, folder: str):
+        super().__init__(f"BOM フォルダを読めません（TSV が1つも見えません）: {folder}")
+        self.folder = folder
+
+
+def folder_unavailable_message(folder: str) -> str:
+    """共有フォルダを読めずに取得を止めたときに、画面に出す文（背景の取得・手動の再取得で共通）。"""
+    return (
+        "基板丁数の対応表を更新できませんでした。"
+        f"部品表の共有フォルダ（{folder}）を読めません。"
+        "ネットワークを確かめてから、メインメニューの『基板丁数の対応表を再取得』を押してください。"
+    )
 
 
 def _is_default_db_path(db_path: str) -> bool:
@@ -147,7 +163,7 @@ def _refresh(db_paths: list, full: bool, folder: str = None) -> dict:
     index = BOMFileIndex(folder)            # フォルダの走査は1回の取得で1回だけ
     summary["index_seconds"] = round(time.monotonic() - t, 3)
     if not index.list_available_file_nos():
-        raise BomFolderUnavailableError(f"BOM フォルダを読めません（TSV が1つも見えません）: {folder}")
+        raise BomFolderUnavailableError(folder)
 
     targets = _select_targets(pair_rows, load_map_state(), index, full)
     summary["targets"] = len(targets)

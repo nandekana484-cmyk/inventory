@@ -462,3 +462,145 @@ def test_master_merge_does_not_include_the_new_tables():
     from services import master_merge_service
     source = open(master_merge_service.__file__, encoding="utf-8").read()
     assert "board_teitori" not in source
+
+
+# ---------------------------------------------------------------- 共有フォルダを読めないときのエラー（D-191 の追記）
+
+import types
+
+from ui import main_window
+
+
+class _FakeMessageBox:
+    def __init__(self):
+        self.calls = []
+
+    def showerror(self, title, message, **kwargs):
+        self.calls.append(("error", title, message))
+
+    def showinfo(self, title, message, **kwargs):
+        self.calls.append(("info", title, message))
+
+
+@pytest.fixture
+def boxes(monkeypatch):
+    fake = _FakeMessageBox()
+    monkeypatch.setattr(main_window, "messagebox", fake)
+    monkeypatch.setattr(main_window, "log_operation", lambda *a, **k: None)
+    return fake
+
+
+def _expected_message(folder):
+    return ("基板丁数の対応表を更新できませんでした。"
+            f"部品表の共有フォルダ（{folder}）を読めません。"
+            "ネットワークを確かめてから、メインメニューの『基板丁数の対応表を再取得』を押してください。")
+
+
+def test_unreadable_folder_raises_with_folder_and_writes_nothing(tmp_path):
+    path = make_monthly_db("m1", [("K-1", "L1", "0161", "L", {})])
+    missing = str(tmp_path / "nowhere")
+    with pytest.raises(service.BomFolderUnavailableError) as info:
+        service.refresh_normal([path], folder=missing)
+    assert info.value.folder == missing
+    assert service.folder_unavailable_message(missing) == _expected_message(missing)
+    assert teitori_map.list_view_rows() == []
+    empty = tmp_path / "empty"
+    empty.mkdir()                                              # フォルダはあるが TSV が1つも見えない
+    with pytest.raises(service.BomFolderUnavailableError):
+        service.refresh_all_monthly(folder=str(empty))
+    assert teitori_map.list_view_rows() == []
+
+
+def test_background_refresh_with_unreadable_folder_queues_the_error_and_writes_nothing(monkeypatch, tmp_path):
+    path = make_monthly_db("m1", [("K-1", "L1", "0161", "L", {})])
+    missing = str(tmp_path / "nowhere")
+    monkeypatch.setattr(config, "BOM_FOLDER_PATH", missing)
+    monkeypatch.setattr(config, "DB_PATH", path)                 # 既定DB ではない月次DB
+    runner = runner_module.BoardTeitoriRunner()
+    monkeypatch.setattr(runner_module, "_runner", runner)
+    assert runner_module.request_board_teitori_refresh() is True
+    assert runner.wait_idle(10)
+    assert runner_module.pop_board_teitori_errors() == [_expected_message(missing)]
+    assert runner_module.pop_board_teitori_errors() == []        # 取り出した分は消える
+    assert teitori_map.list_view_rows() == []
+
+
+def test_background_refresh_with_readable_folder_queues_no_error(monkeypatch, master):
+    path = make_monthly_db("m1", [("K-1", "L1", "0161", "L", {})])
+    monkeypatch.setattr(config, "BOM_FOLDER_PATH", master)
+    monkeypatch.setattr(config, "DB_PATH", path)
+    runner = runner_module.BoardTeitoriRunner()
+    monkeypatch.setattr(runner_module, "_runner", runner)
+    runner_module.request_board_teitori_refresh()
+    assert runner.wait_idle(10)
+    assert runner_module.pop_board_teitori_errors() == []
+    assert len(teitori_map.list_view_rows()) == 1
+
+
+def test_background_unexpected_failure_is_log_only(monkeypatch, tmp_path):
+    runner = runner_module.BoardTeitoriRunner(work=lambda paths: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(runner_module, "_runner", runner)
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "db" / "a" / "inventory.db"))
+    runner_module.request_board_teitori_refresh()
+    assert runner.wait_idle(5)
+    assert runner_module.pop_board_teitori_errors() == []
+
+
+def test_repeated_folder_errors_are_shown_once(monkeypatch, tmp_path):
+    runner = runner_module.BoardTeitoriRunner(
+        work=lambda paths: (_ for _ in ()).throw(service.BomFolderUnavailableError("X:/bom")))
+    monkeypatch.setattr(runner_module, "_runner", runner)
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "db" / "a" / "inventory.db"))
+    for _ in range(3):
+        runner_module.request_board_teitori_refresh()
+        assert runner.wait_idle(5)
+    assert runner_module.pop_board_teitori_errors() == [_expected_message("X:/bom")]
+
+
+def test_main_window_poll_shows_the_queued_error_on_the_main_thread(monkeypatch, boxes):
+    runner = runner_module.BoardTeitoriRunner()
+    monkeypatch.setattr(runner_module, "_runner", runner)
+    runner._add_error(_expected_message("X:/bom"))
+    scheduled = []
+    fake = types.SimpleNamespace(after=lambda ms, fn: scheduled.append((ms, fn)), winfo_toplevel=lambda: "top")
+    fake._poll_board_teitori_errors = types.MethodType(main_window.MainWindow._poll_board_teitori_errors, fake)
+    main_window.MainWindow._poll_board_teitori_errors(fake)
+    assert boxes.calls == [("error", "基板丁数の対応表", _expected_message("X:/bom"))]
+    assert scheduled and scheduled[0][0] == main_window.BOARD_TEITORI_ERROR_POLL_MS       # また確かめる
+    main_window.MainWindow._poll_board_teitori_errors(fake)
+    assert len(boxes.calls) == 1                                                            # 同じ文を重ねて出さない
+
+
+def _manual(monkeypatch):
+    """on_refresh_board_teitori_map() を、別スレッドを使わず同期で動かす。"""
+    def sync(parent, message, work_fn, on_success, on_error):
+        try:
+            result = work_fn()
+        except Exception as e:
+            on_error(e, "tb")
+        else:
+            on_success(result)
+    monkeypatch.setattr(main_window, "run_in_background", sync)
+    return types.SimpleNamespace(current_worker={"name": "t"}, winfo_toplevel=lambda: "top")
+
+
+def test_manual_refresh_with_unreadable_folder_shows_the_error_and_writes_nothing(monkeypatch, boxes, tmp_path):
+    make_monthly_db("m1", [("K-1", "L1", "0161", "L", {})])
+    missing = str(tmp_path / "nowhere")
+    monkeypatch.setattr(config, "BOM_FOLDER_PATH", missing)
+    main_window.MainWindow.on_refresh_board_teitori_map(_manual(monkeypatch))
+    assert boxes.calls == [("error", "エラー", _expected_message(missing))]
+    assert teitori_map.list_view_rows() == []
+
+
+def test_manual_refresh_with_readable_folder_shows_no_error(monkeypatch, boxes, master):
+    make_monthly_db("m1", [("K-1", "L1", "0161", "L", {})])
+    monkeypatch.setattr(config, "BOM_FOLDER_PATH", master)
+    main_window.MainWindow.on_refresh_board_teitori_map(_manual(monkeypatch))
+    assert [c[0] for c in boxes.calls] == ["info"]
+
+
+def test_manual_refresh_unexpected_failure_still_shows_a_dialog(monkeypatch, boxes):
+    monkeypatch.setattr(main_window, "refresh_all_monthly", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    main_window.MainWindow.on_refresh_board_teitori_map(_manual(monkeypatch))
+    assert boxes.calls[0][0] == "error" and "再取得に失敗しました" in boxes.calls[0][2] and "boom" in boxes.calls[0][2]

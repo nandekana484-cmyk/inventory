@@ -26,8 +26,8 @@ from models.operation_log import log_operation, get_inventory_diff_export_status
 from models.db_lifecycle_log import record_db_lifecycle_event, OPERATION_TYPE_CREATE_WITH_CARRY_OVER
 from ui.common.db_delete_helper import confirm_and_delete_database
 from services.db_migration_carryover import carry_over_incomplete_lots
-from services.board_teitori_runner import request_board_teitori_refresh
-from services.board_teitori_service import refresh_all_monthly
+from services.board_teitori_runner import pop_board_teitori_errors, request_board_teitori_refresh
+from services.board_teitori_service import BomFolderUnavailableError, folder_unavailable_message, refresh_all_monthly
 from services.backup_service import (
     backup_databases, validate_monthly_db_backup,
 )
@@ -41,6 +41,9 @@ from services.db_lifecycle_service import (
 )
 from ui.common.window_utils import center_window
 from version import get_version_label
+
+# 背景の取得（基板丁数の対応表）のエラーを確かめる間隔。
+BOARD_TEITORI_ERROR_POLL_MS = 1000
 
 
 class MainWindow(tk.Tk):
@@ -327,6 +330,8 @@ class MainWindow(tk.Tk):
         # 5分間隔でロックファイルの最終更新時刻を更新し（生存確認）、
         # LOCK_STALE_SECONDS（30分）以上更新が無いロックとして自動解除されるのを防ぐ。
         self.after(300000, self._heartbeat)
+        # 基板丁数の対応表の背景の取得が、共有フォルダを読めずに止まったときの通知（D-191）。1秒ごとに確かめる。
+        self.after(BOARD_TEITORI_ERROR_POLL_MS, self._poll_board_teitori_errors)
 
         self._report_startup_db_problems()
 
@@ -628,6 +633,15 @@ class MainWindow(tk.Tk):
             lambda: PartsAttributesImportWindow(self, current_worker=self.current_worker),
         )
 
+    def _poll_board_teitori_errors(self):
+        """背景の取得（取り込み・前月引き継ぎの後）が共有フォルダを読めずに止まったとき、メインの画面のスレッドでエラーを出す。"""
+        for message in pop_board_teitori_errors():
+            messagebox.showerror("基板丁数の対応表", message, parent=self.winfo_toplevel())
+        try:
+            self.after(BOARD_TEITORI_ERROR_POLL_MS, self._poll_board_teitori_errors)
+        except tk.TclError:
+            pass        # 画面を閉じた後
+
     def on_refresh_board_teitori_map(self):
         """基板丁数の対応表（master.db）を、すべての月次DB（既定DB を除く）から全部引き直す（D-191）。"""
         def _on_success(summary):
@@ -639,6 +653,9 @@ class MainWindow(tk.Tk):
             messagebox.showinfo("再取得完了", msg, parent=self.winfo_toplevel())
 
         def _on_error(error, traceback_text):
+            if isinstance(error, BomFolderUnavailableError):
+                messagebox.showerror("エラー", folder_unavailable_message(error.folder), parent=self.winfo_toplevel())
+                return
             messagebox.showerror("エラー", f"基板丁数の対応表の再取得に失敗しました：\n{error}", parent=self.winfo_toplevel())
 
         run_in_background(self, "基板丁数の対応表を再取得しています…", refresh_all_monthly, _on_success, _on_error)
