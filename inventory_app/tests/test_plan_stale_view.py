@@ -462,3 +462,100 @@ def test_import_result_counts_stale_plans_and_the_completion_message_shows_it(db
     screen.KittingPlanImportWindow._poll_result_queue(fake)
     assert box.calls[0][0] == "info" and "古い計画と判定された計画：2件" in box.calls[0][2]
     assert "4件のキッティング計画を取り込みました。" in box.calls[0][2]
+
+
+# ---------------------------------------------------------------- is_stale と judge_reason の対応・ロットNo. が空の行・judged_at の書式
+
+def _mismatch_count(path=None):
+    with sqlite3.connect(path or config.DB_PATH) as con:
+        return con.execute("SELECT COUNT(*) FROM v_plan_stale WHERE (is_stale = 1) <> (judge_reason = 'stale')").fetchone()[0]
+
+
+def test_is_stale_is_1_exactly_when_judge_reason_is_stale(db):
+    """is_stale=1 なら stale、stale なら is_stale=1。判定の局面を変えながら、そのつど確かめる。"""
+    from models.kitting_plan import find_plan_item_by_kitting_no
+    add_batch(FIRST, imported_at="2026-10-01 09:00:00")
+    assert _mismatch_count() == 0 and not stale()
+    add_batch(SECOND, imported_at="2026-10-02 09:00:00")
+    rows = view()
+    assert stale(rows) and {r["judge_reason"] for r in rows.values()} >= {"stale", "in_latest_batch", "outside_period", "date_unparsable"}
+    assert _mismatch_count() == 0
+    insert_daily_production(find_plan_item_by_kitting_no("A2", "L2")["plan_item_id"], "A2", "L2", "B", "2026-10-02", 3, "W1")
+    assert _mismatch_count() == 0 and ("A2", "L2") in stale()                                 # 実績があっても is_stale と stale は対応する
+    add_batch([("C1", "L9", "2026/07/03 00:00:00", "2026/07/04 00:00:00")], source="carry_over:202609", imported_at="2026-10-05 09:00:00")
+    assert _mismatch_count() == 0
+    add_batch([("P1", "L8", "xx", "yy")], imported_at="2026-10-06 09:00:00")                   # 期間が決まらない
+    rows = view()
+    assert not stale(rows) and "no_period" in {r["judge_reason"] for r in rows.values()} and _mismatch_count() == 0
+    for r in rows.values():
+        assert r["is_stale"] in (0, 1) and (r["is_stale"] == 1) == (r["judge_reason"] == "stale")
+
+
+def _insert_raw_plan(kitting, lot, batch_id, start="2026/07/05 08:00:00", end="2026/07/06 08:00:00", active=1):
+    with sqlite3.connect(config.DB_PATH) as con:
+        con.execute(
+            "INSERT INTO kitting_plan_items (plan_batch_id, kitting_list_no, lot_no, setup_file_no, production_side, "
+            "plan_start_datetime, plan_end_datetime, version, is_active) VALUES (?, ?, ?, '0001', '1', ?, ?, 1, ?)",
+            (batch_id, kitting, lot, start, end, active))
+
+
+def test_import_never_writes_null_lot_no_and_empty_lot_no_is_one_row_per_kitting_list_no(db, tmp_path):
+    """取り込みの経路：ロットNo. が空の行は、保留の表には入らず、空文字のまま kitting_plan_items に入る（NULL にはならない）。"""
+    first = import_kitting_plan_csv(_csv(tmp_path / "p1.csv", [("E1", "", "2026/07/05 08:00:00", "2026/07/06 08:00:00"),
+                                                              ("E2", "L2", "2026/07/05 08:00:00", "2026/07/06 08:00:00")]), "T")
+    assert first["inserted"] == 2 and first["pending_saved_count"] == 0
+    with sqlite3.connect(db) as con:
+        assert con.execute("SELECT COUNT(*) FROM kitting_plan_items WHERE lot_no IS NULL").fetchone()[0] == 0
+        assert con.execute("SELECT COUNT(*) FROM kitting_plan_items WHERE lot_no = ''").fetchone()[0] == 1
+    import_kitting_plan_csv(_csv(tmp_path / "p2.csv", [("E1", "", "2026/07/05 08:00:00", "2026/07/06 08:00:00")]), "T")   # 取り込み直し
+    rows = view()
+    assert [k for k in rows if k[0] == "E1"] == [("E1", "")]          # 古い版は無効になり、有効な行は1つだけ
+
+
+def test_view_returns_null_and_empty_lot_no_as_one_empty_key_and_never_two_rows_for_a_key(db):
+    batch = add_batch([("N1", "L1", "2026/07/05 08:00:00", "2026/07/06 08:00:00")], imported_at="2026-10-02 09:00:00")
+    _insert_raw_plan("NULLLOT", None, batch)                           # 古い DB にある lot_no が NULL の行（004 の列追加で NULL になった行など）
+    _insert_raw_plan("EMPTYLOT", "", batch)
+    rows = view()
+    assert ("NULLLOT", "") in rows and ("EMPTYLOT", "") in rows         # NULL も空文字も、lot_no は '' で1行ずつ返る
+    assert all(k[1] is not None for k in rows)
+    # 同じ kitting_list_no で有効な行を2つ（NULL と空文字、NULL と NULL、空文字と空文字）入れようとしても、部分ユニークインデックスが断る
+    for lot in (None, ""):
+        with pytest.raises(sqlite3.IntegrityError):
+            _insert_raw_plan("NULLLOT", lot, batch)
+        with pytest.raises(sqlite3.IntegrityError):
+            _insert_raw_plan("EMPTYLOT", lot, batch)
+    with sqlite3.connect(db) as con:
+        assert con.execute("SELECT COUNT(*) FROM (SELECT kitting_list_no, lot_no FROM v_plan_stale GROUP BY 1, 2 HAVING COUNT(*) > 1)").fetchone()[0] == 0
+    # 無効な行（古い版）は有効な行と同じキーでもよく、ビューには出ない
+    _insert_raw_plan("NULLLOT", None, batch, active=0)
+    assert len([k for k in view() if k[0] == "NULLLOT"]) == 1
+
+
+def test_null_lot_no_actuals_and_staleness_use_the_empty_key(db):
+    first = create_plan_batch("plan.csv", "T", 1)
+    set_imported_at(first, "2026-10-01 09:00:00")
+    _insert_raw_plan("OLD0", None, first)
+    add_batch([("N1", "L1", "2026/07/01 00:00:00", "2026/07/31 00:00:00")], imported_at="2026-10-02 09:00:00")
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT INTO production_daily (plan_item_id, kitting_list_no, lot_id, report_date, daily_qty, worker_id) VALUES (1, 'OLD0', NULL, '2026-10-02', 4, 'W1')")
+    row = view()[("OLD0", "")]
+    assert row["is_stale"] == 1 and row["has_legacy_actuals"] == 1
+
+
+def test_view_never_returns_a_key_twice_on_a_busy_database(db):
+    seed_reissue()
+    add_batch(SECOND, imported_at="2026-10-03 09:00:00")
+    with sqlite3.connect(db) as con:
+        assert con.execute("SELECT COUNT(*) FROM (SELECT kitting_list_no, lot_no FROM v_plan_stale GROUP BY 1, 2 HAVING COUNT(*) > 1)").fetchone()[0] == 0
+        assert con.execute("SELECT COUNT(*) FROM v_plan_stale").fetchone()[0] == con.execute(
+            "SELECT COUNT(*) FROM kitting_plan_items WHERE COALESCE(is_active,1)=1 AND COALESCE(delete_flag,0)=0").fetchone()[0]
+
+
+def test_judged_at_has_the_format_of_imported_at(db):
+    import re
+    import_kitting_plan_csv(_csv(os.path.join(os.path.dirname(db), "p.csv"), [("J1", "L1", "2026/07/05 08:00:00", "2026/07/06 08:00:00")]), "T")
+    with sqlite3.connect(db) as con:
+        imported_at = con.execute("SELECT imported_at FROM kitting_plan_batches").fetchone()[0]       # 既定値 datetime('now','localtime')
+    judged_at = view()[("J1", "L1")]["judged_at"]
+    assert judged_at == imported_at and re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", judged_at)
